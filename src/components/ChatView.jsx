@@ -6,54 +6,6 @@ import { playThinkingBeep, playDoneBeep } from '../audio.js';
 
 const DEFAULT_SYSTEM = 'You are Reverb, a personal assistant with access to the user\'s texts, calendar, and email. You have three tools: get_recent_texts, get_upcoming_events, and get_recent_emails. Use them whenever the user asks about messages, their schedule, or their inbox — never guess at this information. Answer everything else from your own knowledge.';
 
-const SKULL = `
-                                                              67         24
-                                                        6                     72587
-                                                                                  7245882
-                                                2              6   6                6744558846
-                                                 66  6   6  6       6 6                62488888856
-                                           6 66 666    6   6 66 6  6  666  66             7455888885
-                                         6    6666      66 6 6  6 6 6     6     6 6   667 624458888885
-                                       6  6       6  6 6    6 6  6 6 66 6 66      6     6724455558888882
-                                      6  66  6666666   6      6 6 6  6 6   6    6666667772255588588888887
-                                     7  6666 66666  6     6 6                      6744444445888858888888
-                                     7  666 6 6                          6        762425558888588888888888
-                                     2   6    66666666 666766666666666666   777762424228885455558888888888
-                                     2    66 6         6       6                 6624248544545888858588888
-                                     7   66  6  6 6    66     66       6666       674448554248885588588888
-                                     2                 6 6  6                 6    62258552588855588588888
-                                    66                 7                           7 645525888855555555888
-                                            6442        76          625888852     6     458888544554545888
-                                       488888888884   7 7         25888855544455542 74    6458545555245885
-                                     488888888888584       27    7588885552767454446 472   64855455445884
-                                      58888885458852      7446   788885555267667252 27577626 55855555882
-                                      78888884558854767   2447 6  6488555427776  65 6767  7766455588588
-                                      688888844582745888456 4667      58552666276657      677 255885588
-                                       88888852     4888725   76        65542  6747    6  224 288888888
-                                                    58587528   77    6       72766       656  222558887
-                                                    555557275  6 6242                   65566622424584
-                                        6           48558467786   7226852    6 6       25857662554258
-                                     7        67    688858442256 62767   2        6245858555885472254
-                                     77    6         88826  6286      72674    77   454858522558255
-                                      6         6         7726        7726727666    744556   526
-                                                  6      74       7   64766254246  676448    74
-                                                 666             6   74    2754         8    62
-                                             8   66 6 6    6  6 6  7  7    7457         484 72
-                                             2   66 6 6  6                 7482      6  455776
-                                             7                76 64  7472742442         78422
-                                             7   7  7  7 476467    72    7  6252        65424
-                                             7  676    7    7   6  6   2627 6675   6 6  25544
-                                                26   6 7    2        77246777  287     64555
-                                            6   6  6  6       6  67  66 7  76 22  6   655555
-                                             6  67627 776 77267      4 67   47   6   2455452
-                                                     2            4  77    27     64555552
-                                            7  6   6 4 6 67    66677   772576    255547
-                                                6766 6  666676676  776744447  64852
-                                             2  6666 7  6666        24554472455
-                                                666  7 666  6     7458545554
-                                               7    76         754424587
-                                                          62   277
-`;
 const PREFER_MODEL   = 'supergemma4-e4b';
 
 
@@ -324,7 +276,7 @@ export default function ChatView({ auth, onLockout }) {
     <div className="app-shell">
       {/* Header */}
       <header>
-        <img src="/banner.png" className="logo" alt="Reverb" />
+        <span className="logo">REVERB</span>
         {convTitle && <span className="conv-header-title">{convTitle}</span>}
         <div className="header-controls">
           <div className="model-picker-wrap" ref={modelPickerRef}>
@@ -363,8 +315,6 @@ export default function ChatView({ auth, onLockout }) {
           autoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         }}
       >
-        <pre className="bg-art" aria-hidden="true">{SKULL}</pre>
-
         {messages.length === 0 && !pending && (
           <div className="welcome"><p>How can I help?</p></div>
         )}

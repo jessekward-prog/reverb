@@ -79,7 +79,7 @@ export default function PinGate({ mode: initialMode, onAuth }) {
   return (
     <div className="pin-gate">
       <div className="pin-inner">
-        <img src="/banner.png" className="pin-logo" alt="Reverb" />
+        <span className="pin-logo">REVERB</span>
         <p className="pin-title">{titles[mode]}</p>
 
         <div className="pin-dots">

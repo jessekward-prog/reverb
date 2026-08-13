@@ -8,7 +8,7 @@
   --muted:   #444444;
   --fg:      #d8d8d8;
   --fg-dim:  #666666;
-  --accent:  #ffffff;
+  --accent:  #FF8C00;
   --blue:      #3c78ff;
   --blue-dim:  rgba(60,120,255,0.8);
   --red:     #cc2222;
@@ -98,7 +98,7 @@ header {
   padding: 0 16px;
   padding-top: env(safe-area-inset-top, 0);
   background: var(--bg2);
-  border-top:    2px solid #cc0000;
+  border-top:    2px solid var(--accent);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
   position: sticky;
@@ -108,11 +108,12 @@ header {
 }
 
 .logo {
-  height: 36px;
-  width: auto;
-  max-width: 220px;
+  font-family: var(--font);
+  font-size: 1rem;
+  font-weight: bold;
+  letter-spacing: 0.28em;
+  color: var(--accent);
   display: block;
-  image-rendering: -webkit-optimize-contrast;
 }
 
 .conv-header-title {
@@ -669,7 +670,13 @@ header {
   padding: 24px 16px;
 }
 
-.pin-logo { height: 56px; width: auto; }
+.pin-logo {
+  font-family: var(--font);
+  font-size: 1.6rem;
+  font-weight: bold;
+  letter-spacing: 0.3em;
+  color: var(--accent);
+}
 
 .pin-title {
   font-family: var(--font);
@@ -787,7 +794,7 @@ header {
   }
 
   /* Logo takes its own row; controls wrap to the row below */
-  .logo { height: auto; max-height: 48px; max-width: none; width: auto; }
+  .logo { font-size: 0.85rem; }
 
   .icon-header-btn {
     width: 40px;
