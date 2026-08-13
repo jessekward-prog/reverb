@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import HistoryDrawer from './HistoryDrawer.jsx';
 import SettingsDrawer from './SettingsDrawer.jsx';
-import { DitherField, CrtLayers } from './CrtBackdrop.jsx';
+import { DitherField, CrtLayers, BACKDROP_CSS } from './CrtBackdrop.jsx';
 import { authHeaders, renderText } from '../api.js';
 import { playThinkingBeep, playDoneBeep } from '../audio.js';
 
@@ -351,6 +351,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
 
   return (
     <div className="app-backdrop">
+    <style>{BACKDROP_CSS}</style>
     <DitherField pushRef={pushRipple} centerYFrac={0.4} />
     <CrtLayers />
     <div className="app-shell">
