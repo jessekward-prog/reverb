@@ -25,51 +25,30 @@ html, body {
   overflow: hidden;
 }
 
-/* ── App shell — fixed 390×844 design, sized to the real screen by <Stage> ── */
+/* ── App backdrop — full-bleed host for the dither field + CRT layers, so
+   the ambient effect actually spans the real screen instead of a small
+   boxed mockup. ── */
+.app-backdrop {
+  position: relative;
+  width: 100%;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background: #060606;
+}
+
+/* ── App shell — the readable content column, capped and centered so a
+   wide desktop window doesn't stretch chat into an unreadable single line,
+   while the backdrop behind it still fills the screen. ── */
 .app-shell {
   display: flex;
   flex-direction: column;
-  width: 390px;
-  height: 844px;
   position: relative;
-  z-index: 0;
-  overflow: hidden;
-}
-
-/* Film grain — scoped to the shell (not the whole page) so it doesn't bleed
- * into Stage's void around the boxed window on desktop. */
-.app-shell::before {
-  content: '';
-  position: absolute;
-  inset: -60%;
-  width: 220%;
-  height: 220%;
-  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.88' numOctaves='4' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  opacity: 0.04;
-  pointer-events: none;
-  z-index: 9998;
-  animation: grain 0.6s steps(1) infinite;
-}
-
-@keyframes grain {
-  0%   { transform: translate(0,0);     }
-  14%  { transform: translate(-4%,-5%); }
-  29%  { transform: translate(5%,3%);   }
-  43%  { transform: translate(-3%,6%);  }
-  57%  { transform: translate(6%,-3%);  }
-  71%  { transform: translate(-5%,4%);  }
-  86%  { transform: translate(3%,-6%);  }
-  100% { transform: translate(-4%,5%);  }
-}
-
-/* Static scanlines */
-.app-shell::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background: repeating-linear-gradient(0deg, transparent, transparent 1px, rgba(0,0,0,0.2) 1px, rgba(0,0,0,0.2) 2px);
-  pointer-events: none;
-  z-index: 9999;
+  z-index: 2;
+  height: 100%;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
 }
 
 /* ── Header ── */
@@ -195,20 +174,6 @@ header {
 .messages-area::-webkit-scrollbar { width: 3px; }
 .messages-area::-webkit-scrollbar-track { background: transparent; }
 .messages-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 1px; }
-
-.bg-skull {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 280px;
-  max-width: 60%;
-  opacity: 0.05;
-  filter: grayscale(1);
-  pointer-events: none;
-  user-select: none;
-  z-index: 0;
-}
 
 .welcome {
   margin: auto;
@@ -644,6 +609,7 @@ header {
 }
 .pwa-dismiss:hover { color: var(--fg); }
 
-/* No mobile breakpoint needed below — .app-shell is a fixed 390×844 design
- * wrapped in <Stage>, which scale-transforms the whole thing to cover real
- * phone viewports instead of reflowing it. See CrtBackdrop.jsx. */
+/* No mobile breakpoint needed below — .app-backdrop/.app-shell are fluid
+ * (100%/100dvh, no fixed design size), and DitherField/CrtLayers in
+ * CrtBackdrop.jsx measure their real container via ResizeObserver instead
+ * of assuming a fixed size. Same layout scales naturally at any viewport. */

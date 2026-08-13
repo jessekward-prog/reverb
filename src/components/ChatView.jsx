@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import HistoryDrawer from './HistoryDrawer.jsx';
 import SettingsDrawer from './SettingsDrawer.jsx';
-import { Stage } from './CrtBackdrop.jsx';
+import { DitherField, CrtLayers } from './CrtBackdrop.jsx';
 import { authHeaders, renderText } from '../api.js';
 import { playThinkingBeep, playDoneBeep } from '../audio.js';
 
@@ -36,6 +36,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
   const inputRef        = useRef(null);
   const deferredInstall = useRef(null);
   const modelPickerRef  = useRef(null);
+  const pushRipple      = useRef(() => {});
 
   // ── Init ────────────────────────────────────────────────
   useEffect(() => {
@@ -278,12 +279,15 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
     if (!text || sendDisabled) return;
     setInputText('');
     autoScrollRef.current = true;
+    pushRipple.current(1.4);
     send(text, messages);
   }
 
   // ── Render ───────────────────────────────────────────────
   return (
-    <Stage>
+    <div className="app-backdrop">
+    <DitherField pushRef={pushRipple} centerYFrac={0.4} />
+    <CrtLayers />
     <div className="app-shell">
       {/* Header */}
       <header>
@@ -327,8 +331,6 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
           autoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         }}
       >
-        <img src="/skull.png" className="bg-skull" aria-hidden="true" alt="" />
-
         {messages.length === 0 && !pending && (
           <div className="welcome"><p>How can I help?</p></div>
         )}
@@ -425,6 +427,6 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
         </div>
       )}
     </div>
-    </Stage>
+    </div>
   );
 }

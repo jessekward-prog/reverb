@@ -2,8 +2,15 @@
  * Extracted from the pin screen so SweepView and PinGate can share one implementation.
  * Requires public/skull.png
  *
- * <DitherField pushRef={ref} />  ref.current(amp) fires a ripple
- * <CrtLayers />                  scanlines + phosphor + vignette, sits at z-index 1
+ * <DitherField pushRef={ref} />  ref.current(amp) fires a ripple. Fills its
+ *   parent (position:absolute; inset:0 on the canvas) and measures that
+ *   parent via ResizeObserver — no fixed design size. All spatial constants
+ *   (dither pitch, skull size, ripple radius) scale off measured width so
+ *   the same relative look holds at phone width or a full desktop window;
+ *   timing constants (animation speed, decay) don't scale — a 5s ripple
+ *   should still take 5s on a bigger screen, not slow down.
+ * <CrtLayers />  scanlines + phosphor + vignette, sits at z-index 1, purely
+ *   CSS-percentage based so it needs no measurement at all.
  */
 import React, { useEffect, useRef, useCallback, useState } from 'react';
 
@@ -11,82 +18,51 @@ export const INK = '#e8e8e4';
 export const AMBER = '#d9932f';
 const SKULL_DARK = '#41473f';
 const SKULL_LIGHT = '#5a625c';
-const W = 390, H = 844;
+const REF_W = 390; // design reference: the width the original pixel constants were tuned at
 const BAYER = [0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];
 
-// The dither canvas and CRT layers are hand-tuned at a fixed 390×844 design
-// size (not worth making the pixel art itself responsive). Below the phone
-// breakpoint we scale that whole stage up to cover the real viewport, so it
-// reaches every edge instead of sitting in a fixed box with dead space
-// around it. Above the breakpoint (desktop) it renders at native size,
-// centered, framed like a real app window.
-const PHONE_BREAKPOINT = 480;
-
-export function useStageScale(designW = W, designH = H, breakpoint = PHONE_BREAKPOINT) {
-  const [scale, setScale] = useState(1);
-  useEffect(() => {
-    function compute() {
-      if (window.innerWidth > breakpoint) { setScale(1); return; }
-      setScale(Math.max(window.innerWidth / designW, window.innerHeight / designH));
-    }
-    compute();
-    window.addEventListener('resize', compute);
-    window.addEventListener('orientationchange', compute);
-    return () => {
-      window.removeEventListener('resize', compute);
-      window.removeEventListener('orientationchange', compute);
-    };
-  }, [designW, designH, breakpoint]);
-  return scale;
-}
-
-/* Wraps a fixed-390×844 screen so it fills the real viewport on phones
- * (scaled to cover, no letterboxing) and sits as a framed centered window
- * on desktop. Pass the screen's own inline-styled root div as children —
- * Stage supplies the outer full-viewport shell and the scale transform. */
-export function Stage({ children }) {
-  const scale = useStageScale();
-  const isDesktop = scale === 1;
-  return (
-    <div style={{
-      width: '100vw', height: '100dvh', overflow: 'hidden',
-      display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: '#060606',
-    }}>
-      <div style={{
-        width: W, height: H, flex: 'none',
-        transform: `scale(${scale})`,
-        border: isDesktop ? '1px solid rgba(232,232,228,.12)' : 'none',
-        boxShadow: isDesktop ? '0 24px 70px rgba(0,0,0,.65)' : 'none',
-      }}>
-        {children}
-      </div>
-    </div>
-  );
-}
-
 export const BACKDROP_CSS = `
-@keyframes rv-scan  { 0%{transform:translateY(0)} 100%{transform:translateY(${H}px)} }
+@keyframes rv-scan  { 0%{top:-2%} 100%{top:102%} }
 @keyframes rv-flick { 0%,100%{opacity:.05} 50%{opacity:.07} }
 @keyframes rv-drift { from{transform:translateY(0)} to{transform:translateY(3px)} }
 `;
 
-export function DitherField({ pushRef, centerY = 300, ambientMs = 5000, opacity = 0.5 }) {
+function useMeasure(ref) {
+  const [size, setSize] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const ro = new ResizeObserver(entries => {
+      const { width, height } = entries[0].contentRect;
+      setSize({ w: Math.round(width), h: Math.round(height) });
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return size;
+}
+
+export function DitherField({ pushRef, centerYFrac = 0.31, ambientMs = 5000, opacity = 0.5 }) {
   const canvasRef = useRef(null);
   const ripples = useRef([]);
   const skull = useRef(null);
-  const cx = W / 2;
+  const { w: W, h: H } = useMeasure(canvasRef);
 
   const push = useCallback((amp = 1.1) => {
-    ripples.current.push({ t0: performance.now(), x: cx, y: centerY, amp });
-  }, [cx, centerY]);
+    if (!W || !H) return;
+    ripples.current.push({ t0: performance.now(), x: W / 2, y: H * centerYFrac, amp });
+  }, [W, H, centerYFrac]);
 
   useEffect(() => { if (pushRef) pushRef.current = push; }, [push, pushRef]);
 
+  // Re-sample the skull whenever the measured size changes, so it stays
+  // proportional to the canvas instead of a fixed pixel size.
   useEffect(() => {
+    if (!W || !H) return;
     const img = new Image();
     img.onload = () => {
-      const w = 190, h = Math.round(190 * img.height / img.width);
+      const scale = W / REF_W;
+      const w = Math.round(190 * scale), h = Math.round(w * img.height / img.width);
       const cv = document.createElement('canvas');
       cv.width = w; cv.height = h;
       const c2 = cv.getContext('2d');
@@ -96,26 +72,38 @@ export function DitherField({ pushRef, centerY = 300, ambientMs = 5000, opacity 
       for (let i = 0; i < w * h; i++) {
         lum[i] = (d[i*4]*.3 + d[i*4+1]*.59 + d[i*4+2]*.11) / 255 * (d[i*4+3] / 255);
       }
-      skull.current = { lum, W: w, H: h, x0: cx - w / 2, y0: centerY - h / 2 };
+      const cy = H * centerYFrac;
+      skull.current = { lum, W: w, H: h, x0: W / 2 - w / 2, y0: cy - h / 2 };
     };
     img.src = '/skull.png';
+  }, [W, H, centerYFrac]);
 
+  useEffect(() => {
+    if (!W || !H) return;
     push(1.1);
     const amb = setInterval(() => push(1.1), ambientMs);
+    return () => clearInterval(amb);
+  }, [W, H, push, ambientMs]);
 
-    let raf, ctx = null;
+  useEffect(() => {
+    if (!W || !H) return;
+    const S = W / REF_W; // spatial scale factor — everything pixel-sized below rides on this
+    const step = Math.max(3, Math.round(5 * S));
+    const dot = Math.max(2, Math.round(3 * S));
+    const c = canvasRef.current;
+    if (!c) return;
+    c.width = W; c.height = H;
+    const ctx = c.getContext('2d');
+
+    let raf;
     const draw = (now) => {
-      const c = canvasRef.current;
-      if (!c) { raf = requestAnimationFrame(draw); return; }
-      if (c.width !== W) { c.width = W; c.height = H; ctx = c.getContext('2d'); }
       ctx.clearRect(0, 0, W, H);
       ripples.current = ripples.current.filter(r => now - r.t0 < 5200);
 
-      const step = 5;
-      const jitter = Math.sin(now / 260) * 1.5;
+      const jitter = Math.sin(now / 260) * 1.5 * S;
       const sk = skull.current;
       for (let y = 2; y < H; y += step) {
-        const skew = Math.sin(y / 90 + now / 900) * jitter;
+        const skew = Math.sin(y / (90 * S) + now / 900) * jitter;
         for (let x = 2; x < W; x += step) {
           let v = 0, hit = 0;
           if (sk) {
@@ -127,9 +115,9 @@ export function DitherField({ pushRef, centerY = 300, ambientMs = 5000, opacity 
           }
           for (const r of ripples.current) {
             const t = (now - r.t0) / 1000;
-            const R = 190 + t * 150;
+            const R = (190 + t * 150) * S;
             const d = Math.hypot(x + skew - r.x, y - r.y);
-            const g = Math.exp(-Math.pow((d - R) / 20, 2));
+            const g = Math.exp(-Math.pow((d - R) / (20 * S), 2));
             v += r.amp * g * Math.exp(-t * 0.45);
           }
           const bx = ((x / step) | 0) & 3, by = ((y / step) | 0) & 3;
@@ -138,32 +126,31 @@ export function DitherField({ pushRef, centerY = 300, ambientMs = 5000, opacity 
           ctx.fillStyle = hit && v < 0.8
             ? (hit > 0.5 ? SKULL_LIGHT : SKULL_DARK)
             : (v > 0.7 ? SKULL_LIGHT : SKULL_DARK);
-          ctx.fillRect(x, y, 3, 3);
+          ctx.fillRect(x, y, dot, dot);
         }
       }
       raf = requestAnimationFrame(draw);
     };
     raf = requestAnimationFrame(draw);
-    return () => { cancelAnimationFrame(raf); clearInterval(amb); };
-  }, [push, ambientMs, centerY, cx]);
+    return () => cancelAnimationFrame(raf);
+  }, [W, H]);
 
   return (
     <canvas ref={canvasRef} style={{
-      position: 'absolute', inset: 0, width: W, height: H, opacity,
+      position: 'absolute', inset: 0, width: '100%', height: '100%', opacity,
       imageRendering: 'pixelated', filter: 'blur(.3px)',
     }} />
   );
 }
 
 /* Background-only CRT. Keep this at zIndex 1 with content above it at zIndex 2 —
- * that is what keeps text crisp while the backdrop stays tube-like. */
+ * that is what keeps text crisp while the backdrop stays tube-like. Purely
+ * percentage/CSS driven, no measurement needed — scales to any container. */
 export function CrtLayers() {
   return (
     <div style={{ position: 'absolute', inset: 0, zIndex: 1, pointerEvents: 'none', overflow: 'hidden' }}>
-      <div style={{ position: 'absolute', left: 0, right: 0, top: -H, height: H * 2 }}>
-        <div style={{ position: 'absolute', left: 0, right: 0, top: H, height: 2, background: INK,
-                      opacity: .14, animation: 'rv-scan 7s linear infinite' }} />
-      </div>
+      <div style={{ position: 'absolute', left: 0, right: 0, height: 2, background: INK,
+                    opacity: .14, animation: 'rv-scan 7s linear infinite' }} />
       {/* drift must equal exactly one 3px stripe period or the pattern snaps each loop */}
       <div style={{ position: 'absolute', inset: 0, willChange: 'transform',
                     background: 'repeating-linear-gradient(180deg,rgba(0,0,0,.42) 0px,rgba(0,0,0,.42) 1px,transparent 1px,transparent 3px)',

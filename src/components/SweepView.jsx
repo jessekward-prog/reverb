@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { DitherField, CrtLayers, Stage, BACKDROP_CSS, INK, AMBER } from './CrtBackdrop.jsx';
+import { DitherField, CrtLayers, BACKDROP_CSS, INK, AMBER } from './CrtBackdrop.jsx';
 import { authHeaders } from '../api.js';
+
+const CONTENT_MAX = 560;
 
 const CSS = BACKDROP_CSS + `
 @keyframes rv-blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
@@ -172,9 +174,8 @@ export default function SweepView({ auth, onLockout, onOpenChat, onDraftReply })
   });
 
   return (
-    <Stage>
     <div style={{
-      position: 'relative', width: 390, height: 844, overflow: 'hidden',
+      position: 'relative', width: '100%', height: '100dvh', overflow: 'hidden',
       background: '#060606', color: INK,
       fontFamily: "'JetBrains Mono', ui-monospace, monospace",
       fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase', userSelect: 'none',
@@ -183,9 +184,11 @@ export default function SweepView({ auth, onLockout, onOpenChat, onDraftReply })
       <DitherField pushRef={pushRipple} />
       <CrtLayers />
 
-      {/* content sits above the CRT stack so text stays crisp — no text-shadow fringe here */}
+      {/* content sits above the CRT stack so text stays crisp — no text-shadow fringe here.
+          Capped and centered so it reads as a comfortable column, not a stretched-out
+          wide layout, while the backdrop above still spans the full screen. */}
       <div style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column',
-                    height: '100%', boxSizing: 'border-box' }}>
+                    height: '100%', maxWidth: CONTENT_MAX, margin: '0 auto', boxSizing: 'border-box' }}>
 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
                       gap: 12, padding: '20px 20px 0' }}>
@@ -349,7 +352,8 @@ export default function SweepView({ auth, onLockout, onOpenChat, onDraftReply })
       </div>
 
       {toast && (
-        <div style={{ position: 'absolute', left: 20, right: 20, bottom: 24, zIndex: 9,
+        <div style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', bottom: 24, zIndex: 9,
+                      width: `calc(100% - 40px)`, maxWidth: CONTENT_MAX - 40,
                       border: '1px solid rgba(217,147,47,.5)', background: '#0b0b0a',
                       padding: '13px 14px', display: 'flex', alignItems: 'center', gap: 10,
                       animation: 'rv-rise .2s ease-out' }}>
@@ -359,6 +363,5 @@ export default function SweepView({ auth, onLockout, onOpenChat, onDraftReply })
         </div>
       )}
     </div>
-    </Stage>
   );
 }

@@ -2,114 +2,24 @@
  * Keeps the existing contract: <PinGate mode="setup"|"enter" onAuth={(token, role) => …} />
  * Styling is inline on purpose so it needs nothing from style.css.
  * Requires: public/skull.png (copy from handoff/skull.png)
+ *
+ * Layout: the dither field + CRT layers are full-bleed across the whole
+ * viewport (that's what makes this feel like a real screen, not a shrunk
+ * mockup, on desktop); the actual keypad UI sits in a comfortable centered
+ * column on top so it doesn't stretch into an absurd wide keypad on a big
+ * monitor. Same split used in ChatView and SweepView.
  */
-import React, { useEffect, useRef, useState, useCallback } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { djb2 } from '../api.js';
-import { Stage } from './CrtBackdrop.jsx';
+import { DitherField, CrtLayers, BACKDROP_CSS, INK, AMBER } from './CrtBackdrop.jsx';
 
-const INK = '#e8e8e4';
-const AMBER = '#d9932f';
-const SKULL_DARK = '#41473f';
-const SKULL_LIGHT = '#5a625c';
-const W = 390, H = 844;
-const CX = 195, CY = 265;              // ripple + skull center
-const BAYER = [0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];
+const CONTENT_MAX = 480;
 
-const CSS = `
+const CSS = BACKDROP_CSS + `
 @keyframes rv-blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
-@keyframes rv-scan  { 0%{transform:translateY(0)} 100%{transform:translateY(${H}px)} }
 @keyframes rv-popin { from{transform:scale(.2);opacity:0} to{transform:scale(1);opacity:1} }
 @keyframes rv-shk   { 0%,100%{transform:translateX(0)} 20%{transform:translateX(-7px)} 40%{transform:translateX(6px)} 60%{transform:translateX(-4px)} 80%{transform:translateX(2px)} }
-@keyframes rv-flick { 0%,100%{opacity:.05} 50%{opacity:.07} }
-@keyframes rv-drift { from{transform:translateY(0)} to{transform:translateY(3px)} }
 `;
-
-/* ── dithered ripple field ─────────────────────────────────────────────── */
-function DitherField({ pushRef }) {
-  const canvasRef = useRef(null);
-  const ripples = useRef([]);
-  const skull = useRef(null);
-
-  const push = useCallback((amp) => {
-    ripples.current.push({ t0: performance.now(), x: CX, y: CY, amp });
-  }, []);
-  useEffect(() => { pushRef.current = push; }, [push, pushRef]);
-
-  useEffect(() => {
-    // sample the skull PNG down to a luminance grid
-    const img = new Image();
-    img.onload = () => {
-      const w = 190, h = Math.round(190 * img.height / img.width);
-      const cv = document.createElement('canvas');
-      cv.width = w; cv.height = h;
-      const c2 = cv.getContext('2d');
-      c2.drawImage(img, 0, 0, w, h);
-      const d = c2.getImageData(0, 0, w, h).data;
-      const lum = new Float32Array(w * h);
-      for (let i = 0; i < w * h; i++) {
-        lum[i] = (d[i*4]*.3 + d[i*4+1]*.59 + d[i*4+2]*.11) / 255 * (d[i*4+3] / 255);
-      }
-      skull.current = { lum, W: w, H: h, x0: CX - w / 2, y0: CY - h / 2 };
-    };
-    img.src = '/skull.png';
-
-    push(1.1);
-    const amb = setInterval(() => push(1.1), 5000);
-
-    let raf;
-    let ctx = null;
-    const draw = (now) => {
-      const c = canvasRef.current;
-      if (!c) { raf = requestAnimationFrame(draw); return; }
-      if (c.width !== W) { c.width = W; c.height = H; ctx = c.getContext('2d'); }
-      ctx.clearRect(0, 0, W, H);
-      ripples.current = ripples.current.filter(r => now - r.t0 < 5200);
-
-      const step = 5;
-      const jitter = Math.sin(now / 260) * 1.5;   // slight horizontal tape wobble
-      const sk = skull.current;
-      for (let y = 2; y < H; y += step) {
-        const skew = Math.sin(y / 90 + now / 900) * jitter;
-        for (let x = 2; x < W; x += step) {
-          let v = 0, hit = 0;
-          if (sk) {
-            const sx = (x - sk.x0) | 0, sy = (y - sk.y0) | 0;
-            if (sx >= 0 && sy >= 0 && sx < sk.W && sy < sk.H) {
-              const l = sk.lum[sy * sk.W + sx];
-              if (l > 0.22) { hit = l; v += 0.24 + l * 0.2; }
-            }
-          }
-          for (const r of ripples.current) {
-            const t = (now - r.t0) / 1000;
-            const R = 190 + t * 150;                       // starts wider than the skull
-            const d = Math.hypot(x + skew - r.x, y - r.y);
-            const g = Math.exp(-Math.pow((d - R) / 20, 2)); // thin band
-            v += r.amp * g * Math.exp(-t * 0.45);
-          }
-          const bx = ((x / step) | 0) & 3, by = ((y / step) | 0) & 3;
-          const thr = BAYER[by * 4 + bx] / 16;
-          // skull pixels get a low threshold; ripple pixels a high one (sparser)
-          if (v <= (hit ? thr * 0.55 + 0.02 : thr * 1.15 + 0.06)) continue;
-          ctx.fillStyle = hit && v < 0.8
-            ? (hit > 0.5 ? SKULL_LIGHT : SKULL_DARK)
-            : (v > 0.7 ? SKULL_LIGHT : SKULL_DARK);
-          ctx.fillRect(x, y, 3, 3);
-        }
-      }
-      raf = requestAnimationFrame(draw);
-    };
-    raf = requestAnimationFrame(draw);
-    return () => { cancelAnimationFrame(raf); clearInterval(amb); };
-  }, [push]);
-
-  return (
-    <canvas
-      ref={canvasRef}
-      style={{ position: 'absolute', inset: 0, width: W, height: H, opacity: .5,
-               imageRendering: 'pixelated', filter: 'blur(.3px)' }}
-    />
-  );
-}
 
 /* ── amber EQ: each bar on its own random timer ────────────────────────── */
 function Waveform() {
@@ -249,33 +159,21 @@ export default function PinGate({ mode: initialMode = 'enter', onAuth }) {
     : idle[mode];
 
   return (
-    <Stage>
     <div style={{
-      position: 'relative', width: W, height: H, overflow: 'hidden',
+      position: 'relative', width: '100%', height: '100dvh', overflow: 'hidden',
       background: '#060606', color: INK,
       fontFamily: "'JetBrains Mono', ui-monospace, monospace",
       fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase', userSelect: 'none',
     }}>
       <style>{CSS}</style>
       <DitherField pushRef={pushRipple} />
-
-      {/* CRT dressing */}
+      <CrtLayers />
       <div style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 120,
-                    background: `linear-gradient(${INK}, transparent)`, opacity: .05, pointerEvents: 'none' }} />
-      <div style={{ position: 'absolute', left: 0, right: 0, top: -H, height: H * 2, pointerEvents: 'none' }}>
-        <div style={{ position: 'absolute', left: 0, right: 0, top: H, height: 2, background: INK,
-                      opacity: .14, animation: 'rv-scan 7s linear infinite' }} />
-      </div>
-      <div style={{ position: 'absolute', inset: 0, zIndex: 5, pointerEvents: 'none', willChange: 'transform',
-                    background: 'repeating-linear-gradient(180deg,rgba(0,0,0,.42) 0px,rgba(0,0,0,.42) 1px,transparent 1px,transparent 3px)',
-                    animation: 'rv-drift 5s linear infinite' }} />
-      <div style={{ position: 'absolute', inset: 0, zIndex: 6, pointerEvents: 'none', background: '#c9f3d8',
-                    mixBlendMode: 'overlay', animation: 'rv-flick 6s ease-in-out infinite' }} />
-      <div style={{ position: 'absolute', inset: -40, zIndex: 7, pointerEvents: 'none',
-                    boxShadow: 'inset 0 0 90px 40px rgba(0,0,0,.85)' }} />
+                    background: `linear-gradient(${INK}, transparent)`, opacity: .05, pointerEvents: 'none', zIndex: 1 }} />
 
       <div style={{
-        position: 'relative', display: 'flex', flexDirection: 'column', height: '100%',
+        position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column', height: '100%',
+        maxWidth: CONTENT_MAX, margin: '0 auto',
         padding: '22px 20px 26px', boxSizing: 'border-box',
         textShadow: '.5px 0 rgba(255,60,90,.1), -.5px 0 rgba(60,200,255,.09)',
       }}>
@@ -358,6 +256,5 @@ export default function PinGate({ mode: initialMode = 'enter', onAuth }) {
         </div>
       )}
     </div>
-    </Stage>
   );
 }
