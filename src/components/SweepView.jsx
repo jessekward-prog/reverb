@@ -258,7 +258,7 @@ export default function SweepView({ auth, onLockout, onOpenChat, onDraftReply })
           {phase === 'idle' && (
             <div style={{ paddingTop: 40, textAlign: 'center', opacity: .4, lineHeight: 1.8 }}>
               <div>no sweep yet</div>
-              <div style={{ fontSize: 10 }}>pull your texts, mail and calendar into one list</div>
+              <div style={{ fontSize: 10 }}>pull every channel into one list</div>
             </div>
           )}
 

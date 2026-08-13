@@ -5,7 +5,7 @@ import { DitherField, CrtLayers, BACKDROP_CSS } from './CrtBackdrop.jsx';
 import { authHeaders, renderText } from '../api.js';
 import { playThinkingBeep, playDoneBeep } from '../audio.js';
 
-const DEFAULT_SYSTEM = 'You are Reverb, a personal assistant with access to the user\'s texts, calendar, and email. You have three tools: get_recent_texts, get_upcoming_events, and get_recent_emails. Use them whenever the user asks about messages, their schedule, or their inbox — never guess at this information. Answer everything else from your own knowledge.';
+const DEFAULT_SYSTEM = 'You are Reverb, a personal assistant with access to the user\'s texts, calendar, personal and business email, WhatsApp/Messenger/Instagram notifications, and Switch Craft Electrics jobs. You have six tools: get_recent_texts, get_upcoming_events, get_recent_emails, get_recent_business_emails, get_recent_notifications, and get_switchcraft_jobs. Use them whenever the user asks about messages, their schedule, their inbox, or open jobs — never guess at this information. Answer everything else from your own knowledge.';
 
 const PREFER_MODEL   = 'gemma-4-e4b';
 const URL_RE          = /https?:\/\/[^\s<>"']+/i;
