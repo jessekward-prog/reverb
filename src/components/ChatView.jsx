@@ -369,11 +369,6 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-          <div style={{ display: 'flex', gap: 1, background: 'rgba(232,232,228,.18)',
-                        border: '1px solid rgba(232,232,228,.18)' }}>
-            <button type="button" style={navBtn(true)}>chat</button>
-            <button type="button" style={navBtn(false)} onClick={() => onOpenSweep?.()}>sweep</button>
-          </div>
           <div className="model-picker-wrap" ref={modelPickerRef}>
             <button
               className="icon-header-btn"
@@ -397,6 +392,13 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
           </div>
           <button className="icon-header-btn" title="Chats" onClick={() => setShowHistory(true)}>&#9776;</button>
           <button className="icon-header-btn" title="Settings" onClick={() => setShowSettings(true)}>&#9881;</button>
+          {/* Toggle last, flush against the right edge — same position Sweep's
+              pill sits at, since it has nothing after it either. */}
+          <div style={{ display: 'flex', gap: 1, background: 'rgba(232,232,228,.18)',
+                        border: '1px solid rgba(232,232,228,.18)' }}>
+            <button type="button" style={navBtn(true)}>chat</button>
+            <button type="button" style={navBtn(false)} onClick={() => onOpenSweep?.()}>sweep</button>
+          </div>
         </div>
       </header>
 
