@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { DitherField, CrtLayers, BACKDROP_CSS, INK, AMBER } from './CrtBackdrop.jsx';
+import { DitherField, CrtLayers, Stage, BACKDROP_CSS, INK, AMBER } from './CrtBackdrop.jsx';
 import { authHeaders } from '../api.js';
 
 const CSS = BACKDROP_CSS + `
@@ -172,8 +172,9 @@ export default function SweepView({ auth, onLockout, onOpenChat, onDraftReply })
   });
 
   return (
+    <Stage>
     <div style={{
-      position: 'relative', width: 390, height: 844, overflow: 'hidden', margin: '0 auto',
+      position: 'relative', width: 390, height: 844, overflow: 'hidden',
       background: '#060606', color: INK,
       fontFamily: "'JetBrains Mono', ui-monospace, monospace",
       fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase', userSelect: 'none',
@@ -358,5 +359,6 @@ export default function SweepView({ auth, onLockout, onOpenChat, onDraftReply })
         </div>
       )}
     </div>
+    </Stage>
   );
 }

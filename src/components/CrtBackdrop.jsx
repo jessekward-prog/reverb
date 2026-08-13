@@ -5,7 +5,7 @@
  * <DitherField pushRef={ref} />  ref.current(amp) fires a ripple
  * <CrtLayers />                  scanlines + phosphor + vignette, sits at z-index 1
  */
-import React, { useEffect, useRef, useCallback } from 'react';
+import React, { useEffect, useRef, useCallback, useState } from 'react';
 
 export const INK = '#e8e8e4';
 export const AMBER = '#d9932f';
@@ -13,6 +13,57 @@ const SKULL_DARK = '#41473f';
 const SKULL_LIGHT = '#5a625c';
 const W = 390, H = 844;
 const BAYER = [0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];
+
+// The dither canvas and CRT layers are hand-tuned at a fixed 390×844 design
+// size (not worth making the pixel art itself responsive). Below the phone
+// breakpoint we scale that whole stage up to cover the real viewport, so it
+// reaches every edge instead of sitting in a fixed box with dead space
+// around it. Above the breakpoint (desktop) it renders at native size,
+// centered, framed like a real app window.
+const PHONE_BREAKPOINT = 480;
+
+export function useStageScale(designW = W, designH = H, breakpoint = PHONE_BREAKPOINT) {
+  const [scale, setScale] = useState(1);
+  useEffect(() => {
+    function compute() {
+      if (window.innerWidth > breakpoint) { setScale(1); return; }
+      setScale(Math.max(window.innerWidth / designW, window.innerHeight / designH));
+    }
+    compute();
+    window.addEventListener('resize', compute);
+    window.addEventListener('orientationchange', compute);
+    return () => {
+      window.removeEventListener('resize', compute);
+      window.removeEventListener('orientationchange', compute);
+    };
+  }, [designW, designH, breakpoint]);
+  return scale;
+}
+
+/* Wraps a fixed-390×844 screen so it fills the real viewport on phones
+ * (scaled to cover, no letterboxing) and sits as a framed centered window
+ * on desktop. Pass the screen's own inline-styled root div as children —
+ * Stage supplies the outer full-viewport shell and the scale transform. */
+export function Stage({ children }) {
+  const scale = useStageScale();
+  const isDesktop = scale === 1;
+  return (
+    <div style={{
+      width: '100vw', height: '100dvh', overflow: 'hidden',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      background: '#060606',
+    }}>
+      <div style={{
+        width: W, height: H, flex: 'none',
+        transform: `scale(${scale})`,
+        border: isDesktop ? '1px solid rgba(232,232,228,.12)' : 'none',
+        boxShadow: isDesktop ? '0 24px 70px rgba(0,0,0,.65)' : 'none',
+      }}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 export const BACKDROP_CSS = `
 @keyframes rv-scan  { 0%{transform:translateY(0)} 100%{transform:translateY(${H}px)} }

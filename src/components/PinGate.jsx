@@ -5,6 +5,7 @@
  */
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { djb2 } from '../api.js';
+import { Stage } from './CrtBackdrop.jsx';
 
 const INK = '#e8e8e4';
 const AMBER = '#d9932f';
@@ -248,8 +249,9 @@ export default function PinGate({ mode: initialMode = 'enter', onAuth }) {
     : idle[mode];
 
   return (
+    <Stage>
     <div style={{
-      position: 'relative', width: W, height: H, overflow: 'hidden', margin: '0 auto',
+      position: 'relative', width: W, height: H, overflow: 'hidden',
       background: '#060606', color: INK,
       fontFamily: "'JetBrains Mono', ui-monospace, monospace",
       fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase', userSelect: 'none',
@@ -356,5 +358,6 @@ export default function PinGate({ mode: initialMode = 'enter', onAuth }) {
         </div>
       )}
     </div>
+    </Stage>
   );
 }
