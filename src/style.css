@@ -8,7 +8,7 @@
   --muted:   #444444;
   --fg:      #d8d8d8;
   --fg-dim:  #666666;
-  --accent:  #FF8C00;
+  --accent:  #d9932f;
   --blue:      #3c78ff;
   --blue-dim:  rgba(60,120,255,0.8);
   --red:     #cc2222;
@@ -225,16 +225,15 @@ header {
 .messages-area::-webkit-scrollbar-track { background: transparent; }
 .messages-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 1px; }
 
-.bg-art {
+.bg-skull {
   position: absolute;
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  color: #2a2a2a;
-  font-family: var(--font);
-  font-size: 0.55rem;
-  line-height: 1.2;
-  white-space: pre;
+  width: 280px;
+  max-width: 60%;
+  opacity: 0.05;
+  filter: grayscale(1);
   pointer-events: none;
   user-select: none;
   z-index: 0;
@@ -353,15 +352,10 @@ header {
 .cursor-inline { display: inline; margin-left: 1px; }
 @keyframes blink { 50% { opacity: 0; } }
 
-@keyframes breathe {
-  0%, 100% { opacity: 0.35; }
-  50%       { opacity: 1; }
-}
 .status-text {
   color: var(--fg-dim);
   font-size: 0.95rem;
   letter-spacing: 0.04em;
-  animation: breathe 1.6s ease-in-out infinite;
 }
 
 /* links inside AI responses */
@@ -649,95 +643,6 @@ header {
   margin-top: 16px;
 }
 
-/* ── PIN Gate ── */
-.pin-gate {
-  position: fixed;
-  inset: 0;
-  background: var(--bg);
-  z-index: 99999;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.pin-inner {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 22px;
-  width: 100%;
-  max-width: 300px;
-  padding: 24px 16px;
-}
-
-.pin-logo {
-  font-family: var(--font);
-  font-size: 1.6rem;
-  font-weight: bold;
-  letter-spacing: 0.3em;
-  color: var(--accent);
-}
-
-.pin-title {
-  font-family: var(--font);
-  font-size: 0.72rem;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--fg-dim);
-}
-
-.pin-dots { display: flex; gap: 18px; }
-
-.pin-dot {
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  border: 1px solid var(--blue);
-  transition: background 0.12s;
-}
-.pin-dot.filled { background: var(--blue); }
-
-.pin-pad {
-  display: grid;
-  grid-template-columns: repeat(3, 64px);
-  gap: 10px;
-}
-
-.pin-key {
-  width: 64px;
-  height: 64px;
-  background: transparent;
-  border: 1px solid var(--blue);
-  color: var(--fg);
-  font-family: var(--font);
-  font-size: 1.2rem;
-  cursor: pointer;
-  transition: background 0.1s, color 0.1s;
-}
-.pin-key:hover,
-.pin-key:active { background: var(--blue); color: #000; }
-
-.pin-key--del { border-color: var(--border); color: var(--fg-dim); font-size: 1rem; }
-.pin-key--del:hover,
-.pin-key--del:active { background: var(--border); color: var(--fg); }
-
-.pin-error {
-  font-family: var(--font);
-  font-size: 0.72rem;
-  color: var(--red);
-  letter-spacing: 0.1em;
-  min-height: 1em;
-  text-align: center;
-}
-
-.pin-guest-hint {
-  font-family: var(--font);
-  font-size: 0.62rem;
-  color: var(--fg-dim);
-  letter-spacing: 0.1em;
-  opacity: 0.45;
-}
-
 /* ── PWA prompt ── */
 .pwa-prompt {
   position: absolute;
@@ -802,10 +707,7 @@ header {
     font-size: 1.1rem;
   }
 
-  .bg-art {
-    font-size: 0.28rem;
-    line-height: 1.15;
-  }
+  .bg-skull { width: 200px; }
 
   .messages-area {
     padding: 16px 12px;
@@ -841,12 +743,6 @@ header {
   .send-btn { width: 40px; height: 40px; }
 
   .drawer-panel { width: 100%; }
-
-  .pin-pad {
-    grid-template-columns: repeat(3, 76px);
-    gap: 12px;
-  }
-  .pin-key { width: 76px; height: 76px; }
 
   .conv-header-title { display: none; }
 }

@@ -315,6 +315,8 @@ export default function ChatView({ auth, onLockout }) {
           autoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
         }}
       >
+        <img src="/skull.png" className="bg-skull" aria-hidden="true" alt="" />
+
         {messages.length === 0 && !pending && (
           <div className="welcome"><p>How can I help?</p></div>
         )}

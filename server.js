@@ -41,6 +41,11 @@ async function initDb() {
   `);
 }
 
+// Global lockout, not per-IP — single-user app, single PIN, no accounts.
+// 5 wrong hashes in a row locks /api/pin/verify for 5 minutes, closing the
+// brute-force window a 4-digit space would otherwise leave wide open.
+const pinLockout = { fails: 0, until: 0 };
+
 // ── Auth tokens ───────────────────────────────────────────
 function djb2(str) {
   let h = 0;
@@ -140,14 +145,18 @@ async function handlePin(req, res) {
   }
 
   if (url === '/api/pin/verify') {
+    if (Date.now() < pinLockout.until) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, locked: true })); return; }
     const { hash } = body;
     const { rows } = await pool.query("SELECT value FROM settings WHERE key='owner_pin_hash'");
     if (rows.length && rows[0].value === hash) {
+      pinLockout.fails = 0;
       const token = signToken('owner');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true, token, role: 'owner' }));
       return;
     }
+    pinLockout.fails++;
+    if (pinLockout.fails >= 5) pinLockout.until = Date.now() + 5 * 60 * 1000;
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: false }));
   }
