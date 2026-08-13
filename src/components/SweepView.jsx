@@ -2,7 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import { DitherField, CrtLayers, BACKDROP_CSS, INK, AMBER } from './CrtBackdrop.jsx';
 import { authHeaders } from '../api.js';
 
-const CONTENT_MAX = 560;
+const CONTENT_MAX = 700; // must match .app-shell's max-width in style.css (chat) —
+// chat and sweep are a toggle pair, so their headers need to land at the
+// same screen position or the nav buttons visibly jump when switching
 
 const CSS = BACKDROP_CSS + `
 @keyframes rv-blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }

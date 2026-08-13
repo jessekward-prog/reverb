@@ -443,6 +443,17 @@ async function handleSweepDone(req, res, id) {
   res.end('{"ok":true}');
 }
 
+const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
+function decodeEntities(s) {
+  return s.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (m, ent) => {
+    if (ent[0] === '#') {
+      const code = ent[1] === 'x' || ent[1] === 'X' ? parseInt(ent.slice(2), 16) : parseInt(ent.slice(1), 10);
+      return Number.isNaN(code) ? m : String.fromCodePoint(code);
+    }
+    return HTML_ENTITIES[ent.toLowerCase()] ?? m;
+  });
+}
+
 // Scrapes OG tags for a link-preview card under a chat message. Ported from
 // bit-prompt's /api/link-preview (same regex approach, no new dependency).
 async function handleLinkPreview(req, res) {
@@ -470,7 +481,7 @@ async function handleLinkPreview(req, res) {
       html += new TextDecoder().decode(value);
       if (html.length > 100000) break;
     }
-    const meta = (patterns) => { for (const p of patterns) { const m = html.match(p); if (m?.[1]) return m[1].trim(); } return ''; };
+    const meta = (patterns) => { for (const p of patterns) { const m = html.match(p); if (m?.[1]) return decodeEntities(m[1].trim()); } return ''; };
     const title       = meta([/property="og:title"\s+content="([^"]+)"/i, /content="([^"]+)"\s+property="og:title"/i, /<title[^>]*>([^<]+)<\/title>/i]);
     const description = meta([/property="og:description"\s+content="([^"]+)"/i, /content="([^"]+)"\s+property="og:description"/i, /name="description"\s+content="([^"]+)"/i]);
     let image         = meta([/property="og:image"\s+content="([^"]+)"/i, /content="([^"]+)"\s+property="og:image"/i]);
