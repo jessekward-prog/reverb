@@ -431,7 +431,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
                   className="msg-body"
                   dangerouslySetInnerHTML={{ __html: renderText(msg.content) }}
                 />
-                {msg.role === 'assistant' && <LinkPreview content={msg.content} token={auth.token} />}
+                <LinkPreview content={msg.content} token={auth.token} />
                 {msg.created_at && <div className="msg-time">{timeLabel(msg.created_at)}</div>}
               </div>
             </React.Fragment>
