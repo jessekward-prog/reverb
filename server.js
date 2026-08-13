@@ -12,7 +12,7 @@ import {
 const { Pool } = pg;
 
 const PORT         = process.env.PORT || 3000;
-const LM_URL       = process.env.LM_STUDIO_BASE_URL || 'http://localhost:1234';
+const LM_URL       = process.env.LM_STUDIO_BASE_URL || 'http://localhost:1235';
 const TOKEN_SECRET = process.env.TOKEN_SECRET || 'dev-secret-change-in-prod';
 const DIST         = join(fileURLToPath(import.meta.url), '..', 'dist');
 
