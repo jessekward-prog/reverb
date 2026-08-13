@@ -7,7 +7,7 @@ import { playThinkingBeep, playDoneBeep } from '../audio.js';
 
 const DEFAULT_SYSTEM = 'You are Reverb, a personal assistant with access to the user\'s texts, calendar, and email. You have three tools: get_recent_texts, get_upcoming_events, and get_recent_emails. Use them whenever the user asks about messages, their schedule, or their inbox — never guess at this information. Answer everything else from your own knowledge.';
 
-const PREFER_MODEL   = 'supergemma4-e4b';
+const PREFER_MODEL   = 'gemma-4-e4b';
 const URL_RE          = /https?:\/\/[^\s<>"']+/i;
 const linkPreviewCache = new Map();
 
