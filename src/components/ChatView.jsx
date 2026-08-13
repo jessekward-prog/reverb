@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import HistoryDrawer from './HistoryDrawer.jsx';
 import SettingsDrawer from './SettingsDrawer.jsx';
+import { Stage } from './CrtBackdrop.jsx';
 import { authHeaders, renderText } from '../api.js';
 import { playThinkingBeep, playDoneBeep } from '../audio.js';
 
@@ -282,6 +283,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
 
   // ── Render ───────────────────────────────────────────────
   return (
+    <Stage>
     <div className="app-shell">
       {/* Header */}
       <header>
@@ -423,5 +425,6 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
         </div>
       )}
     </div>
+    </Stage>
   );
 }
