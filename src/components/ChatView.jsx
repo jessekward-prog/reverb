@@ -352,7 +352,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
   return (
     <div className="app-backdrop">
     <style>{BACKDROP_CSS}</style>
-    <DitherField pushRef={pushRipple} centerYFrac={0.4} />
+    <DitherField pushRef={pushRipple} />
     <CrtLayers />
     <div className="app-shell">
       {/* Header — same title-left / toggle-right pattern as Sweep */}
