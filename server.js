@@ -5,8 +5,8 @@ import { fileURLToPath } from 'url';
 import { createHmac, createHash } from 'crypto';
 import pg from 'pg';
 import {
-  TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL,
-  getRecentTexts, getUpcomingEvents, getRecentEmails,
+  TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL,
+  getRecentTexts, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
 } from './src/lib/tools.js';
 
 const { Pool } = pg;
@@ -278,7 +278,7 @@ async function proxyModels(req, res) {
   }
 }
 
-const TOOLS = [TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL];
+const TOOLS = [TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
 
 async function proxyChat(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
@@ -319,6 +319,15 @@ async function proxyChat(req, res) {
       } else if (tc.function.name === 'get_recent_emails') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking email…' })}\n\n`);
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await getRecentEmails(args) });
+      } else if (tc.function.name === 'get_recent_business_emails') {
+        res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking business email…' })}\n\n`);
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await getRecentBusinessEmails(args) });
+      } else if (tc.function.name === 'get_recent_notifications') {
+        res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking WhatsApp/Messenger/Instagram…' })}\n\n`);
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await getRecentNotifications(args) });
+      } else if (tc.function.name === 'get_switchcraft_jobs') {
+        res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking Switch Craft jobs…' })}\n\n`);
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await getSwitchcraftJobs() });
       }
     }
     const final = await fetch(`${LM_URL}/v1/chat/completions`, {
@@ -359,17 +368,22 @@ const countLines = s => (s || '').split('\n').filter(Boolean).length;
 async function handleSweep(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
 
-  const [texts, events, emails] = await Promise.all([
+  const [texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobs] = await Promise.all([
     getRecentTexts({ limit: 40 }),
     getUpcomingEvents({ days_ahead: 7 }),
     getRecentEmails({ limit: 30 }),
+    getRecentBusinessEmails({ limit: 30 }),
+    getRecentNotifications({ source: 'whatsapp', limit: 30 }),
+    getRecentNotifications({ source: 'messenger', limit: 30 }),
+    getRecentNotifications({ source: 'instagram', limit: 30 }),
+    getSwitchcraftJobs(),
   ]);
 
   const today = new Date().toISOString().slice(0, 10);
-  const prompt = `Today is ${today}. Read the raw data below from three sources (texts, calendar, email) and produce a JSON array of action items — things the user owes a reply on, needs to act on, or should know about. Ignore routine or no-action items (read receipts, newsletters, confirmations needing no response).
+  const prompt = `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs) and produce a JSON array of action items — things the user owes a reply on, needs to act on, or should know about. Ignore routine or no-action items (read receipts, newsletters, confirmations needing no response).
 
 Respond with ONLY a JSON array, no prose, no markdown fences. Each item:
-{"kind":"sms"|"email"|"cal","from":"string","when":"short string like '2d' or 'tomorrow 09:00'","bucket":0|1|2,"text":"imperative one-line action","snippet":"verbatim quote from the source, never paraphrase","reply":true|false}
+{"kind":"sms"|"email"|"cal"|"bizemail"|"whatsapp"|"messenger"|"instagram"|"job","from":"string","when":"short string like '2d' or 'tomorrow 09:00'","bucket":0|1|2,"text":"imperative one-line action","snippet":"verbatim quote from the source, never paraphrase","reply":true|false}
 bucket: 0 = needs a reply, 1 = this week, 2 = no specific date.
 reply: true only if the action is answering someone directly.
 If nothing needs action, respond with [].
@@ -381,7 +395,22 @@ CALENDAR:
 ${events}
 
 EMAIL:
-${emails}`;
+${emails}
+
+BUSINESS EMAIL:
+${bizEmails}
+
+WHATSAPP:
+${whatsapp}
+
+MESSENGER:
+${messenger}
+
+INSTAGRAM:
+${instagram}
+
+SWITCH CRAFT JOBS:
+${jobs}`;
 
   let raw;
   try {
@@ -417,15 +446,23 @@ ${emails}`;
     .map(t => ({ ...t, id: taskId(t) }))
     .filter(t => !doneSet.has(t.id));
 
+  const countEmailBlock = s => (s.includes('No matching') ? 0 : s.split('\n\n').filter(Boolean).length);
   const countBy = k => tasks.filter(t => t.kind === k).length;
+  const emailCount = countEmailBlock(emails);
+  const bizEmailCount = countEmailBlock(bizEmails);
   const counts = {
-    sms:   `${countLines(texts)} msgs · ${countBy('sms')}`,
-    email: `${emails.includes('No matching') ? 0 : emails.split('\n\n').filter(Boolean).length} msgs · ${countBy('email')}`,
-    cal:   `${countLines(events)} events · ${countBy('cal')}`,
-    call:  'not connected',
+    sms:       `${countLines(texts)} msgs · ${countBy('sms')}`,
+    email:     `${emailCount} msgs · ${countBy('email')}`,
+    cal:       `${countLines(events)} events · ${countBy('cal')}`,
+    call:      'not connected',
+    bizemail:  `${bizEmailCount} msgs · ${countBy('bizemail')}`,
+    whatsapp:  `${countLines(whatsapp)} msgs · ${countBy('whatsapp')}`,
+    messenger: `${countLines(messenger)} msgs · ${countBy('messenger')}`,
+    instagram: `${countLines(instagram)} msgs · ${countBy('instagram')}`,
+    job:       `${countLines(jobs)} jobs · ${countBy('job')}`,
   };
-  const scanned = countLines(texts) + countLines(events)
-    + (emails.includes('No matching') ? 0 : emails.split('\n\n').filter(Boolean).length);
+  const scanned = countLines(texts) + countLines(events) + emailCount + bizEmailCount
+    + countLines(whatsapp) + countLines(messenger) + countLines(instagram) + countLines(jobs);
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ scanned, counts, tasks }));

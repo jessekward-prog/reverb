@@ -42,6 +42,45 @@ export const EMAIL_TOOL = {
   },
 };
 
+export const BUSINESS_EMAIL_TOOL = {
+  type: 'function',
+  function: {
+    name: 'get_recent_business_emails',
+    description: 'Get recent Gmail messages from the separate business account (scegeelong@gmail.com), not the personal inbox. Use for questions like "any new business emails".',
+    parameters: {
+      type: 'object',
+      properties: {
+        unread_only: { type: 'boolean', description: 'Only return unread emails, default false' },
+        limit:       { type: 'integer', description: 'Max emails to return, default 10' },
+      },
+    },
+  },
+};
+
+export const NOTIFICATIONS_TOOL = {
+  type: 'function',
+  function: {
+    name: 'get_recent_notifications',
+    description: 'Get recent WhatsApp, Messenger, or Instagram DM notifications captured from the phone. These are notification-preview text only (often truncated, no full thread) — not a full inbox mirror. Use for questions like "any new WhatsApp messages".',
+    parameters: {
+      type: 'object',
+      properties: {
+        source: { type: 'string', enum: ['whatsapp', 'messenger', 'instagram'], description: 'Optional: filter to one app. Omit to get all three.' },
+        limit:  { type: 'integer', description: 'Max notifications to return, default 30' },
+      },
+    },
+  },
+};
+
+export const SWITCHCRAFT_JOBS_TOOL = {
+  type: 'function',
+  function: {
+    name: 'get_switchcraft_jobs',
+    description: 'Get non-completed jobs from the Switch Craft Electrics booking system — pending, accepted, in-progress, and quoted work. Use for questions like "what jobs are on" or "any unquoted work".',
+    parameters: { type: 'object', properties: {} },
+  },
+};
+
 export async function getRecentTexts({ contact, limit = 20 } = {}) {
   const params = new URLSearchParams({ limit: String(limit) });
   if (contact) params.set('contact', contact);
@@ -83,4 +122,47 @@ export async function getRecentEmails({ unread_only = false, limit = 10 } = {}) 
   const emails = await r.json();
   if (!emails.length) return 'No matching emails found.';
   return emails.map(e => `From: ${e.from}\nSubject: ${e.subject}\n${e.snippet}`).join('\n\n');
+}
+
+export async function getRecentBusinessEmails({ unread_only = false, limit = 10 } = {}) {
+  const params = new URLSearchParams({ unreadOnly: String(unread_only), limit: String(limit) });
+  let r;
+  try {
+    r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/google/gmail/recent/business?${params}`, {
+      headers: { 'X-Service-Token': process.env.LIFECMD_SERVICE_TOKEN },
+    });
+  } catch (err) { return `Could not reach business Gmail via LIFE_CMD: ${err.message}`; }
+  if (!r.ok) return `Could not reach business Gmail via LIFE_CMD (status ${r.status})`;
+  const emails = await r.json();
+  if (!emails.length) return 'No matching business emails found.';
+  return emails.map(e => `From: ${e.from}\nSubject: ${e.subject}\n${e.snippet}`).join('\n\n');
+}
+
+export async function getRecentNotifications({ source, limit = 30 } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (source) params.set('source', source);
+  let r;
+  try {
+    r = await fetch(`${process.env.NOTIFY_CMD_BASE_URL}/api/notifications/recent?${params}`, {
+      headers: { 'X-Service-Token': process.env.NOTIFY_CMD_SERVICE_TOKEN },
+    });
+  } catch (err) { return `Could not reach notify-cmd: ${err.message}`; }
+  if (!r.ok) return `Could not reach notify-cmd (status ${r.status})`;
+  const notifs = await r.json();
+  if (!notifs.length) return 'No matching notifications found.';
+  return notifs.map(n => `[${n.occurred_at}] ${n.source} — ${n.sender || 'unknown'}: ${n.body || ''}`).join('\n');
+}
+
+export async function getSwitchcraftJobs() {
+  let r;
+  try {
+    r = await fetch(`${process.env.SWITCHCRAFT_BASE_URL}/api/reverb/jobs?key=${process.env.SWITCHCRAFT_FEED_KEY}`);
+  } catch (err) { return `Could not reach switch-craft-booking: ${err.message}`; }
+  if (!r.ok) return `Could not reach switch-craft-booking (status ${r.status})`;
+  const jobs = await r.json();
+  if (!jobs.length) return 'No open jobs found.';
+  return jobs.map(j => {
+    const when = j.scheduled_date ? `${j.scheduled_date.slice(0, 10)}${j.scheduled_time ? ' ' + j.scheduled_time : ''}` : 'unscheduled';
+    return `[${j.status}] ${when} — ${j.description} (${j.client_name || 'unknown client'})`;
+  }).join('\n');
 }
