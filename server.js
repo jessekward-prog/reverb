@@ -13,6 +13,7 @@ const { Pool } = pg;
 
 const PORT         = process.env.PORT || 3000;
 const LM_URL       = process.env.LM_STUDIO_BASE_URL || 'http://localhost:1235';
+const LM_HEADERS   = { 'Content-Type': 'application/json', ...(process.env.LM_STUDIO_API_KEY ? { Authorization: `Bearer ${process.env.LM_STUDIO_API_KEY}` } : {}) };
 const TOKEN_SECRET = process.env.TOKEN_SECRET || 'dev-secret-change-in-prod';
 const DIST         = join(fileURLToPath(import.meta.url), '..', 'dist');
 
@@ -229,7 +230,7 @@ async function generateTitle(model, userText, aiText) {
   try {
     const r = await fetch(`${LM_URL}/v1/chat/completions`, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: LM_HEADERS,
       body: JSON.stringify({
         model,
         messages: [{
@@ -263,7 +264,7 @@ async function autoTitle(conversationId, model) {
 async function proxyModels(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
   try {
-    const upstream = await fetch(`${LM_URL}/v1/models`);
+    const upstream = await fetch(`${LM_URL}/v1/models`, { headers: LM_HEADERS });
     const data = await upstream.json();
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(data));
@@ -285,7 +286,7 @@ async function proxyChat(req, res) {
     const r = await fetch(`${LM_URL}/v1/chat/completions`, {
       signal: abort,
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: LM_HEADERS,
       body: JSON.stringify({ model: body.model, messages: body.messages, tools: TOOLS, tool_choice: 'auto', stream: false }),
     });
     firstData = await r.json();
@@ -318,7 +319,7 @@ async function proxyChat(req, res) {
     }
     const final = await fetch(`${LM_URL}/v1/chat/completions`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: LM_HEADERS,
       body: JSON.stringify({ model: body.model, messages: [...body.messages, ...toolMessages], stream: true }),
     });
     const reader = final.body.getReader();
