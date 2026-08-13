@@ -9,6 +9,7 @@ export default defineConfig({
     tailwindcss(),
     VitePWA({
       registerType: 'autoUpdate',
+      injectRegister: false,
       includeAssets: ['icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'skull.png'],
       manifest: {
         name: 'Reverb',
@@ -29,6 +30,9 @@ export default defineConfig({
         globPatterns: ['**/*.{js,css,html,png,svg,ico,woff2,webmanifest}'],
         navigateFallback: 'index.html',
         navigateFallbackDenylist: [/^\/api\//],
+        cleanupOutdatedCaches: true,
+        skipWaiting: true,
+        clientsClaim: true,
         runtimeCaching: [
           {
             // API calls always hit the network — never serve from cache
