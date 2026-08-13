@@ -9,7 +9,7 @@ const DEFAULT_SYSTEM = 'You are Reverb, a personal assistant with access to the 
 const PREFER_MODEL   = 'supergemma4-e4b';
 
 
-export default function ChatView({ auth, onLockout }) {
+export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, onDraftConsumed }) {
   const [messages, setMessages]       = useState([]);
   const [pending, setPending]         = useState(null); // {status, text} | {retry, fn} | null
   const [convId, setConvId]           = useState(null);
@@ -51,6 +51,15 @@ export default function ChatView({ auth, onLockout }) {
   useEffect(() => {
     if (autoScrollRef.current) messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, pending]);
+
+  // Pre-fills the input from a Sweep "draft reply" — never auto-sends, the
+  // user still reviews and hits send themselves.
+  useEffect(() => {
+    if (!draftPrompt) return;
+    setInputText(draftPrompt);
+    inputRef.current?.focus();
+    onDraftConsumed?.();
+  }, [draftPrompt, onDraftConsumed]);
 
   useEffect(() => {
     if (!showModelPicker) return;
@@ -300,6 +309,7 @@ export default function ChatView({ auth, onLockout }) {
               </div>
             )}
           </div>
+          <button className="icon-header-btn" title="Sweep" onClick={() => onOpenSweep?.()}>&#9635;</button>
           <button className="icon-header-btn" title="Chats" onClick={() => setShowHistory(true)}>&#9776;</button>
           <button className="icon-header-btn" title="Settings" onClick={() => setShowSettings(true)}>&#9881;</button>
         </div>

@@ -275,7 +275,7 @@ export default function PinGate({ mode: initialMode = 'enter', onAuth }) {
       <div style={{
         position: 'relative', display: 'flex', flexDirection: 'column', height: '100%',
         padding: '22px 20px 26px', boxSizing: 'border-box',
-        textShadow: '.8px 0 rgba(255,60,90,.28), -.8px 0 rgba(60,200,255,.24)',
+        textShadow: '.5px 0 rgba(255,60,90,.1), -.5px 0 rgba(60,200,255,.09)',
       }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
