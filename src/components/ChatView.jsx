@@ -8,6 +8,63 @@ import { playThinkingBeep, playDoneBeep } from '../audio.js';
 const DEFAULT_SYSTEM = 'You are Reverb, a personal assistant with access to the user\'s texts, calendar, and email. You have three tools: get_recent_texts, get_upcoming_events, and get_recent_emails. Use them whenever the user asks about messages, their schedule, or their inbox — never guess at this information. Answer everything else from your own knowledge.';
 
 const PREFER_MODEL   = 'supergemma4-e4b';
+const URL_RE          = /https?:\/\/[^\s<>"']+/i;
+const linkPreviewCache = new Map();
+
+function dayKey(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+function dateLabelFor(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  const today = new Date();
+  const yest  = new Date(); yest.setDate(today.getDate() - 1);
+  if (dayKey(iso) === dayKey(today.toISOString())) return 'today';
+  if (dayKey(iso) === dayKey(yest.toISOString())) return 'yesterday';
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function timeLabel(iso) {
+  if (!iso) return '';
+  return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+
+/* Scans a message for a URL and renders a preview card underneath it —
+ * ported from bit-prompt's attachLinkPreview, adapted to fetch via React
+ * state instead of imperative DOM appendChild. */
+function LinkPreview({ content, token }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    const match = content.match(URL_RE);
+    if (!match) { setData(null); return; }
+    const url = match[0];
+    const cached = linkPreviewCache.get(url);
+    if (cached) { setData(cached); return; }
+    let cancelled = false;
+    fetch(`/api/link-preview?url=${encodeURIComponent(url)}`, { headers: authHeaders(token) })
+      .then(r => r.json())
+      .then(d => {
+        if (cancelled || d.error || (!d.title && !d.image)) return;
+        linkPreviewCache.set(url, d);
+        setData(d);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [content, token]);
+
+  if (!data) return null;
+  return (
+    <a className="link-preview" href={data.url} target="_blank" rel="noopener noreferrer">
+      {data.image && <img src={data.image} alt="" onError={e => e.target.remove()} />}
+      <div className="link-preview-text">
+        {data.domain && <div className="link-preview-domain">{data.domain}</div>}
+        {data.title && <div className="link-preview-title">{data.title}</div>}
+        {data.description && <div className="link-preview-desc">{data.description}</div>}
+      </div>
+    </a>
+  );
+}
 
 
 export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, onDraftConsumed }) {
@@ -24,6 +81,8 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
   const [showSettings, setShowSettings]     = useState(false);
   const [showModelPicker, setShowModelPicker] = useState(false);
   const [pwaPrompt, setPwaPrompt]           = useState(null);
+  const [showScrollBtn, setShowScrollBtn]   = useState(false);
+  const [lightboxSrc, setLightboxSrc]       = useState(null);
 
   const isStreamingRef  = useRef(false);
   const receivedRef     = useRef('');
@@ -147,7 +206,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
     streamDoneRef.current = false;
     clearInterval(revealTimerRef.current);
 
-    const userMsg = { id: Date.now(), role: 'user', content: userText };
+    const userMsg = { id: Date.now(), role: 'user', content: userText, created_at: new Date().toISOString() };
     const nextMessages = [...priorMessages, userMsg];
     setMessages(nextMessages);
     setPending({ status: null, text: '' });
@@ -175,7 +234,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
       const finalText = receivedRef.current;
       if (!finalText.trim()) { showRetry(); return; }
 
-      const aiMsg = { id: Date.now() + 1, role: 'assistant', content: finalText };
+      const aiMsg = { id: Date.now() + 1, role: 'assistant', content: finalText, created_at: new Date().toISOString() };
       setMessages(prev => [...prev, aiMsg]);
       setPending(null);
 
@@ -284,16 +343,36 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
   }
 
   // ── Render ───────────────────────────────────────────────
+  const navBtn = (active) => ({
+    appearance: 'none', border: 0, margin: 0, background: active ? 'rgba(232,232,228,.14)' : '#060606',
+    color: '#e8e8e4', fontFamily: 'inherit', fontSize: 11, letterSpacing: '.06em',
+    textTransform: 'uppercase', padding: '7px 10px', cursor: 'pointer',
+  });
+
   return (
     <div className="app-backdrop">
     <DitherField pushRef={pushRipple} centerYFrac={0.4} />
     <CrtLayers />
     <div className="app-shell">
-      {/* Header */}
-      <header>
-        <span className="logo">REVERB</span>
-        {convTitle && <span className="conv-header-title">{convTitle}</span>}
-        <div className="header-controls">
+      {/* Header — same title-left / toggle-right pattern as Sweep */}
+      <header style={{
+        display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
+        gap: 12, padding: '20px 20px 14px', position: 'static', minHeight: 0,
+        background: 'none', border: 'none',
+      }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase' }}>// reverb</div>
+          <div style={{ opacity: .45, fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 }}>
+            {convTitle || 'new conversation'}
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+          <div style={{ display: 'flex', gap: 1, background: 'rgba(232,232,228,.18)',
+                        border: '1px solid rgba(232,232,228,.18)' }}>
+            <button type="button" style={navBtn(true)}>chat</button>
+            <button type="button" style={navBtn(false)} onClick={() => onOpenSweep?.()}>sweep</button>
+          </div>
           <div className="model-picker-wrap" ref={modelPickerRef}>
             <button
               className="icon-header-btn"
@@ -315,7 +394,6 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
               </div>
             )}
           </div>
-          <button className="icon-header-btn" title="Sweep" onClick={() => onOpenSweep?.()}>&#9635;</button>
           <button className="icon-header-btn" title="Chats" onClick={() => setShowHistory(true)}>&#9776;</button>
           <button className="icon-header-btn" title="Settings" onClick={() => setShowSettings(true)}>&#9881;</button>
         </div>
@@ -328,22 +406,36 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
         onScroll={() => {
           const el = messagesAreaRef.current;
           if (!el) return;
-          autoScrollRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          autoScrollRef.current = nearBottom;
+          setShowScrollBtn(!nearBottom);
+        }}
+        onClick={e => {
+          if (e.target.tagName === 'IMG' && e.target.closest('.msg-body')) setLightboxSrc(e.target.src);
         }}
       >
         {messages.length === 0 && !pending && (
           <div className="welcome"><p>How can I help?</p></div>
         )}
 
-        {messages.map(msg => (
-          <div key={msg.id} className={`msg ${msg.role}`}>
-            <div className="msg-role">{msg.role === 'user' ? 'You' : 'Reverb'}</div>
-            <div
-              className="msg-body"
-              dangerouslySetInnerHTML={{ __html: renderText(msg.content) }}
-            />
-          </div>
-        ))}
+        {messages.map((msg, i) => {
+          const prev = messages[i - 1];
+          const showDateSep = !prev || dayKey(prev.created_at) !== dayKey(msg.created_at);
+          return (
+            <React.Fragment key={msg.id}>
+              {showDateSep && <div className="date-sep">{dateLabelFor(msg.created_at)}</div>}
+              <div className={`msg ${msg.role}`}>
+                <div className="msg-role">{msg.role === 'user' ? 'You' : 'Reverb'}</div>
+                <div
+                  className="msg-body"
+                  dangerouslySetInnerHTML={{ __html: renderText(msg.content) }}
+                />
+                {msg.role === 'assistant' && <LinkPreview content={msg.content} token={auth.token} />}
+                {msg.created_at && <div className="msg-time">{timeLabel(msg.created_at)}</div>}
+              </div>
+            </React.Fragment>
+          );
+        })}
 
         {pending && (
           <div className="msg ai">
@@ -367,7 +459,26 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
         )}
 
         <div ref={messagesEndRef} />
+
+        {showScrollBtn && (
+          <button
+            type="button"
+            className="scroll-btn"
+            title="Scroll to latest"
+            onClick={() => {
+              autoScrollRef.current = true;
+              setShowScrollBtn(false);
+              messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            }}
+          >&#8595;</button>
+        )}
       </div>
+
+      {lightboxSrc && (
+        <div className="lightbox" onClick={() => setLightboxSrc(null)}>
+          <img src={lightboxSrc} alt="" />
+        </div>
+      )}
 
       {/* Input */}
       <form className="input-form" onSubmit={handleSubmit}>

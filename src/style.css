@@ -275,6 +275,130 @@ header {
 .msg-body strong { color: var(--accent); }
 .msg-body em { color: #bbb; }
 
+/* Images inside a response — clickable to open the lightbox (delegated
+   click handler in ChatView, this just signals it's interactive) */
+.msg-body img {
+  max-width: 100%;
+  cursor: zoom-in;
+  margin: 0.4em 0;
+  border: 1px solid var(--ink-dim);
+}
+
+/* ── Date separators ── */
+.date-sep {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 6px 0;
+  color: var(--fg-dim);
+  font-size: 0.65rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  position: relative;
+  z-index: 1;
+  align-self: stretch;
+}
+.date-sep::before, .date-sep::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--ink-dim);
+}
+
+/* ── Grouped consecutive messages — tighter gap, role label hidden on
+   the follow-up so a run of same-role messages reads as one block ── */
+.msg + .msg { margin-top: -8px; }
+.msg.user + .msg.user .msg-role,
+.msg.ai   + .msg.ai   .msg-role { display: none; }
+
+/* Hover-reveal timestamp, matching the AWAITING-INPUT-style chrome */
+.msg-time {
+  font-size: 0.62rem;
+  color: var(--fg-dim);
+  letter-spacing: 0.08em;
+  margin-top: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.msg:hover .msg-time { opacity: 0.6; }
+
+/* ── Scroll-to-bottom button ── */
+.scroll-btn {
+  position: absolute;
+  right: 20px;
+  bottom: 16px;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--accent);
+  background: rgba(6,6,6,.85);
+  color: var(--accent);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  z-index: 5;
+  transition: background 0.12s, color 0.12s;
+}
+.scroll-btn:hover { background: var(--accent); color: #060606; }
+
+/* ── Link preview card ── */
+.link-preview {
+  display: block;
+  margin-top: 8px;
+  border: 1px solid var(--ink-dim);
+  background: rgba(6,6,6,.5);
+  text-decoration: none;
+  color: inherit;
+  overflow: hidden;
+}
+.link-preview img {
+  width: 100%;
+  max-height: 140px;
+  object-fit: cover;
+  display: block;
+  margin: 0;
+  border: none;
+}
+.link-preview-text { padding: 8px 10px; }
+.link-preview-domain {
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  opacity: 0.8;
+  margin-bottom: 2px;
+}
+.link-preview-title { font-size: 0.85rem; color: var(--fg); line-height: 1.35; }
+.link-preview-desc {
+  font-size: 0.75rem;
+  color: var(--fg-dim);
+  margin-top: 2px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ── Lightbox ── */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 20000;
+  background: rgba(0,0,0,.9);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+  padding: 40px;
+}
+.lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  border: 1px solid var(--ink-dim);
+}
+
 /* streaming cursor */
 .cursor::after,
 .cursor-inline {

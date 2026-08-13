@@ -207,7 +207,7 @@ async function handleConversationMessages(req, res, id) {
 
   if (req.method === 'GET') {
     const { rows } = await pool.query(
-      'SELECT role, content FROM chat_messages WHERE conversation_id=$1 ORDER BY created_at ASC',
+      'SELECT role, content, created_at FROM chat_messages WHERE conversation_id=$1 ORDER BY created_at ASC',
       [id]
     );
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -443,6 +443,44 @@ async function handleSweepDone(req, res, id) {
   res.end('{"ok":true}');
 }
 
+// Scrapes OG tags for a link-preview card under a chat message. Ported from
+// bit-prompt's /api/link-preview (same regex approach, no new dependency).
+async function handleLinkPreview(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const { searchParams } = new URL(req.url, 'http://internal');
+  const url = searchParams.get('url');
+  if (!url) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'url required' })); return; }
+  let parsed;
+  try { parsed = new URL(url); } catch { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'invalid url' })); return; }
+  if (!['http:', 'https:'].includes(parsed.protocol)) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'invalid url' })); return; }
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  try {
+    const upstream = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LinkPreviewBot/1.0)' },
+      signal: AbortSignal.timeout(5000),
+    });
+    const contentType = upstream.headers.get('content-type') || '';
+    if (!contentType.includes('text/html')) { res.end(JSON.stringify({ domain: parsed.hostname, url })); return; }
+    const reader = upstream.body.getReader();
+    let html = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      html += new TextDecoder().decode(value);
+      if (html.length > 100000) break;
+    }
+    const meta = (patterns) => { for (const p of patterns) { const m = html.match(p); if (m?.[1]) return m[1].trim(); } return ''; };
+    const title       = meta([/property="og:title"\s+content="([^"]+)"/i, /content="([^"]+)"\s+property="og:title"/i, /<title[^>]*>([^<]+)<\/title>/i]);
+    const description = meta([/property="og:description"\s+content="([^"]+)"/i, /content="([^"]+)"\s+property="og:description"/i, /name="description"\s+content="([^"]+)"/i]);
+    let image         = meta([/property="og:image"\s+content="([^"]+)"/i, /content="([^"]+)"\s+property="og:image"/i]);
+    if (image && !image.startsWith('http')) { try { image = new URL(image, url).href; } catch { image = ''; } }
+    res.end(JSON.stringify({ title: title.slice(0, 200), description: description.slice(0, 300), image, domain: parsed.hostname, url }));
+  } catch {
+    res.end(JSON.stringify({ domain: parsed.hostname, url }));
+  }
+}
+
 // ── Router ────────────────────────────────────────────────
 createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -459,6 +497,7 @@ createServer(async (req, res) => {
     if (convMatch) return await handleConversationById(req, res, convMatch[1]);
     if (req.method === 'GET'  && u === '/api/models') return await proxyModels(req, res);
     if (req.method === 'POST' && u === '/api/chat')   return await proxyChat(req, res);
+    if (req.method === 'GET'  && u === '/api/link-preview') return await handleLinkPreview(req, res);
     if (req.method === 'POST' && u === '/api/sweep')  return await handleSweep(req, res);
     const sweepDoneMatch = u.match(/^\/api\/sweep\/([a-f0-9]+)\/done$/);
     if (sweepDoneMatch) return await handleSweepDone(req, res, sweepDoneMatch[1]);
