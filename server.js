@@ -16,6 +16,7 @@ const LM_URL       = process.env.LM_STUDIO_BASE_URL || 'http://localhost:1235';
 const LM_HEADERS   = { 'Content-Type': 'application/json', ...(process.env.LM_STUDIO_API_KEY ? { Authorization: `Bearer ${process.env.LM_STUDIO_API_KEY}` } : {}) };
 const TOKEN_SECRET = process.env.TOKEN_SECRET || 'dev-secret-change-in-prod';
 const DIST         = join(fileURLToPath(import.meta.url), '..', 'dist');
+const PREFER_MODEL  = 'gemma-4-e4b'; // matches ChatView.jsx's client-side preference
 
 // ── Postgres ──────────────────────────────────────────────
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -416,7 +417,8 @@ ${jobs}`;
   try {
     const modelsRes = await fetch(`${LM_URL}/v1/models`, { headers: LM_HEADERS });
     const models = await modelsRes.json();
-    const model = models.data?.[0]?.id;
+    const ids = (models.data || []).map(m => m.id);
+    const model = ids.find(id => id.toLowerCase().includes(PREFER_MODEL)) || ids[0];
     const cr = await fetch(`${LM_URL}/v1/chat/completions`, {
       signal: AbortSignal.timeout(120_000),
       method: 'POST',
