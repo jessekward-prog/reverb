@@ -379,21 +379,21 @@ function workItemId(t) {
 
 const countLines = s => (s || '').split('\n').filter(Boolean).length;
 
-async function gatherSources() {
+async function gatherSources(perSource = 20, jobsCap = 20) {
   const [texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobsRaw] = await Promise.all([
-    getRecentTexts({ limit: 20 }),
+    getRecentTexts({ limit: perSource }),
     getUpcomingEvents({ days_ahead: 7 }),
-    getRecentEmails({ limit: 15 }),
-    getRecentBusinessEmails({ limit: 15 }),
-    getRecentNotifications({ source: 'whatsapp', limit: 15 }),
-    getRecentNotifications({ source: 'messenger', limit: 15 }),
-    getRecentNotifications({ source: 'instagram', limit: 15 }),
+    getRecentEmails({ limit: Math.round(perSource * 0.75) }),
+    getRecentBusinessEmails({ limit: Math.round(perSource * 0.75) }),
+    getRecentNotifications({ source: 'whatsapp', limit: Math.round(perSource * 0.75) }),
+    getRecentNotifications({ source: 'messenger', limit: Math.round(perSource * 0.75) }),
+    getRecentNotifications({ source: 'instagram', limit: Math.round(perSource * 0.75) }),
     getSwitchcraftJobs(),
   ]);
   // getSwitchcraftJobs has no limit param (its endpoint caps at 50 server-side);
   // trim here too since job descriptions can be long free text and this is the
   // single biggest contributor to prompt size once there's real backlog.
-  const jobs = jobsRaw.split('\n').slice(0, 20).join('\n');
+  const jobs = jobsRaw.split('\n').slice(0, jobsCap).join('\n');
   return { texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobs };
 }
 
@@ -553,7 +553,10 @@ async function handleWork(req, res) {
 async function handleWorkScan(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
 
-  const sources = await gatherSources();
+  // Smaller than Sweep's — Work is a digest, not exhaustive per-item triage,
+  // and the summarize+categorize task already runs slower than Sweep's flat
+  // classification per token, so a lighter input matters more here.
+  const sources = await gatherSources(10, 10);
   const today = new Date().toISOString().slice(0, 10);
   const prompt = `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs).
 
