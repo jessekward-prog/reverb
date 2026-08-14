@@ -16,7 +16,13 @@ const LM_URL       = process.env.LM_STUDIO_BASE_URL || 'http://localhost:1235';
 const LM_HEADERS   = { 'Content-Type': 'application/json', ...(process.env.LM_STUDIO_API_KEY ? { Authorization: `Bearer ${process.env.LM_STUDIO_API_KEY}` } : {}) };
 const TOKEN_SECRET = process.env.TOKEN_SECRET || 'dev-secret-change-in-prod';
 const DIST         = join(fileURLToPath(import.meta.url), '..', 'dist');
-const PREFER_MODEL  = 'gemma-4-e4b'; // matches ChatView.jsx's client-side preference
+// Sweep/Work only — a plain instruct model, deliberately NOT gemma-4-e4b
+// (ChatView's client-side preference). gemma-4-e4b writes ~900 tokens of
+// hidden chain-of-thought before answering, which alone blew past the
+// Cloudflare tunnel's ~125s edge timeout on these background scan endpoints.
+// qwen2.5-7b-instruct does the same classification/summary task correctly
+// in ~7s with zero reasoning overhead.
+const PREFER_MODEL  = 'qwen2.5-7b-instruct';
 
 // ── Postgres ──────────────────────────────────────────────
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
