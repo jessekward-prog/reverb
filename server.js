@@ -433,10 +433,9 @@ async function pickModel() {
 async function askModel(prompt) {
   const model = await pickModel();
   const cr = await fetch(`${LM_URL}/v1/chat/completions`, {
-    // Bounds generation time to stay under the Cloudflare tunnel's ~100-125s
-    // edge timeout — Work's narrative-summary prompt runs noticeably longer
-    // than Sweep's terser per-item classification without this cap.
-    signal: AbortSignal.timeout(80_000),
+    // Cloudflare's tunnel edge timeout sits around 125s (observed via 524s);
+    // give generation up to just under that rather than aborting early.
+    signal: AbortSignal.timeout(115_000),
     method: 'POST',
     headers: LM_HEADERS,
     body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.2, max_tokens: 1400 }),
