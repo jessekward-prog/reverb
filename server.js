@@ -369,16 +369,20 @@ const countLines = s => (s || '').split('\n').filter(Boolean).length;
 async function handleSweep(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
 
-  const [texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobs] = await Promise.all([
-    getRecentTexts({ limit: 40 }),
+  const [texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobsRaw] = await Promise.all([
+    getRecentTexts({ limit: 20 }),
     getUpcomingEvents({ days_ahead: 7 }),
-    getRecentEmails({ limit: 30 }),
-    getRecentBusinessEmails({ limit: 30 }),
-    getRecentNotifications({ source: 'whatsapp', limit: 30 }),
-    getRecentNotifications({ source: 'messenger', limit: 30 }),
-    getRecentNotifications({ source: 'instagram', limit: 30 }),
+    getRecentEmails({ limit: 15 }),
+    getRecentBusinessEmails({ limit: 15 }),
+    getRecentNotifications({ source: 'whatsapp', limit: 15 }),
+    getRecentNotifications({ source: 'messenger', limit: 15 }),
+    getRecentNotifications({ source: 'instagram', limit: 15 }),
     getSwitchcraftJobs(),
   ]);
+  // getSwitchcraftJobs has no limit param (its endpoint caps at 50 server-side);
+  // trim here too since job descriptions can be long free text and this is the
+  // single biggest contributor to prompt size once there's real backlog.
+  const jobs = jobsRaw.split('\n').slice(0, 20).join('\n');
 
   const today = new Date().toISOString().slice(0, 10);
   const prompt = `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs) and produce a JSON array of action items — things the user owes a reply on, needs to act on, or should know about. Ignore routine or no-action items (read receipts, newsletters, confirmations needing no response).
