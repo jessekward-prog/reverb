@@ -439,7 +439,7 @@ async function askModel(prompt) {
     signal: AbortSignal.timeout(80_000),
     method: 'POST',
     headers: LM_HEADERS,
-    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.2, max_tokens: 1600 }),
+    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.2, max_tokens: 1400 }),
   });
   const data = await cr.json();
   return data.choices?.[0]?.message?.content || '';
@@ -558,10 +558,10 @@ async function handleWorkScan(req, res) {
   const today = new Date().toISOString().slice(0, 10);
   const prompt = `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs).
 
-Write a short natural-language summary (2-4 sentences) of how the day/week is shaping up, then group anything actionable into categories that make sense for what's actually here (e.g. "people to message back", "bills to pay", "jobs to schedule") — don't invent empty categories just to fill out a list.
+Write a 2-sentence summary of how the day/week is shaping up, then group the most important actionable items into at most 5 categories that make sense for what's actually here (e.g. "people to message back", "bills to pay", "jobs to schedule") — don't invent empty categories. Cap each category at 5 items — pick the most important/urgent ones if there are more. Keep "text" and "snippet" each under 100 characters.
 
 Respond with ONLY a JSON object, no prose outside it, no markdown fences:
-{"summary":"2-4 sentence overview","categories":[{"label":"short category name","items":[{"from":"string","when":"short string like '2d' or 'tomorrow 09:00'","text":"imperative one-line action","snippet":"verbatim quote from the source, never paraphrase","reply":true|false}]}]}
+{"summary":"2-sentence overview","categories":[{"label":"short category name","items":[{"from":"string","when":"short string like '2d' or 'tomorrow 09:00'","text":"imperative one-line action, under 100 chars","snippet":"verbatim quote from the source, under 100 chars, never paraphrase","reply":true|false}]}]}
 If nothing needs action, categories should be [] and the summary should say things look clear.
 
 ${sourcesBlock(sources)}`;
