@@ -81,19 +81,24 @@ export const SWITCHCRAFT_JOBS_TOOL = {
   },
 };
 
+// SMS flows through notify-cmd now (MacroDroid "SMS Received" trigger), not
+// text-cmd — that pipeline went stale (no ingested messages for a month) and
+// was abandoned rather than kept on life support. sender is a raw phone
+// number (no contact-name resolution available from this path), so the
+// `contact` filter matches against it as a substring.
 export async function getRecentTexts({ contact, limit = 20 } = {}) {
-  const params = new URLSearchParams({ limit: String(limit) });
-  if (contact) params.set('contact', contact);
+  const params = new URLSearchParams({ source: 'sms', limit: String(limit) });
   let r;
   try {
-    r = await fetch(`${process.env.TEXT_CMD_BASE_URL}/api/messages/recent?${params}`, {
-      headers: { 'X-Service-Token': process.env.TEXT_CMD_SERVICE_TOKEN },
+    r = await fetch(`${process.env.NOTIFY_CMD_BASE_URL}/api/notifications/recent?${params}`, {
+      headers: { 'X-Service-Token': process.env.NOTIFY_CMD_SERVICE_TOKEN },
     });
-  } catch (err) { return `Could not reach text-cmd: ${err.message}`; }
-  if (!r.ok) return `Could not reach text-cmd (status ${r.status})`;
-  const msgs = await r.json();
+  } catch (err) { return `Could not reach notify-cmd: ${err.message}`; }
+  if (!r.ok) return `Could not reach notify-cmd (status ${r.status})`;
+  let msgs = await r.json();
+  if (contact) msgs = msgs.filter(m => (m.sender || '').includes(contact));
   if (!msgs.length) return 'No matching text messages found.';
-  return msgs.map(m => `[${m.occurred_at}] ${m.contact_name || m.phone} (${m.direction === 'in' ? 'received' : 'sent'}): ${m.body}`).join('\n');
+  return msgs.map(m => `[${m.occurred_at}] ${m.sender}: ${m.body}`).join('\n');
 }
 
 export async function getUpcomingEvents({ days_ahead = 1 } = {}) {

@@ -3,13 +3,14 @@ import PinGate from './components/PinGate.jsx';
 import ChatView from './components/ChatView.jsx';
 import SweepView from './components/SweepView.jsx';
 import WorkView from './components/WorkView.jsx';
+import TextsView from './components/TextsView.jsx';
 import { getStoredAuth, saveAuth, clearStoredAuth } from './api.js';
 
 export default function App() {
   const [stage, setStage]     = useState('loading'); // 'loading' | 'pin' | 'chat'
   const [pinMode, setPinMode] = useState('enter');   // 'setup' | 'enter'
   const [auth, setAuth]       = useState({ token: null, role: null });
-  const [view, setView]       = useState('chat');    // 'chat' | 'sweep' | 'work'
+  const [view, setView]       = useState('chat');    // 'chat' | 'sweep' | 'work' | 'texts'
   const [draftPrompt, setDraftPrompt] = useState(null);
 
   useEffect(() => {
@@ -53,6 +54,7 @@ export default function App() {
       onLockout={handleLockout}
       onOpenChat={() => setView('chat')}
       onOpenWork={() => setView('work')}
+      onOpenTexts={() => setView('texts')}
       onDraftReply={stageDraft}
     />;
   }
@@ -62,7 +64,17 @@ export default function App() {
       onLockout={handleLockout}
       onOpenChat={() => setView('chat')}
       onOpenSweep={() => setView('sweep')}
+      onOpenTexts={() => setView('texts')}
       onDraftReply={stageDraft}
+    />;
+  }
+  if (view === 'texts') {
+    return <TextsView
+      auth={auth}
+      onLockout={handleLockout}
+      onOpenChat={() => setView('chat')}
+      onOpenSweep={() => setView('sweep')}
+      onOpenWork={() => setView('work')}
     />;
   }
   return <ChatView
@@ -70,6 +82,7 @@ export default function App() {
     onLockout={handleLockout}
     onOpenSweep={() => setView('sweep')}
     onOpenWork={() => setView('work')}
+    onOpenTexts={() => setView('texts')}
     draftPrompt={draftPrompt}
     onDraftConsumed={() => setDraftPrompt(null)}
   />;

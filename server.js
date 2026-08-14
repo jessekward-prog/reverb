@@ -600,6 +600,35 @@ ${sourcesBlock(sources)}`;
   res.end(JSON.stringify(await buildWorkResponse(summary, categories, new Date().toISOString())));
 }
 
+// ── Texts ─────────────────────────────────────────────────
+// Real SMS via MacroDroid -> notify-cmd (source=sms), grouped into threads
+// by phone number. No LLM involved — a straight read-and-group, so it's
+// always fast regardless of what's happening with the LM Studio backend.
+async function handleTexts(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const since = new Date(Date.now() - 5 * 86400000).toISOString();
+  const params = new URLSearchParams({ source: 'sms', limit: '500', since });
+  let msgs = [];
+  try {
+    const r = await fetch(`${process.env.NOTIFY_CMD_BASE_URL}/api/notifications/recent?${params}`, {
+      headers: { 'X-Service-Token': process.env.NOTIFY_CMD_SERVICE_TOKEN },
+    });
+    if (r.ok) msgs = await r.json();
+  } catch { /* threads stays empty, frontend shows the empty state */ }
+
+  const byPhone = new Map();
+  for (const m of msgs) {
+    if (!byPhone.has(m.sender)) byPhone.set(m.sender, []);
+    byPhone.get(m.sender).push({ id: m.id, body: m.body, occurred_at: m.occurred_at });
+  }
+  const threads = [...byPhone.entries()]
+    .map(([phone, messages]) => ({ phone, messages, lastAt: messages[messages.length - 1].occurred_at }))
+    .sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ threads }));
+}
+
 const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
 function decodeEntities(s) {
   return s.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (m, ent) => {
@@ -673,6 +702,7 @@ createServer(async (req, res) => {
     if (req.method === 'POST' && u === '/api/work/scan') return await handleWorkScan(req, res);
     const workDoneMatch = u.match(/^\/api\/work\/([a-f0-9]+)\/done$/);
     if (workDoneMatch) return await handleTaskDone(req, res, workDoneMatch[1]);
+    if (req.method === 'GET' && u === '/api/texts') return await handleTexts(req, res);
     return await serveStatic(req, res);
   } catch (err) {
     console.error(err);

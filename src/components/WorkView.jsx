@@ -60,7 +60,7 @@ function timeAgo(iso) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
-export default function WorkView({ auth, onLockout, onOpenChat, onOpenSweep, onDraftReply }) {
+export default function WorkView({ auth, onLockout, onOpenChat, onOpenSweep, onOpenTexts, onDraftReply }) {
   const [phase, setPhase] = useState('loading');   // 'loading' | 'idle' | 'scanning' | 'ready'
   const [summary, setSummary] = useState('');
   const [categories, setCategories] = useState([]);
@@ -165,6 +165,7 @@ export default function WorkView({ auth, onLockout, onOpenChat, onOpenSweep, onD
             <button type="button" style={navBtn(false)} onClick={() => onOpenChat?.()}>chat</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenSweep?.()}>sweep</button>
             <button type="button" style={navBtn(true)}>work</button>
+            <button type="button" style={navBtn(false)} onClick={() => onOpenTexts?.()}>texts</button>
           </div>
         </div>
 
