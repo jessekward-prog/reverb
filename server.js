@@ -433,10 +433,13 @@ async function pickModel() {
 async function askModel(prompt) {
   const model = await pickModel();
   const cr = await fetch(`${LM_URL}/v1/chat/completions`, {
-    signal: AbortSignal.timeout(120_000),
+    // Bounds generation time to stay under the Cloudflare tunnel's ~100-125s
+    // edge timeout — Work's narrative-summary prompt runs noticeably longer
+    // than Sweep's terser per-item classification without this cap.
+    signal: AbortSignal.timeout(80_000),
     method: 'POST',
     headers: LM_HEADERS,
-    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.2 }),
+    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.2, max_tokens: 1600 }),
   });
   const data = await cr.json();
   return data.choices?.[0]?.message?.content || '';
