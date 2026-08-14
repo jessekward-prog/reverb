@@ -44,6 +44,13 @@ async function initDb() {
       task_id    TEXT PRIMARY KEY,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
+    CREATE TABLE IF NOT EXISTS work_summary (
+      id         INTEGER PRIMARY KEY DEFAULT 1,
+      summary    TEXT NOT NULL,
+      categories JSONB NOT NULL,
+      scanned_at TIMESTAMPTZ NOT NULL,
+      CHECK (id = 1)
+    );
   `);
 }
 
@@ -356,7 +363,7 @@ async function proxyChat(req, res) {
   }
 }
 
-// ── Sweep ─────────────────────────────────────────────────
+// ── Sweep / Work shared source-gathering ───────────────────
 // Stable id derived from source content (not model output) so the same
 // underlying message/event maps to the same id across sweeps even though
 // the model regenerates the surrounding task list text each time.
@@ -364,11 +371,15 @@ function taskId(t) {
   return createHash('sha1').update(`${t.kind}|${t.from}|${t.snippet}`).digest('hex').slice(0, 12);
 }
 
+// Work's categories are dynamic/LLM-chosen, so the id can't depend on a
+// stable "kind" the way Sweep's does — hash on source content only.
+function workItemId(t) {
+  return createHash('sha1').update(`${t.from}|${t.snippet}`).digest('hex').slice(0, 12);
+}
+
 const countLines = s => (s || '').split('\n').filter(Boolean).length;
 
-async function handleSweep(req, res) {
-  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
-
+async function gatherSources() {
   const [texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobsRaw] = await Promise.all([
     getRecentTexts({ limit: 20 }),
     getUpcomingEvents({ days_ahead: 7 }),
@@ -383,17 +394,11 @@ async function handleSweep(req, res) {
   // trim here too since job descriptions can be long free text and this is the
   // single biggest contributor to prompt size once there's real backlog.
   const jobs = jobsRaw.split('\n').slice(0, 20).join('\n');
+  return { texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobs };
+}
 
-  const today = new Date().toISOString().slice(0, 10);
-  const prompt = `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs) and produce a JSON array of action items — things the user owes a reply on, needs to act on, or should know about. Ignore routine or no-action items (read receipts, newsletters, confirmations needing no response).
-
-Respond with ONLY a JSON array, no prose, no markdown fences. Each item:
-{"kind":"sms"|"email"|"cal"|"bizemail"|"whatsapp"|"messenger"|"instagram"|"job","from":"string","when":"short string like '2d' or 'tomorrow 09:00'","bucket":0|1|2,"text":"imperative one-line action","snippet":"verbatim quote from the source, never paraphrase","reply":true|false}
-bucket: 0 = needs a reply, 1 = this week, 2 = no specific date.
-reply: true only if the action is answering someone directly.
-If nothing needs action, respond with [].
-
-TEXTS:
+function sourcesBlock({ texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobs }) {
+  return `TEXTS:
 ${texts}
 
 CALENDAR:
@@ -416,33 +421,62 @@ ${instagram}
 
 SWITCH CRAFT JOBS:
 ${jobs}`;
+}
+
+async function pickModel() {
+  const modelsRes = await fetch(`${LM_URL}/v1/models`, { headers: LM_HEADERS });
+  const models = await modelsRes.json();
+  const ids = (models.data || []).map(m => m.id);
+  return ids.find(id => id.toLowerCase().includes(PREFER_MODEL)) || ids[0];
+}
+
+async function askModel(prompt) {
+  const model = await pickModel();
+  const cr = await fetch(`${LM_URL}/v1/chat/completions`, {
+    signal: AbortSignal.timeout(120_000),
+    method: 'POST',
+    headers: LM_HEADERS,
+    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.2 }),
+  });
+  const data = await cr.json();
+  return data.choices?.[0]?.message?.content || '';
+}
+
+function parseJsonFence(raw, fallback) {
+  try {
+    const cleaned = raw.trim().replace(/^```(?:json)?\n?/, '').replace(/```\s*$/, '');
+    return JSON.parse(cleaned);
+  } catch { return fallback; }
+}
+
+async function handleSweep(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+
+  const sources = await gatherSources();
+  const { texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobs } = sources;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const prompt = `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs) and produce a JSON array of action items — things the user owes a reply on, needs to act on, or should know about. Ignore routine or no-action items (read receipts, newsletters, confirmations needing no response).
+
+Respond with ONLY a JSON array, no prose, no markdown fences. Each item:
+{"kind":"sms"|"email"|"cal"|"bizemail"|"whatsapp"|"messenger"|"instagram"|"job","from":"string","when":"short string like '2d' or 'tomorrow 09:00'","bucket":0|1|2,"text":"imperative one-line action","snippet":"verbatim quote from the source, never paraphrase","reply":true|false}
+bucket: 0 = needs a reply, 1 = this week, 2 = no specific date.
+reply: true only if the action is answering someone directly.
+If nothing needs action, respond with [].
+
+${sourcesBlock(sources)}`;
 
   let raw;
   try {
-    const modelsRes = await fetch(`${LM_URL}/v1/models`, { headers: LM_HEADERS });
-    const models = await modelsRes.json();
-    const ids = (models.data || []).map(m => m.id);
-    const model = ids.find(id => id.toLowerCase().includes(PREFER_MODEL)) || ids[0];
-    const cr = await fetch(`${LM_URL}/v1/chat/completions`, {
-      signal: AbortSignal.timeout(120_000),
-      method: 'POST',
-      headers: LM_HEADERS,
-      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.2 }),
-    });
-    const data = await cr.json();
-    raw = data.choices?.[0]?.message?.content || '[]';
+    raw = await askModel(prompt);
   } catch (err) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ scanned: 0, counts: {}, tasks: [], error: 'LM Studio unreachable' }));
     return;
   }
 
-  let parsed = [];
-  try {
-    const cleaned = raw.trim().replace(/^```(?:json)?\n?/, '').replace(/```\s*$/, '');
-    parsed = JSON.parse(cleaned);
-    if (!Array.isArray(parsed)) parsed = [];
-  } catch { parsed = []; }
+  const parsedRaw = parseJsonFence(raw, []);
+  const parsed = Array.isArray(parsedRaw) ? parsedRaw : [];
 
   const { rows: doneRows } = await pool.query('SELECT task_id FROM swept_done');
   const doneSet = new Set(doneRows.map(r => r.task_id));
@@ -474,7 +508,9 @@ ${jobs}`;
   res.end(JSON.stringify({ scanned, counts, tasks }));
 }
 
-async function handleSweepDone(req, res, id) {
+// Shared by Sweep and Work — both dismiss items into the same swept_done
+// table, keyed by their own content hash (taskId vs workItemId).
+async function handleTaskDone(req, res, id) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
   const { done } = JSON.parse(await readBody(req));
   if (done) {
@@ -484,6 +520,73 @@ async function handleSweepDone(req, res, id) {
   }
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end('{"ok":true}');
+}
+
+// ── Work ──────────────────────────────────────────────────
+// Same 9 sources as Sweep, but asks the model for a narrative summary plus
+// dynamic categories ("people to message back", "bills to pay", ...) instead
+// of Sweep's fixed per-source kind grouping. Persisted so the page loads
+// instantly; POST /api/work/scan is the only path that re-runs the model.
+async function buildWorkResponse(summary, categories, scannedAt) {
+  const { rows: doneRows } = await pool.query('SELECT task_id FROM swept_done');
+  const doneSet = new Set(doneRows.map(r => r.task_id));
+  const filtered = categories
+    .map(c => ({
+      label: c.label,
+      items: c.items.map(t => ({ ...t, id: workItemId(t) })).filter(t => !doneSet.has(t.id)),
+    }))
+    .filter(c => c.items.length);
+  return { summary, categories: filtered, scannedAt };
+}
+
+async function handleWork(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const { rows } = await pool.query('SELECT summary, categories, scanned_at FROM work_summary WHERE id=1');
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  if (!rows.length) { res.end(JSON.stringify({ summary: '', categories: [], scannedAt: null })); return; }
+  const { summary, categories, scanned_at } = rows[0];
+  res.end(JSON.stringify(await buildWorkResponse(summary, categories, scanned_at)));
+}
+
+async function handleWorkScan(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+
+  const sources = await gatherSources();
+  const today = new Date().toISOString().slice(0, 10);
+  const prompt = `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs).
+
+Write a short natural-language summary (2-4 sentences) of how the day/week is shaping up, then group anything actionable into categories that make sense for what's actually here (e.g. "people to message back", "bills to pay", "jobs to schedule") — don't invent empty categories just to fill out a list.
+
+Respond with ONLY a JSON object, no prose outside it, no markdown fences:
+{"summary":"2-4 sentence overview","categories":[{"label":"short category name","items":[{"from":"string","when":"short string like '2d' or 'tomorrow 09:00'","text":"imperative one-line action","snippet":"verbatim quote from the source, never paraphrase","reply":true|false}]}]}
+If nothing needs action, categories should be [] and the summary should say things look clear.
+
+${sourcesBlock(sources)}`;
+
+  let raw;
+  try {
+    raw = await askModel(prompt);
+  } catch (err) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ summary: '', categories: [], error: 'LM Studio unreachable' }));
+    return;
+  }
+
+  const parsed = parseJsonFence(raw, {});
+  const summary = typeof parsed.summary === 'string' ? parsed.summary : '';
+  const categories = (Array.isArray(parsed.categories) ? parsed.categories : [])
+    .filter(c => c && typeof c.label === 'string' && Array.isArray(c.items))
+    .map(c => ({ label: c.label, items: c.items.filter(t => t && t.text && t.snippet && t.from) }))
+    .filter(c => c.items.length);
+
+  await pool.query(
+    `INSERT INTO work_summary (id, summary, categories, scanned_at) VALUES (1, $1, $2, NOW())
+     ON CONFLICT (id) DO UPDATE SET summary=$1, categories=$2, scanned_at=NOW()`,
+    [summary, JSON.stringify(categories)]
+  );
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(await buildWorkResponse(summary, categories, new Date().toISOString())));
 }
 
 const HTML_ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' };
@@ -554,7 +657,11 @@ createServer(async (req, res) => {
     if (req.method === 'GET'  && u === '/api/link-preview') return await handleLinkPreview(req, res);
     if (req.method === 'POST' && u === '/api/sweep')  return await handleSweep(req, res);
     const sweepDoneMatch = u.match(/^\/api\/sweep\/([a-f0-9]+)\/done$/);
-    if (sweepDoneMatch) return await handleSweepDone(req, res, sweepDoneMatch[1]);
+    if (sweepDoneMatch) return await handleTaskDone(req, res, sweepDoneMatch[1]);
+    if (req.method === 'GET'  && u === '/api/work')      return await handleWork(req, res);
+    if (req.method === 'POST' && u === '/api/work/scan') return await handleWorkScan(req, res);
+    const workDoneMatch = u.match(/^\/api\/work\/([a-f0-9]+)\/done$/);
+    if (workDoneMatch) return await handleTaskDone(req, res, workDoneMatch[1]);
     return await serveStatic(req, res);
   } catch (err) {
     console.error(err);

@@ -86,7 +86,7 @@ function Waveform({ busy }) {
   );
 }
 
-export default function SweepView({ auth, onLockout, onOpenChat, onDraftReply }) {
+export default function SweepView({ auth, onLockout, onOpenChat, onOpenWork, onDraftReply }) {
   const [phase, setPhase] = useState('idle');       // 'idle' | 'scanning' | 'results'
   const [step, setStep] = useState(0);              // which SOURCES row is resolved
   const [tasks, setTasks] = useState([]);
@@ -212,6 +212,7 @@ export default function SweepView({ auth, onLockout, onOpenChat, onDraftReply })
                         border: '1px solid rgba(232,232,228,.18)' }}>
             <button type="button" style={navBtn(false)} onClick={() => onOpenChat?.()}>chat</button>
             <button type="button" style={navBtn(true)}>sweep</button>
+            <button type="button" style={navBtn(false)} onClick={() => onOpenWork?.()}>work</button>
           </div>
         </div>
 

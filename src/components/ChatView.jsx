@@ -67,7 +67,7 @@ function LinkPreview({ content, token }) {
 }
 
 
-export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, onDraftConsumed }) {
+export default function ChatView({ auth, onLockout, onOpenSweep, onOpenWork, draftPrompt, onDraftConsumed }) {
   const [messages, setMessages]       = useState([]);
   const [pending, setPending]         = useState(null); // {status, text} | {retry, fn} | null
   const [convId, setConvId]           = useState(null);
@@ -398,6 +398,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, draftPrompt, on
                         border: '1px solid rgba(232,232,228,.18)' }}>
             <button type="button" style={navBtn(true)}>chat</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenSweep?.()}>sweep</button>
+            <button type="button" style={navBtn(false)} onClick={() => onOpenWork?.()}>work</button>
           </div>
         </div>
       </header>
