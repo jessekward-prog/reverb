@@ -58,6 +58,13 @@ async function initDb() {
       scanned_at TIMESTAMPTZ NOT NULL,
       CHECK (id = 1)
     );
+    CREATE TABLE IF NOT EXISTS life_summary (
+      id         INTEGER PRIMARY KEY DEFAULT 1,
+      summary    TEXT NOT NULL,
+      categories JSONB NOT NULL,
+      scanned_at TIMESTAMPTZ NOT NULL,
+      CHECK (id = 1)
+    );
     CREATE TABLE IF NOT EXISTS contacts (
       id               SERIAL PRIMARY KEY,
       kind             TEXT NOT NULL,
@@ -382,19 +389,19 @@ async function proxyChat(req, res) {
   }
 }
 
-// ── Sweep / Work shared source-gathering ───────────────────
-// Stable id derived from source content (not model output) so the same
-// underlying message/event maps to the same id across sweeps even though
-// the model regenerates the surrounding task list text each time.
-function taskId(t) {
-  return createHash('sha1').update(`${t.kind}|${t.from}|${t.snippet}`).digest('hex').slice(0, 12);
-}
-
-// Work's categories are dynamic/LLM-chosen, so the id can't depend on a
-// stable "kind" the way Sweep's does — hash on source content only.
+// ── Pull / Report shared source-gathering ───────────────────
+// Categories are dynamic/LLM-chosen (both Work's and Life's), so an item's
+// id can't depend on a stable "kind" — hash on source content only.
 function workItemId(t) {
   return createHash('sha1').update(`${t.from}|${t.snippet}`).digest('hex').slice(0, 12);
 }
+
+// Sweep's "Pull Data" caches one raw gather here; "Generate Report" reads it
+// to produce both the Work and Life reports from the same pull rather than
+// re-fetching every source twice. Single-user app, no request concurrency to
+// worry about — a module-level variable is enough, no need for a DB table
+// that would only ever hold one transient row.
+let pullCache = null;
 
 const countLines = s => (s || '').split('\n').filter(Boolean).length;
 
@@ -549,73 +556,38 @@ function parseJsonFence(raw, fallback) {
   } catch { return fallback; }
 }
 
-async function handleSweep(req, res) {
+async function handlePull(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
 
   const sources = await gatherSources();
-  const { textsRaw, events, emailsRaw, bizEmailsRaw, whatsappRaw, messengerRaw, instagramRaw, jobsRaw, contactIndex } = sources;
-
-  const today = new Date().toISOString().slice(0, 10);
-  const prompt = `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs) and produce a JSON array of action items — things the user owes a reply on, needs to act on, or should know about. Ignore routine or no-action items (read receipts, newsletters, confirmations needing no response).
-
-${TAG_LEGEND}
-
-Respond with ONLY a JSON array, no prose, no markdown fences. Each item:
-{"kind":"sms"|"email"|"cal"|"bizemail"|"whatsapp"|"messenger"|"instagram"|"job","from":"string","when":"short string like '2d' or 'tomorrow 09:00'","bucket":0|1|2,"text":"imperative one-line action","snippet":"verbatim quote from the source, never paraphrase","reply":true|false}
-bucket: 0 = needs a reply, 1 = this week, 2 = no specific date.
-reply: true only if the action is answering someone directly.
-If nothing needs action, respond with [].
-
-${sourcesBlock(sources)}`;
-
-  let raw;
-  try {
-    raw = await askModel(prompt);
-  } catch (err) {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ scanned: 0, counts: {}, tasks: [], error: 'LM Studio unreachable' }));
-    return;
-  }
-
-  const parsedRaw = parseJsonFence(raw, []);
-  const parsed = Array.isArray(parsedRaw) ? parsedRaw : [];
-
-  const { rows: doneRows } = await pool.query('SELECT task_id FROM swept_done');
-  const doneSet = new Set(doneRows.map(r => r.task_id));
-
-  const tasks = parsed
-    .filter(t => t && t.kind && t.text && t.snippet)
-    .map(t => ({ ...t, id: taskId(t) }))
-    .filter(t => !doneSet.has(t.id))
-    .map(t => applyContactMatch(t, contactIndex))
-    .sort((a, b) => importanceScore(b) - importanceScore(a)); // stable — keeps bucket grouping, floats important items to the top of each
+  const { textsRaw, events, emailsRaw, bizEmailsRaw, whatsappRaw, messengerRaw, instagramRaw, jobsRaw } = sources;
+  pullCache = { sources, pulledAt: new Date().toISOString() };
 
   const countEmailBlock = s => (s.includes('No matching') ? 0 : s.split('\n\n').filter(Boolean).length);
-  const countBy = k => tasks.filter(t => t.kind === k).length;
   const emailCount = countEmailBlock(emailsRaw);
   const bizEmailCount = countEmailBlock(bizEmailsRaw);
   const counts = {
-    sms:       `${countLines(textsRaw)} msgs · ${countBy('sms')}`,
-    email:     `${emailCount} msgs · ${countBy('email')}`,
-    cal:       `${countLines(events)} events · ${countBy('cal')}`,
+    sms:       `${countLines(textsRaw)} msgs`,
+    email:     `${emailCount} msgs`,
+    cal:       `${countLines(events)} events`,
     call:      'not connected',
-    bizemail:  `${bizEmailCount} msgs · ${countBy('bizemail')}`,
-    whatsapp:  `${countLines(whatsappRaw)} msgs · ${countBy('whatsapp')}`,
-    messenger: `${countLines(messengerRaw)} msgs · ${countBy('messenger')}`,
-    instagram: `${countLines(instagramRaw)} msgs · ${countBy('instagram')}`,
-    job:       `${countLines(jobsRaw)} jobs · ${countBy('job')}`,
+    bizemail:  `${bizEmailCount} msgs`,
+    whatsapp:  `${countLines(whatsappRaw)} msgs`,
+    messenger: `${countLines(messengerRaw)} msgs`,
+    instagram: `${countLines(instagramRaw)} msgs`,
+    job:       `${countLines(jobsRaw)} jobs`,
   };
   const scanned = countLines(textsRaw) + countLines(events) + emailCount + bizEmailCount
     + countLines(whatsappRaw) + countLines(messengerRaw) + countLines(instagramRaw) + countLines(jobsRaw);
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ scanned, counts, tasks }));
+  res.end(JSON.stringify({ scanned, counts, pulledAt: pullCache.pulledAt }));
 }
 
-// Shared by Sweep and Work — both dismiss items into the same swept_done
-// table, keyed by their own content hash (taskId vs workItemId). Optional
-// kind+from also nudges the sender's contact memory: dismissing without
-// ever replying is the "this wasn't important" signal.
+// Shared by Work and Life dismiss actions — both content-hash into the same
+// swept_done table via workItemId. Optional kind+from also nudges the
+// sender's contact memory: dismissing without ever replying is the "this
+// wasn't important" signal.
 async function handleTaskDone(req, res, id) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
   const { done, kind, from } = JSON.parse(await readBody(req));
@@ -660,12 +632,12 @@ async function handleContactTier(req, res, id) {
   res.end('{"ok":true}');
 }
 
-// ── Work ──────────────────────────────────────────────────
-// Same 9 sources as Sweep, but asks the model for a narrative summary plus
-// dynamic categories ("people to message back", "bills to pay", ...) instead
-// of Sweep's fixed per-source kind grouping. Persisted so the page loads
-// instantly; POST /api/work/scan is the only path that re-runs the model.
-async function buildWorkResponse(summary, categories, scannedAt) {
+// ── Work / Life reports ──────────────────────────────────
+// Both read the same pulled sources (see pullCache above) — one prompt asks
+// for business-relevant items, the other for personal ones. Persisted so
+// each tab loads instantly; POST /api/report/generate is the only path that
+// re-runs the model, and it always writes both reports from one pull.
+async function buildCategorizedResponse(summary, categories, scannedAt) {
   const { rows: doneRows } = await pool.query('SELECT task_id FROM swept_done');
   const doneSet = new Set(doneRows.map(r => r.task_id));
   const filtered = categories
@@ -677,45 +649,66 @@ async function buildWorkResponse(summary, categories, scannedAt) {
   return { summary, categories: filtered, scannedAt };
 }
 
-async function handleWork(req, res) {
-  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
-  const { rows } = await pool.query('SELECT summary, categories, scanned_at FROM work_summary WHERE id=1');
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  if (!rows.length) { res.end(JSON.stringify({ summary: '', categories: [], scannedAt: null })); return; }
+async function readSummaryTable(table) {
+  const { rows } = await pool.query(`SELECT summary, categories, scanned_at FROM ${table} WHERE id=1`);
+  if (!rows.length) return { summary: '', categories: [], scannedAt: null };
   const { summary, categories, scanned_at } = rows[0];
-  res.end(JSON.stringify(await buildWorkResponse(summary, categories, scanned_at)));
+  return buildCategorizedResponse(summary, categories, scanned_at);
 }
 
-async function handleWorkScan(req, res) {
+async function handleWork(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(await readSummaryTable('work_summary')));
+}
 
-  // Smaller than Sweep's — Work is a digest, not exhaustive per-item triage,
-  // and the summarize+categorize task already runs slower than Sweep's flat
-  // classification per token, so a lighter input matters more here.
-  const sources = await gatherSources(10, 10);
-  const { contactIndex } = sources;
-  const today = new Date().toISOString().slice(0, 10);
-  const prompt = `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs).
+async function handleLife(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(await readSummaryTable('life_summary')));
+}
+
+const CATEGORY_SCHEMA = `{"summary":"2-sentence overview","categories":[{"label":"short category name","items":[{"kind":"sms"|"email"|"cal"|"bizemail"|"whatsapp"|"messenger"|"instagram"|"job","from":"string","when":"short string like '2d' or 'tomorrow 09:00'","text":"imperative one-line action, under 100 chars","snippet":"verbatim quote from the source, under 100 chars, never paraphrase","reply":true|false}]}]}`;
+
+function workPrompt(sources, today) {
+  return `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs).
 
 ${TAG_LEGEND}
 
-Write a 2-sentence summary of how the day/week is shaping up, then group the most important actionable items into at most 5 categories that make sense for what's actually here (e.g. "people to message back", "bills to pay", "jobs to schedule") — don't invent empty categories. Cap each category at 5 items — pick the most important/urgent ones if there are more. Keep "text" and "snippet" each under 100 characters.
+This report is Switch Craft work only — jobs, clients, suppliers, business money. Ignore anything personal or about friends/family (that goes in a separate report). Every item's "text" must name the specific channel it needs action on (e.g. "Reply to Adam Johnson's booking request on Messenger", "Pay AWM's June invoice") so it can be found again without re-searching.
+
+Write a 2-sentence summary of how the work day/week is shaping up, then group the most important actionable items into at most 5 categories that make sense for what's actually here (e.g. "jobs to confirm", "bills to pay", "parts to grab before tomorrow") — don't invent empty categories. Cap each category at 5 items — pick the most important/urgent ones if there are more. Keep "text" and "snippet" each under 100 characters.
 
 Respond with ONLY a JSON object, no prose outside it, no markdown fences:
-{"summary":"2-sentence overview","categories":[{"label":"short category name","items":[{"kind":"sms"|"email"|"cal"|"bizemail"|"whatsapp"|"messenger"|"instagram"|"job","from":"string","when":"short string like '2d' or 'tomorrow 09:00'","text":"imperative one-line action, under 100 chars","snippet":"verbatim quote from the source, under 100 chars, never paraphrase","reply":true|false}]}]}
-If nothing needs action, categories should be [] and the summary should say things look clear.
+${CATEGORY_SCHEMA}
+If nothing needs action, categories should be [] and the summary should say work looks clear.
 
 ${sourcesBlock(sources)}`;
+}
 
+function lifePrompt(sources, today) {
+  return `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs).
+
+${TAG_LEGEND}
+
+This report is personal life only — ignore Switch Craft jobs, clients, suppliers, and business invoices (that's a separate report). Focus on: messages from friends or family that deserve a reply, upcoming personal events on the calendar (not job appointments), anything involving the kids Peyton and Jude (school, appointments, activities), and plans or invites from friends. Every message-based item's "text" must name the specific app it's on (Text, WhatsApp, Messenger, Instagram, or email) so it can be found again without re-searching.
+
+Write a 2-sentence summary of what's going on personally this week, then group items into at most 5 categories that fit what's actually here (e.g. "people to get back to", "upcoming events", "peyton & jude") — don't invent empty categories. Cap each category at 5 items. Keep "text" and "snippet" each under 100 characters.
+
+Respond with ONLY a JSON object, no prose outside it, no markdown fences:
+${CATEGORY_SCHEMA}
+If nothing needs action, categories should be [] and the summary should say things look quiet.
+
+${sourcesBlock(sources)}`;
+}
+
+async function runCategorization(sources, prompt) {
   let raw;
   try {
     raw = await askModel(prompt);
-  } catch (err) {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ summary: '', categories: [], error: 'LM Studio unreachable' }));
-    return;
+  } catch {
+    return { summary: '', categories: [], error: 'LM Studio unreachable' };
   }
-
   const parsed = parseJsonFence(raw, {});
   const summary = typeof parsed.summary === 'string' ? parsed.summary : '';
   const categories = (Array.isArray(parsed.categories) ? parsed.categories : [])
@@ -724,19 +717,45 @@ ${sourcesBlock(sources)}`;
       label: c.label,
       items: c.items
         .filter(t => t && t.text && t.snippet && t.from)
-        .map(t => applyContactMatch(t, contactIndex))
+        .map(t => applyContactMatch(t, sources.contactIndex))
         .sort((a, b) => importanceScore(b) - importanceScore(a)),
     }))
     .filter(c => c.items.length);
+  return { summary, categories };
+}
 
+async function persistSummary(table, result) {
+  if (result.error) return;
   await pool.query(
-    `INSERT INTO work_summary (id, summary, categories, scanned_at) VALUES (1, $1, $2, NOW())
+    `INSERT INTO ${table} (id, summary, categories, scanned_at) VALUES (1, $1, $2, NOW())
      ON CONFLICT (id) DO UPDATE SET summary=$1, categories=$2, scanned_at=NOW()`,
-    [summary, JSON.stringify(categories)]
+    [result.summary, JSON.stringify(result.categories)]
   );
+}
 
+async function handleReportGenerate(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  if (!pullCache) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'pull data first' }));
+    return;
+  }
+
+  const { sources } = pullCache;
+  const today = new Date().toISOString().slice(0, 10);
+
+  const [work, life] = await Promise.all([
+    runCategorization(sources, workPrompt(sources, today)),
+    runCategorization(sources, lifePrompt(sources, today)),
+  ]);
+  await Promise.all([persistSummary('work_summary', work), persistSummary('life_summary', life)]);
+
+  const scannedAt = new Date().toISOString();
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(await buildWorkResponse(summary, categories, new Date().toISOString())));
+  res.end(JSON.stringify({
+    work: work.error ? work : await buildCategorizedResponse(work.summary, work.categories, scannedAt),
+    life: life.error ? life : await buildCategorizedResponse(life.summary, life.categories, scannedAt),
+  }));
 }
 
 // ── Texts ─────────────────────────────────────────────────
@@ -834,13 +853,14 @@ createServer(async (req, res) => {
     if (req.method === 'GET'  && u === '/api/models') return await proxyModels(req, res);
     if (req.method === 'POST' && u === '/api/chat')   return await proxyChat(req, res);
     if (req.method === 'GET'  && u === '/api/link-preview') return await handleLinkPreview(req, res);
-    if (req.method === 'POST' && u === '/api/sweep')  return await handleSweep(req, res);
-    const sweepDoneMatch = u.match(/^\/api\/sweep\/([a-f0-9]+)\/done$/);
-    if (sweepDoneMatch) return await handleTaskDone(req, res, sweepDoneMatch[1]);
-    if (req.method === 'GET'  && u === '/api/work')      return await handleWork(req, res);
-    if (req.method === 'POST' && u === '/api/work/scan') return await handleWorkScan(req, res);
+    if (req.method === 'POST' && u === '/api/pull')            return await handlePull(req, res);
+    if (req.method === 'POST' && u === '/api/report/generate') return await handleReportGenerate(req, res);
+    if (req.method === 'GET'  && u === '/api/work') return await handleWork(req, res);
+    if (req.method === 'GET'  && u === '/api/life') return await handleLife(req, res);
     const workDoneMatch = u.match(/^\/api\/work\/([a-f0-9]+)\/done$/);
     if (workDoneMatch) return await handleTaskDone(req, res, workDoneMatch[1]);
+    const lifeDoneMatch = u.match(/^\/api\/life\/([a-f0-9]+)\/done$/);
+    if (lifeDoneMatch) return await handleTaskDone(req, res, lifeDoneMatch[1]);
     if (req.method === 'GET' && u === '/api/texts') return await handleTexts(req, res);
     if (req.method === 'GET'  && u === '/api/contacts') return await handleContacts(req, res);
     if (req.method === 'POST' && u === '/api/contacts/signal') return await handleContactSignal(req, res);

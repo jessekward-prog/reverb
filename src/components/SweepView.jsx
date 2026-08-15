@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { DitherField, CrtLayers, BACKDROP_CSS, INK, AMBER } from './CrtBackdrop.jsx';
 import { authHeaders } from '../api.js';
+import { SOURCES } from '../lib/kinds.js';
 
 const CONTENT_MAX = 700; // must match .app-shell's max-width in style.css (chat) —
 // chat and sweep are a toggle pair, so their headers need to land at the
@@ -8,48 +9,14 @@ const CONTENT_MAX = 700; // must match .app-shell's max-width in style.css (chat
 
 const CSS = BACKDROP_CSS + `
 @keyframes rv-blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
-@keyframes rv-popin { from{transform:scale(.2);opacity:0} to{transform:scale(1);opacity:1} }
 @keyframes rv-rise  { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
 @keyframes rv-sweepline { 0%{transform:translateY(-40px)} 100%{transform:translateY(560px)} }
 .sweep-scroll::-webkit-scrollbar { width:0 }
 `;
 
-const KINDS = {
-  sms:       { label: 'sms',        tint: AMBER },
-  email:     { label: 'email',      tint: '#9fb0a8' },
-  cal:       { label: 'calendar',   tint: '#8fa8c4' },
-  call:      { label: 'missed',     tint: '#c47c7c' },
-  bizemail:  { label: 'biz email',  tint: '#7f9f9f' },
-  whatsapp:  { label: 'whatsapp',   tint: '#7fbf8f' },
-  messenger: { label: 'messenger',  tint: '#8f9fc4' },
-  instagram: { label: 'instagram',  tint: '#c48fb0' },
-  job:       { label: 'job',        tint: '#c4a35f' },
-};
-
-const BUCKETS = [
-  { label: 'needs a reply', tint: AMBER },
-  { label: 'this week',     tint: INK },
-  { label: 'no date',       tint: '#9fb0a8' },
-];
-
-/* `call log` has no backing tool in src/lib/tools.js — deliberately shown as
- * a known gap rather than hidden or faked. Remove this row if/when a call-log
- * source exists to wire up. */
-const SOURCES = [
-  { key: 'sms',       label: 'get_recent_texts' },
-  { key: 'email',     label: 'get_recent_emails' },
-  { key: 'cal',       label: 'get_upcoming_events' },
-  { key: 'call',      label: 'call log', unavailable: true },
-  { key: 'bizemail',  label: 'get_recent_business_emails' },
-  { key: 'whatsapp',  label: 'get_recent_notifications (whatsapp)' },
-  { key: 'messenger', label: 'get_recent_notifications (messenger)' },
-  { key: 'instagram', label: 'get_recent_notifications (instagram)' },
-  { key: 'job',       label: 'get_switchcraft_jobs' },
-];
-
 /* Amber EQ. Each bar runs its own independent timer — a single shared interval
  * makes the whole row swing in unison, and staggered CSS delays make a travelling
- * wave. Neither reads as random. Goes frantic while scanning. */
+ * wave. Neither reads as random. Goes frantic while busy. */
 function Waveform({ busy }) {
   const [levels, setLevels] = useState(() => Array.from({ length: 26 }, () => 0.25));
   const busyRef = useRef(busy);
@@ -86,28 +53,22 @@ function Waveform({ busy }) {
   );
 }
 
-export default function SweepView({ auth, onLockout, onOpenChat, onOpenWork, onOpenTexts, onDraftReply }) {
-  const [phase, setPhase] = useState('idle');       // 'idle' | 'scanning' | 'results'
-  const [step, setStep] = useState(0);              // which SOURCES row is resolved
-  const [tasks, setTasks] = useState([]);
+// Sweep is a two-step console now, not its own results list: "Pull Data"
+// gathers all 9 sources (no LLM yet, so it's fast and free), then "Generate
+// Report" runs that same pull through the model twice — once for Work
+// (business), once for Life (personal) — and both tabs pick up the result.
+export default function SweepView({ auth, onLockout, onOpenChat, onOpenWork, onOpenLife, onOpenTexts }) {
+  const [phase, setPhase] = useState('idle'); // 'idle' | 'pulling' | 'pulled' | 'generating' | 'done' | 'error'
+  const [step, setStep] = useState(0);
   const [counts, setCounts] = useState({});
   const [scanned, setScanned] = useState(0);
-  const [expandedId, setExpandedId] = useState(null);
-  const [lastSwept, setLastSwept] = useState(null);
+  const [pulledAt, setPulledAt] = useState(null);
+  const [result, setResult] = useState(null); // { work: {categories}, life: {categories} }
   const [toast, setToast] = useState('');
-  const [clock, setClock] = useState('');
   const pushRipple = useRef(() => {});
   const toastTimer = useRef(null);
 
-  useEffect(() => {
-    setPhase('idle');
-    const p = n => String(n).padStart(2, '0');
-    const t = setInterval(() => {
-      const d = new Date();
-      setClock(`${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`);
-    }, 1000);
-    return () => { clearInterval(t); clearTimeout(toastTimer.current); };
-  }, []);
+  useEffect(() => () => clearTimeout(toastTimer.current), []);
 
   function say(text) {
     clearTimeout(toastTimer.current);
@@ -115,12 +76,12 @@ export default function SweepView({ auth, onLockout, onOpenChat, onOpenWork, onO
     toastTimer.current = setTimeout(() => setToast(''), 2400);
   }
 
-  async function runSweep() {
-    if (phase === 'scanning') return;
+  async function runPull() {
+    if (phase === 'pulling' || phase === 'generating') return;
     pushRipple.current(1.5);
-    setPhase('scanning');
+    setPhase('pulling');
     setStep(0);
-    setExpandedId(null);
+    setResult(null);
 
     const pacer = setInterval(() => {
       setStep(s => Math.min(s + 1, SOURCES.length));
@@ -128,7 +89,7 @@ export default function SweepView({ auth, onLockout, onOpenChat, onOpenWork, onO
     }, 620);
 
     try {
-      const res = await fetch('/api/sweep', {
+      const res = await fetch('/api/pull', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
       });
@@ -136,54 +97,67 @@ export default function SweepView({ auth, onLockout, onOpenChat, onOpenWork, onO
       if (!res.ok) throw new Error(`Server ${res.status}`);
       const data = await res.json();
 
-      // let the scan rows finish resolving before flipping to results
       const settle = Math.max(0, SOURCES.length * 620 - 200);
       setTimeout(() => {
-        setTasks(data.tasks || []);
         setCounts(data.counts || {});
         setScanned(data.scanned || 0);
-        setPhase('results');
-        setLastSwept('just now');
-        const n = (data.tasks || []).length;
-        say(n ? `${n} actions pulled from ${data.scanned} items` : 'nothing needs you right now');
+        setPulledAt(data.pulledAt || new Date().toISOString());
+        setPhase('pulled');
+        say(`pulled ${data.scanned} items — ready to generate`);
       }, settle);
     } catch {
-      setTimeout(() => {
-        setPhase(tasks.length ? 'results' : 'idle');
-        say('sweep failed — tap to retry');
-      }, 400);
+      setTimeout(() => { setPhase('error'); say('pull failed — tap to retry'); }, 400);
     } finally {
       setTimeout(() => clearInterval(pacer), SOURCES.length * 620);
     }
   }
 
-  function toggleDone(id, e) {
-    e?.stopPropagation();
-    const task = tasks.find(t => t.id === id);
-    const nextDone = !task?.done;
-    setTasks(prev => prev.map(t => t.id === id ? { ...t, done: nextDone } : t));
-    fetch(`/api/sweep/${id}/done`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
-      body: JSON.stringify({ done: nextDone }),
-    }).catch(() => {});
+  async function runGenerate() {
+    if (phase === 'generating') return;
+    pushRipple.current(1.5);
+    setPhase('generating');
+    try {
+      const res = await fetch('/api/report/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
+      });
+      if (res.status === 401) { onLockout?.(); return; }
+      if (!res.ok) throw new Error(`Server ${res.status}`);
+      const data = await res.json();
+      setResult(data);
+      setPhase('done');
+      const workN = (data.work?.categories || []).reduce((n, c) => n + c.items.length, 0);
+      const lifeN = (data.life?.categories || []).reduce((n, c) => n + c.items.length, 0);
+      say(`${workN} things on work, ${lifeN} on life`);
+    } catch {
+      setPhase('pulled');
+      say('generate failed — tap to retry');
+    }
   }
 
-  const scanning = phase === 'scanning';
-  const open = tasks.filter(t => !t.done).length;
-  const replies = tasks.filter(t => !t.done && t.reply).length;
+  const busy = phase === 'pulling' || phase === 'generating';
 
-  const groups = BUCKETS.map((b, bi) => ({
-    ...b,
-    tasks: tasks.filter(t => t.bucket === bi),
-  })).filter(g => g.tasks.length);
-
-  const label = { opacity: .45 };
   const navBtn = (active) => ({
     appearance: 'none', border: 0, margin: 0, background: active ? 'rgba(232,232,228,.14)' : '#060606',
     color: INK, fontFamily: 'inherit', fontSize: 11, letterSpacing: '.06em',
     textTransform: 'uppercase', padding: '7px 10px', cursor: 'pointer',
   });
+  const label = { opacity: .45 };
+  const primaryBtn = (disabled) => ({
+    appearance: 'none', width: '100%', margin: 0, border: '1px solid rgba(217,147,47,.55)',
+    background: 'rgba(217,147,47,.09)', color: INK, fontFamily: 'inherit',
+    fontSize: 13, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase',
+    padding: '19px 16px', cursor: disabled ? 'default' : 'pointer', opacity: disabled ? .4 : 1,
+    transition: 'background .14s',
+  });
+  const statusLine = () => {
+    if (phase === 'pulling')    return 'reading your channels…';
+    if (phase === 'generating') return 'writing your reports…';
+    if (phase === 'pulled')     return `pulled ${scanned} items — ready to generate`;
+    if (phase === 'done')       return 'reports ready — check work & life';
+    if (phase === 'error')      return 'something went wrong';
+    return 'no data pulled yet';
+  };
 
   return (
     <div style={{
@@ -196,9 +170,6 @@ export default function SweepView({ auth, onLockout, onOpenChat, onOpenWork, onO
       <DitherField pushRef={pushRipple} />
       <CrtLayers />
 
-      {/* content sits above the CRT stack so text stays crisp — no text-shadow fringe here.
-          Capped and centered so it reads as a comfortable column, not a stretched-out
-          wide layout, while the backdrop above still spans the full screen. */}
       <div style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column',
                     height: '100%', maxWidth: CONTENT_MAX, margin: '0 auto', boxSizing: 'border-box' }}>
 
@@ -206,37 +177,51 @@ export default function SweepView({ auth, onLockout, onOpenChat, onOpenWork, onO
                       gap: 12, padding: '20px 20px 0' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
             <div style={{ fontWeight: 700 }}>// sweep</div>
-            <div style={label}>{scanning ? 'reading your channels…' : lastSwept ? `last sweep ${lastSwept}` : 'no sweep yet'}</div>
+            <div style={label}>{statusLine()}</div>
           </div>
           <div style={{ display: 'flex', gap: 1, background: 'rgba(232,232,228,.18)',
                         border: '1px solid rgba(232,232,228,.18)' }}>
             <button type="button" style={navBtn(false)} onClick={() => onOpenChat?.()}>chat</button>
             <button type="button" style={navBtn(true)}>sweep</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenWork?.()}>work</button>
+            <button type="button" style={navBtn(false)} onClick={() => onOpenLife?.()}>life</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenTexts?.()}>texts</button>
           </div>
         </div>
 
-        <Waveform busy={scanning} />
+        <Waveform busy={busy} />
 
-        <div style={{ margin: '16px 20px 0', position: 'relative', overflow: 'hidden' }}>
-          <button type="button" onClick={runSweep} style={{
-            appearance: 'none', width: '100%', margin: 0, border: '1px solid rgba(217,147,47,.55)',
-            background: 'rgba(217,147,47,.09)', color: INK, fontFamily: 'inherit',
-            fontSize: 13, fontWeight: 700, letterSpacing: '.14em', textTransform: 'uppercase',
-            padding: '19px 16px', cursor: 'pointer', transition: 'background .14s',
-          }}>{scanning ? 'sweeping…' : 'sweep everything'}</button>
-          {scanning && (
-            <div style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 2, background: AMBER,
-                          boxShadow: '0 0 12px 2px rgba(217,147,47,.5)',
-                          animation: 'rv-sweepline 1.1s linear infinite' }} />
+        <div style={{ margin: '16px 20px 0', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ position: 'relative', overflow: 'hidden' }}>
+            <button type="button" onClick={runPull} disabled={busy} style={primaryBtn(busy)}>
+              {phase === 'pulling' ? 'pulling…' : pulledAt ? 'pull data again' : 'pull data'}
+            </button>
+            {phase === 'pulling' && (
+              <div style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 2, background: AMBER,
+                            boxShadow: '0 0 12px 2px rgba(217,147,47,.5)',
+                            animation: 'rv-sweepline 1.1s linear infinite' }} />
+            )}
+          </div>
+
+          {(phase === 'pulled' || phase === 'generating' || phase === 'done') && (
+            <div style={{ position: 'relative', overflow: 'hidden' }}>
+              <button type="button" onClick={runGenerate} disabled={phase === 'generating'}
+                      style={primaryBtn(phase === 'generating')}>
+                {phase === 'generating' ? 'generating…' : 'generate report'}
+              </button>
+              {phase === 'generating' && (
+                <div style={{ position: 'absolute', left: 0, right: 0, top: 0, height: 2, background: AMBER,
+                              boxShadow: '0 0 12px 2px rgba(217,147,47,.5)',
+                              animation: 'rv-sweepline 1.1s linear infinite' }} />
+              )}
+            </div>
           )}
         </div>
 
         <div className="sweep-scroll" style={{ flex: 1, overflowY: 'auto', padding: '0 20px 26px',
                                                marginTop: 18, scrollbarWidth: 'none' }}>
 
-          {scanning && (
+          {phase === 'pulling' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 1,
                           background: 'rgba(232,232,228,.14)', border: '1px solid rgba(232,232,228,.14)' }}>
               {SOURCES.map((src, i) => {
@@ -259,108 +244,61 @@ export default function SweepView({ auth, onLockout, onOpenChat, onOpenWork, onO
 
           {phase === 'idle' && (
             <div style={{ paddingTop: 40, textAlign: 'center', opacity: .4, lineHeight: 1.8 }}>
-              <div>no sweep yet</div>
-              <div style={{ fontSize: 10 }}>pull every channel into one list</div>
+              <div>no data pulled yet</div>
+              <div style={{ fontSize: 10 }}>pull every channel, then generate work &amp; life reports</div>
             </div>
           )}
 
-          {phase === 'results' && (
-            <>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
-                            paddingBottom: 12, borderBottom: '1px solid rgba(232,232,228,.14)' }}>
-                <div style={{ opacity: .8 }}>
-                  {open === 0 ? 'all clear' : `${open} actions · ${replies} need a reply`}
-                </div>
-                <div style={{ opacity: .4 }}>{scanned} items</div>
-              </div>
+          {phase === 'error' && (
+            <div style={{ paddingTop: 40, textAlign: 'center', opacity: .4, lineHeight: 1.8 }}>
+              <div>couldn't reach the server</div>
+              <div style={{ fontSize: 10 }}>tap pull data to retry</div>
+            </div>
+          )}
 
-              {groups.map(g => (
-                <div key={g.label} style={{ marginTop: 22, display: 'flex', flexDirection: 'column', gap: 9 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                    <div style={{ fontWeight: 700, color: g.tint }}>{g.label}</div>
-                    <div style={{ flex: 1, height: 1, background: 'rgba(232,232,228,.14)' }} />
-                    <div style={{ opacity: .4 }}>
-                      {String(g.tasks.filter(t => !t.done).length).padStart(2, '0')}
-                    </div>
+          {(phase === 'pulled' || phase === 'generating') && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 1,
+                          background: 'rgba(232,232,228,.14)', border: '1px solid rgba(232,232,228,.14)' }}>
+              {SOURCES.map(src => (
+                <div key={src.key} style={{ display: 'flex', alignItems: 'center', gap: 10,
+                                            background: '#060606', padding: 12 }}>
+                  <div style={{ width: 9, height: 9, flex: 'none', background: src.unavailable ? '#c47c7c' : AMBER }} />
+                  <div style={{ flex: 1, opacity: .85 }}>{src.label}</div>
+                  <div style={{ opacity: .5, letterSpacing: '.04em' }}>
+                    {src.unavailable ? 'not connected' : (counts[src.key] || '—')}
                   </div>
-
-                  {g.tasks.map((t, i) => {
-                    const k = KINDS[t.kind] || KINDS.email;
-                    const expanded = expandedId === t.id;
-                    const actions = [
-                      { label: t.done ? 'reopen' : 'done', onPress: e => toggleDone(t.id, e) },
-                      { label: 'snooze 1d', onPress: () => say('snoozed — back tomorrow 08:00') },
-                      t.reply
-                        ? { label: 'draft reply', onPress: () => onDraftReply?.(t) }
-                        : { label: 'open source', onPress: () => say(`opening ${k.label} thread`) },
-                    ];
-                    return (
-                      <div key={t.id} style={{
-                        border: '1px solid rgba(232,232,228,.16)', background: 'rgba(6,6,6,.72)',
-                        animation: 'rv-rise .26s ease-out both', animationDelay: `${(i * 0.05).toFixed(2)}s`,
-                        opacity: t.done ? .4 : 1,
-                      }}>
-                        <div onClick={() => setExpandedId(expanded ? null : t.id)}
-                             style={{ display: 'flex', gap: 11, padding: '12px 12px 11px', cursor: 'pointer' }}>
-                          <div onClick={e => toggleDone(t.id, e)} style={{
-                            width: 16, height: 16, flex: 'none', marginTop: 1,
-                            border: '1px solid rgba(232,232,228,.5)', display: 'flex',
-                            alignItems: 'center', justifyContent: 'center',
-                            background: t.done ? INK : 'transparent',
-                          }}>
-                            {t.done && <div style={{ width: 8, height: 8, background: '#060606',
-                                                     animation: 'rv-popin .16s ease-out' }} />}
-                          </div>
-                          <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
-                            <div style={{ fontSize: 12.5, lineHeight: 1.45, letterSpacing: '.02em',
-                                          textTransform: 'none', textWrap: 'pretty',
-                                          textDecoration: t.done ? 'line-through' : 'none' }}>{t.text}</div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 7, opacity: .5, fontSize: 10 }}>
-                              <div style={{ color: k.tint }}>{k.label}</div>
-                              <div>·</div>
-                              <div style={{ textTransform: 'none', overflow: 'hidden',
-                                            textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.from}</div>
-                              <div>·</div>
-                              <div style={{ flex: 'none' }}>{t.when}</div>
-                            </div>
-                          </div>
-                          <div style={{ flex: 'none', opacity: .35, fontSize: 14, lineHeight: 1 }}>
-                            {expanded ? '−' : '+'}
-                          </div>
-                        </div>
-
-                        {expanded && (
-                          <div style={{ borderTop: '1px solid rgba(232,232,228,.12)', padding: 12,
-                                        display: 'flex', flexDirection: 'column', gap: 12 }}>
-                            <div style={{ fontSize: 11.5, lineHeight: 1.6, letterSpacing: '.01em',
-                                          textTransform: 'none', opacity: .62, textWrap: 'pretty',
-                                          borderLeft: '2px solid rgba(217,147,47,.5)', paddingLeft: 10 }}>
-                              {t.snippet}
-                            </div>
-                            <div style={{ display: 'flex', gap: 1, background: 'rgba(232,232,228,.16)',
-                                          border: '1px solid rgba(232,232,228,.16)' }}>
-                              {actions.map(a => (
-                                <button key={a.label} type="button" onClick={a.onPress} style={{
-                                  appearance: 'none', flex: 1, border: 0, margin: 0, background: '#060606',
-                                  color: INK, fontFamily: 'inherit', fontSize: 10, letterSpacing: '.08em',
-                                  textTransform: 'uppercase', padding: '10px 4px', cursor: 'pointer',
-                                }}>{a.label}</button>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
                 </div>
               ))}
+            </div>
+          )}
 
-              <div style={{ marginTop: 22, paddingTop: 14, borderTop: '1px solid rgba(232,232,228,.14)',
-                            display: 'flex', justifyContent: 'space-between', opacity: .3 }}>
-                <div>**nothing left your device</div>
-                <div>{clock}</div>
-              </div>
-            </>
+          {phase === 'done' && result && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 4 }}>
+              {['work', 'life'].map(k => {
+                const n = (result[k]?.categories || []).reduce((sum, c) => sum + c.items.length, 0);
+                return (
+                  <button key={k} type="button"
+                          onClick={() => (k === 'work' ? onOpenWork?.() : onOpenLife?.())}
+                          style={{
+                            appearance: 'none', width: '100%', textAlign: 'left', cursor: 'pointer',
+                            border: '1px solid rgba(232,232,228,.16)', background: 'rgba(6,6,6,.72)',
+                            color: INK, fontFamily: 'inherit', padding: 14,
+                            animation: 'rv-rise .26s ease-out both',
+                          }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                      <div style={{ fontWeight: 700, color: AMBER }}>{k}</div>
+                      <div style={{ opacity: .5 }}>{n === 0 ? 'all clear →' : `${n} things →`}</div>
+                    </div>
+                    {result[k]?.summary && (
+                      <div style={{ marginTop: 8, fontSize: 11.5, lineHeight: 1.6, letterSpacing: '.01em',
+                                    textTransform: 'none', opacity: .62, textWrap: 'pretty' }}>
+                        {result[k].summary}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           )}
         </div>
       </div>

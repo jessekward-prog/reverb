@@ -23,7 +23,7 @@ function timeOnly(iso) {
   return `${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-export default function TextsView({ auth, onLockout, onOpenChat, onOpenSweep, onOpenWork }) {
+export default function TextsView({ auth, onLockout, onOpenChat, onOpenSweep, onOpenWork, onOpenLife }) {
   const [phase, setPhase] = useState('loading'); // 'loading' | 'ready'
   const [threads, setThreads] = useState([]);
   const [openPhone, setOpenPhone] = useState(null);
@@ -73,6 +73,7 @@ export default function TextsView({ auth, onLockout, onOpenChat, onOpenSweep, on
             <button type="button" style={navBtn(false)} onClick={() => onOpenChat?.()}>chat</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenSweep?.()}>sweep</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenWork?.()}>work</button>
+            <button type="button" style={navBtn(false)} onClick={() => onOpenLife?.()}>life</button>
             <button type="button" style={navBtn(true)}>texts</button>
           </div>
         </div>
