@@ -423,8 +423,16 @@ const lineJob   = i => `[${i.status}] ${i.when} — ${i.snippet} (${i.identifier
 // keyed on (kind, first 80 chars of snippet) — relies on the model quoting
 // snippets close to verbatim, which the prompt asks for but can't guarantee.
 // A miss just means importanceScore falls back to 0, not a crash.
-function matchContact(index, kind, snippet) {
-  return index.get(indexKey(kind, snippet)) || {};
+//
+// Also corrects `from`: the model writes that field itself rather than
+// copying it, and it can misattribute a sender when several similarly-named
+// senders appear close together in the source dump (seen in practice: a
+// one-off job got attributed to a frequent client's name instead of its
+// actual, different client). The scraped displayName is ground truth, so it
+// wins whenever a snippet match is found.
+function applyContactMatch(t, index) {
+  const hit = index.get(indexKey(t.kind, t.snippet)) || {};
+  return { ...t, from: hit.displayName || t.from, tier: hit.tier, moneyFlag: hit.moneyFlag, hasAttachment: hit.hasAttachment };
 }
 function importanceScore(t) {
   return (t.tier === 'vip' ? 3 : 0) + (t.moneyFlag ? 2 : 0) + (t.hasAttachment ? 2 : 0);
@@ -439,7 +447,9 @@ async function annotateAndFormat(kind, items, lineFn, sep, index) {
     if (tier === 'muted') continue;
     const annotated = { ...item, identifier, tier, moneyFlag: hasMoneyFlag(`${item.subject || ''} ${item.snippet || ''}`) };
     kept.push(annotated);
-    index.set(indexKey(kind, item.snippet), { tier, moneyFlag: annotated.moneyFlag, hasAttachment: !!item.hasAttachment });
+    index.set(indexKey(kind, item.snippet), {
+      tier, moneyFlag: annotated.moneyFlag, hasAttachment: !!item.hasAttachment, displayName: item.displayName,
+    });
   }
   return kept.length ? kept.map(lineFn).join(sep) : 'No matching items found.';
 }
@@ -577,7 +587,7 @@ ${sourcesBlock(sources)}`;
     .filter(t => t && t.kind && t.text && t.snippet)
     .map(t => ({ ...t, id: taskId(t) }))
     .filter(t => !doneSet.has(t.id))
-    .map(t => ({ ...t, ...matchContact(contactIndex, t.kind, t.snippet) }))
+    .map(t => applyContactMatch(t, contactIndex))
     .sort((a, b) => importanceScore(b) - importanceScore(a)); // stable — keeps bucket grouping, floats important items to the top of each
 
   const countEmailBlock = s => (s.includes('No matching') ? 0 : s.split('\n\n').filter(Boolean).length);
@@ -714,7 +724,7 @@ ${sourcesBlock(sources)}`;
       label: c.label,
       items: c.items
         .filter(t => t && t.text && t.snippet && t.from)
-        .map(t => ({ ...t, ...matchContact(contactIndex, t.kind, t.snippet) }))
+        .map(t => applyContactMatch(t, contactIndex))
         .sort((a, b) => importanceScore(b) - importanceScore(a)),
     }))
     .filter(c => c.items.length);
