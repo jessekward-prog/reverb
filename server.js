@@ -8,6 +8,7 @@ import {
   TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL,
   getRecentTexts, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
 } from './src/lib/tools.js';
+import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag } from './src/lib/contacts.js';
 
 const { Pool } = pg;
 
@@ -56,6 +57,18 @@ async function initDb() {
       categories JSONB NOT NULL,
       scanned_at TIMESTAMPTZ NOT NULL,
       CHECK (id = 1)
+    );
+    CREATE TABLE IF NOT EXISTS contacts (
+      id               SERIAL PRIMARY KEY,
+      kind             TEXT NOT NULL,
+      identifier       TEXT NOT NULL,
+      display_name     TEXT,
+      tier             TEXT,
+      seen_count       INTEGER NOT NULL DEFAULT 0,
+      replied_count    INTEGER NOT NULL DEFAULT 0,
+      dismissed_count  INTEGER NOT NULL DEFAULT 0,
+      last_seen_at     TIMESTAMPTZ,
+      UNIQUE (kind, identifier)
     );
   `);
 }
@@ -326,22 +339,22 @@ async function proxyChat(req, res) {
       const args = JSON.parse(tc.function.arguments || '{}');
       if (tc.function.name === 'get_recent_texts') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking texts…' })}\n\n`);
-        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await getRecentTexts(args) });
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getRecentTexts(args)).text });
       } else if (tc.function.name === 'get_upcoming_events') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking calendar…' })}\n\n`);
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await getUpcomingEvents(args) });
       } else if (tc.function.name === 'get_recent_emails') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking email…' })}\n\n`);
-        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await getRecentEmails(args) });
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getRecentEmails(args)).text });
       } else if (tc.function.name === 'get_recent_business_emails') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking business email…' })}\n\n`);
-        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await getRecentBusinessEmails(args) });
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getRecentBusinessEmails(args)).text });
       } else if (tc.function.name === 'get_recent_notifications') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking WhatsApp/Messenger/Instagram…' })}\n\n`);
-        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await getRecentNotifications(args) });
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getRecentNotifications(args)).text });
       } else if (tc.function.name === 'get_switchcraft_jobs') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking Switch Craft jobs…' })}\n\n`);
-        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await getSwitchcraftJobs() });
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getSwitchcraftJobs()).text });
       }
     }
     const final = await fetch(`${LM_URL}/v1/chat/completions`, {
@@ -385,8 +398,54 @@ function workItemId(t) {
 
 const countLines = s => (s || '').split('\n').filter(Boolean).length;
 
+// ── Contact memory ───────────────────────────────────────
+// Every scan upserts each source's senders into `contacts` (seen_count/
+// last_seen_at), then tags each line with what's known: {vip} (manually
+// pinned or earned via replies/frequency), {attachment}, {money} (invoice/
+// payment keywords). Muted contacts are dropped before the model ever sees
+// them. The model still writes the task list, but importance ranking is
+// deterministic afterward — see importanceScore below — so a real VIP
+// doesn't depend on the model noticing on its own.
+const indexKey = (kind, snippet) => `${kind}|${(snippet || '').trim().slice(0, 80).toLowerCase()}`;
+
+const tagSuffix = i => {
+  const tags = [];
+  if (i.tier === 'vip') tags.push('vip');
+  if (i.hasAttachment) tags.push('attachment');
+  if (i.moneyFlag) tags.push('money');
+  return tags.length ? ` {${tags.join(',')}}` : '';
+};
+const lineSms   = i => `[${i.occurred_at}] ${i.identifier}${tagSuffix(i)}: ${i.snippet}`;
+const lineEmail = i => `From: ${i.identifier}${tagSuffix(i)}\nSubject: ${i.subject}\n${i.snippet}`;
+const lineJob   = i => `[${i.status}] ${i.when} — ${i.snippet} (${i.identifier}${tagSuffix(i)})`;
+
+// ponytail: contact match after the model responds is a best-effort lookup
+// keyed on (kind, first 80 chars of snippet) — relies on the model quoting
+// snippets close to verbatim, which the prompt asks for but can't guarantee.
+// A miss just means importanceScore falls back to 0, not a crash.
+function matchContact(index, kind, snippet) {
+  return index.get(indexKey(kind, snippet)) || {};
+}
+function importanceScore(t) {
+  return (t.tier === 'vip' ? 3 : 0) + (t.moneyFlag ? 2 : 0) + (t.hasAttachment ? 2 : 0);
+}
+
+async function annotateAndFormat(kind, items, lineFn, sep, index) {
+  const kept = [];
+  for (const item of items) {
+    const identifier = normalizeIdentifier(kind, item.identifier);
+    const contact = await upsertContact(pool, kind, identifier, item.displayName);
+    const tier = deriveTier(contact);
+    if (tier === 'muted') continue;
+    const annotated = { ...item, identifier, tier, moneyFlag: hasMoneyFlag(`${item.subject || ''} ${item.snippet || ''}`) };
+    kept.push(annotated);
+    index.set(indexKey(kind, item.snippet), { tier, moneyFlag: annotated.moneyFlag, hasAttachment: !!item.hasAttachment });
+  }
+  return kept.length ? kept.map(lineFn).join(sep) : 'No matching items found.';
+}
+
 async function gatherSources(perSource = 20, jobsCap = 20) {
-  const [texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobsRaw] = await Promise.all([
+  const [texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobsRes] = await Promise.all([
     getRecentTexts({ limit: perSource }),
     getUpcomingEvents({ days_ahead: 7 }),
     getRecentEmails({ limit: Math.round(perSource * 0.75) }),
@@ -399,9 +458,32 @@ async function gatherSources(perSource = 20, jobsCap = 20) {
   // getSwitchcraftJobs has no limit param (its endpoint caps at 50 server-side);
   // trim here too since job descriptions can be long free text and this is the
   // single biggest contributor to prompt size once there's real backlog.
-  const jobs = jobsRaw.split('\n').slice(0, jobsCap).join('\n');
-  return { texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobs };
+  const jobItems = jobsRes.items.slice(0, jobsCap);
+
+  const contactIndex = new Map();
+  const [textsText, emailsText, bizEmailsText, whatsappText, messengerText, instagramText, jobsText] = await Promise.all([
+    annotateAndFormat('sms', texts.items, lineSms, '\n', contactIndex),
+    annotateAndFormat('email', emails.items, lineEmail, '\n\n', contactIndex),
+    annotateAndFormat('bizemail', bizEmails.items, lineEmail, '\n\n', contactIndex),
+    annotateAndFormat('whatsapp', whatsapp.items, lineSms, '\n', contactIndex),
+    annotateAndFormat('messenger', messenger.items, lineSms, '\n', contactIndex),
+    annotateAndFormat('instagram', instagram.items, lineSms, '\n', contactIndex),
+    annotateAndFormat('job', jobItems, lineJob, '\n', contactIndex),
+  ]);
+
+  return {
+    texts: textsText, textsRaw: texts.text, events,
+    emails: emailsText, emailsRaw: emails.text,
+    bizEmails: bizEmailsText, bizEmailsRaw: bizEmails.text,
+    whatsapp: whatsappText, whatsappRaw: whatsapp.text,
+    messenger: messengerText, messengerRaw: messenger.text,
+    instagram: instagramText, instagramRaw: instagram.text,
+    jobs: jobsText, jobsRaw: jobsRes.text,
+    contactIndex,
+  };
 }
+
+const TAG_LEGEND = `Some lines carry a {tag} suffix from Reverb's contact memory: {vip} = someone you interact with often, reply to, or have flagged as important; {attachment} = the email has an attachment; {money} = mentions an invoice, bill, or payment. Weight tagged items higher — they should usually lead their bucket/category, and {money} items are a strong hint for a billing/"pay this" grouping.`;
 
 function sourcesBlock({ texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobs }) {
   return `TEXTS:
@@ -461,10 +543,12 @@ async function handleSweep(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
 
   const sources = await gatherSources();
-  const { texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobs } = sources;
+  const { textsRaw, events, emailsRaw, bizEmailsRaw, whatsappRaw, messengerRaw, instagramRaw, jobsRaw, contactIndex } = sources;
 
   const today = new Date().toISOString().slice(0, 10);
   const prompt = `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs) and produce a JSON array of action items — things the user owes a reply on, needs to act on, or should know about. Ignore routine or no-action items (read receipts, newsletters, confirmations needing no response).
+
+${TAG_LEGEND}
 
 Respond with ONLY a JSON array, no prose, no markdown fences. Each item:
 {"kind":"sms"|"email"|"cal"|"bizemail"|"whatsapp"|"messenger"|"instagram"|"job","from":"string","when":"short string like '2d' or 'tomorrow 09:00'","bucket":0|1|2,"text":"imperative one-line action","snippet":"verbatim quote from the source, never paraphrase","reply":true|false}
@@ -492,40 +576,76 @@ ${sourcesBlock(sources)}`;
   const tasks = parsed
     .filter(t => t && t.kind && t.text && t.snippet)
     .map(t => ({ ...t, id: taskId(t) }))
-    .filter(t => !doneSet.has(t.id));
+    .filter(t => !doneSet.has(t.id))
+    .map(t => ({ ...t, ...matchContact(contactIndex, t.kind, t.snippet) }))
+    .sort((a, b) => importanceScore(b) - importanceScore(a)); // stable — keeps bucket grouping, floats important items to the top of each
 
   const countEmailBlock = s => (s.includes('No matching') ? 0 : s.split('\n\n').filter(Boolean).length);
   const countBy = k => tasks.filter(t => t.kind === k).length;
-  const emailCount = countEmailBlock(emails);
-  const bizEmailCount = countEmailBlock(bizEmails);
+  const emailCount = countEmailBlock(emailsRaw);
+  const bizEmailCount = countEmailBlock(bizEmailsRaw);
   const counts = {
-    sms:       `${countLines(texts)} msgs · ${countBy('sms')}`,
+    sms:       `${countLines(textsRaw)} msgs · ${countBy('sms')}`,
     email:     `${emailCount} msgs · ${countBy('email')}`,
     cal:       `${countLines(events)} events · ${countBy('cal')}`,
     call:      'not connected',
     bizemail:  `${bizEmailCount} msgs · ${countBy('bizemail')}`,
-    whatsapp:  `${countLines(whatsapp)} msgs · ${countBy('whatsapp')}`,
-    messenger: `${countLines(messenger)} msgs · ${countBy('messenger')}`,
-    instagram: `${countLines(instagram)} msgs · ${countBy('instagram')}`,
-    job:       `${countLines(jobs)} jobs · ${countBy('job')}`,
+    whatsapp:  `${countLines(whatsappRaw)} msgs · ${countBy('whatsapp')}`,
+    messenger: `${countLines(messengerRaw)} msgs · ${countBy('messenger')}`,
+    instagram: `${countLines(instagramRaw)} msgs · ${countBy('instagram')}`,
+    job:       `${countLines(jobsRaw)} jobs · ${countBy('job')}`,
   };
-  const scanned = countLines(texts) + countLines(events) + emailCount + bizEmailCount
-    + countLines(whatsapp) + countLines(messenger) + countLines(instagram) + countLines(jobs);
+  const scanned = countLines(textsRaw) + countLines(events) + emailCount + bizEmailCount
+    + countLines(whatsappRaw) + countLines(messengerRaw) + countLines(instagramRaw) + countLines(jobsRaw);
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ scanned, counts, tasks }));
 }
 
 // Shared by Sweep and Work — both dismiss items into the same swept_done
-// table, keyed by their own content hash (taskId vs workItemId).
+// table, keyed by their own content hash (taskId vs workItemId). Optional
+// kind+from also nudges the sender's contact memory: dismissing without
+// ever replying is the "this wasn't important" signal.
 async function handleTaskDone(req, res, id) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
-  const { done } = JSON.parse(await readBody(req));
+  const { done, kind, from } = JSON.parse(await readBody(req));
   if (done) {
     await pool.query('INSERT INTO swept_done (task_id) VALUES ($1) ON CONFLICT (task_id) DO NOTHING', [id]);
+    if (kind && from) await signalContact(pool, kind, normalizeIdentifier(kind, from), 'dismiss');
   } else {
     await pool.query('DELETE FROM swept_done WHERE task_id=$1', [id]);
   }
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end('{"ok":true}');
+}
+
+// Fired when the user acts on an item (currently: "draft reply") — the
+// positive counterpart to handleTaskDone's dismiss signal.
+async function handleContactSignal(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const { kind, from, action } = JSON.parse(await readBody(req));
+  if (kind && from && action === 'reply') {
+    await signalContact(pool, kind, normalizeIdentifier(kind, from), 'reply');
+  }
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end('{"ok":true}');
+}
+
+// Contact list for the manual VIP/mute drawer.
+async function handleContacts(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const { rows } = await pool.query(
+    'SELECT id, kind, identifier, display_name, tier, seen_count, replied_count, dismissed_count, last_seen_at FROM contacts ORDER BY seen_count DESC, last_seen_at DESC LIMIT 200'
+  );
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(rows));
+}
+
+async function handleContactTier(req, res, id) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const { tier } = JSON.parse(await readBody(req));
+  if (tier !== null && !['vip', 'normal', 'muted'].includes(tier)) { res.writeHead(400); res.end('{}'); return; }
+  await pool.query('UPDATE contacts SET tier=$1 WHERE id=$2', [tier, id]);
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end('{"ok":true}');
 }
@@ -563,13 +683,16 @@ async function handleWorkScan(req, res) {
   // and the summarize+categorize task already runs slower than Sweep's flat
   // classification per token, so a lighter input matters more here.
   const sources = await gatherSources(10, 10);
+  const { contactIndex } = sources;
   const today = new Date().toISOString().slice(0, 10);
   const prompt = `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs).
+
+${TAG_LEGEND}
 
 Write a 2-sentence summary of how the day/week is shaping up, then group the most important actionable items into at most 5 categories that make sense for what's actually here (e.g. "people to message back", "bills to pay", "jobs to schedule") — don't invent empty categories. Cap each category at 5 items — pick the most important/urgent ones if there are more. Keep "text" and "snippet" each under 100 characters.
 
 Respond with ONLY a JSON object, no prose outside it, no markdown fences:
-{"summary":"2-sentence overview","categories":[{"label":"short category name","items":[{"from":"string","when":"short string like '2d' or 'tomorrow 09:00'","text":"imperative one-line action, under 100 chars","snippet":"verbatim quote from the source, under 100 chars, never paraphrase","reply":true|false}]}]}
+{"summary":"2-sentence overview","categories":[{"label":"short category name","items":[{"kind":"sms"|"email"|"cal"|"bizemail"|"whatsapp"|"messenger"|"instagram"|"job","from":"string","when":"short string like '2d' or 'tomorrow 09:00'","text":"imperative one-line action, under 100 chars","snippet":"verbatim quote from the source, under 100 chars, never paraphrase","reply":true|false}]}]}
 If nothing needs action, categories should be [] and the summary should say things look clear.
 
 ${sourcesBlock(sources)}`;
@@ -587,7 +710,13 @@ ${sourcesBlock(sources)}`;
   const summary = typeof parsed.summary === 'string' ? parsed.summary : '';
   const categories = (Array.isArray(parsed.categories) ? parsed.categories : [])
     .filter(c => c && typeof c.label === 'string' && Array.isArray(c.items))
-    .map(c => ({ label: c.label, items: c.items.filter(t => t && t.text && t.snippet && t.from) }))
+    .map(c => ({
+      label: c.label,
+      items: c.items
+        .filter(t => t && t.text && t.snippet && t.from)
+        .map(t => ({ ...t, ...matchContact(contactIndex, t.kind, t.snippet) }))
+        .sort((a, b) => importanceScore(b) - importanceScore(a)),
+    }))
     .filter(c => c.items.length);
 
   await pool.query(
@@ -682,7 +811,7 @@ async function handleLinkPreview(req, res) {
 createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
   try {
     const u = req.url.split('?')[0];
@@ -703,6 +832,10 @@ createServer(async (req, res) => {
     const workDoneMatch = u.match(/^\/api\/work\/([a-f0-9]+)\/done$/);
     if (workDoneMatch) return await handleTaskDone(req, res, workDoneMatch[1]);
     if (req.method === 'GET' && u === '/api/texts') return await handleTexts(req, res);
+    if (req.method === 'GET'  && u === '/api/contacts') return await handleContacts(req, res);
+    if (req.method === 'POST' && u === '/api/contacts/signal') return await handleContactSignal(req, res);
+    const contactMatch = u.match(/^\/api\/contacts\/(\d+)$/);
+    if (req.method === 'PATCH' && contactMatch) return await handleContactTier(req, res, contactMatch[1]);
     return await serveStatic(req, res);
   } catch (err) {
     console.error(err);

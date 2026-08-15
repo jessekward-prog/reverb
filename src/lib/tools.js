@@ -86,6 +86,10 @@ export const SWITCHCRAFT_JOBS_TOOL = {
 // was abandoned rather than kept on life support. sender is a raw phone
 // number (no contact-name resolution available from this path), so the
 // `contact` filter matches against it as a substring.
+// Chat's tool-calling path only ever wants the .text string (see ChatView's
+// call sites in server.js's proxyChat); gatherSources (Sweep/Work) also
+// wants the structured .items so it can track senders in the contacts table
+// without a second round-trip to the same source.
 export async function getRecentTexts({ contact, limit = 20 } = {}) {
   const params = new URLSearchParams({ source: 'sms', limit: String(limit) });
   let r;
@@ -93,12 +97,13 @@ export async function getRecentTexts({ contact, limit = 20 } = {}) {
     r = await fetch(`${process.env.NOTIFY_CMD_BASE_URL}/api/notifications/recent?${params}`, {
       headers: { 'X-Service-Token': process.env.NOTIFY_CMD_SERVICE_TOKEN },
     });
-  } catch (err) { return `Could not reach notify-cmd: ${err.message}`; }
-  if (!r.ok) return `Could not reach notify-cmd (status ${r.status})`;
+  } catch (err) { return { text: `Could not reach notify-cmd: ${err.message}`, items: [] }; }
+  if (!r.ok) return { text: `Could not reach notify-cmd (status ${r.status})`, items: [] };
   let msgs = await r.json();
   if (contact) msgs = msgs.filter(m => (m.sender || '').includes(contact));
-  if (!msgs.length) return 'No matching text messages found.';
-  return msgs.map(m => `[${m.occurred_at}] ${m.sender}: ${m.body}`).join('\n');
+  if (!msgs.length) return { text: 'No matching text messages found.', items: [] };
+  const items = msgs.map(m => ({ identifier: m.sender, displayName: m.sender, snippet: m.body, occurred_at: m.occurred_at }));
+  return { text: msgs.map(m => `[${m.occurred_at}] ${m.sender}: ${m.body}`).join('\n'), items };
 }
 
 export async function getUpcomingEvents({ days_ahead = 1 } = {}) {
@@ -122,11 +127,13 @@ export async function getRecentEmails({ unread_only = false, limit = 10 } = {}) 
     r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/google/gmail/recent?${params}`, {
       headers: { 'X-Service-Token': process.env.LIFECMD_SERVICE_TOKEN },
     });
-  } catch (err) { return `Could not reach Gmail via LIFE_CMD: ${err.message}`; }
-  if (!r.ok) return `Could not reach Gmail via LIFE_CMD (status ${r.status})`;
+  } catch (err) { return { text: `Could not reach Gmail via LIFE_CMD: ${err.message}`, items: [] }; }
+  if (!r.ok) return { text: `Could not reach Gmail via LIFE_CMD (status ${r.status})`, items: [] };
   const emails = await r.json();
-  if (!emails.length) return 'No matching emails found.';
-  return emails.map(e => `From: ${e.from}\nSubject: ${e.subject}\n${e.snippet}`).join('\n\n');
+  if (!emails.length) return { text: 'No matching emails found.', items: [] };
+  const items = emails.map(e => ({ identifier: e.from, displayName: e.from, subject: e.subject, snippet: e.snippet, hasAttachment: !!e.hasAttachment }));
+  const text = emails.map(e => `From: ${e.from}${e.hasAttachment ? ' [has attachment]' : ''}\nSubject: ${e.subject}\n${e.snippet}`).join('\n\n');
+  return { text, items };
 }
 
 export async function getRecentBusinessEmails({ unread_only = false, limit = 10 } = {}) {
@@ -136,11 +143,13 @@ export async function getRecentBusinessEmails({ unread_only = false, limit = 10 
     r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/google/gmail/recent/business?${params}`, {
       headers: { 'X-Service-Token': process.env.LIFECMD_SERVICE_TOKEN },
     });
-  } catch (err) { return `Could not reach business Gmail via LIFE_CMD: ${err.message}`; }
-  if (!r.ok) return `Could not reach business Gmail via LIFE_CMD (status ${r.status})`;
+  } catch (err) { return { text: `Could not reach business Gmail via LIFE_CMD: ${err.message}`, items: [] }; }
+  if (!r.ok) return { text: `Could not reach business Gmail via LIFE_CMD (status ${r.status})`, items: [] };
   const emails = await r.json();
-  if (!emails.length) return 'No matching business emails found.';
-  return emails.map(e => `From: ${e.from}\nSubject: ${e.subject}\n${e.snippet}`).join('\n\n');
+  if (!emails.length) return { text: 'No matching business emails found.', items: [] };
+  const items = emails.map(e => ({ identifier: e.from, displayName: e.from, subject: e.subject, snippet: e.snippet, hasAttachment: !!e.hasAttachment }));
+  const text = emails.map(e => `From: ${e.from}${e.hasAttachment ? ' [has attachment]' : ''}\nSubject: ${e.subject}\n${e.snippet}`).join('\n\n');
+  return { text, items };
 }
 
 export async function getRecentNotifications({ source, limit = 30 } = {}) {
@@ -151,23 +160,28 @@ export async function getRecentNotifications({ source, limit = 30 } = {}) {
     r = await fetch(`${process.env.NOTIFY_CMD_BASE_URL}/api/notifications/recent?${params}`, {
       headers: { 'X-Service-Token': process.env.NOTIFY_CMD_SERVICE_TOKEN },
     });
-  } catch (err) { return `Could not reach notify-cmd: ${err.message}`; }
-  if (!r.ok) return `Could not reach notify-cmd (status ${r.status})`;
+  } catch (err) { return { text: `Could not reach notify-cmd: ${err.message}`, items: [] }; }
+  if (!r.ok) return { text: `Could not reach notify-cmd (status ${r.status})`, items: [] };
   const notifs = await r.json();
-  if (!notifs.length) return 'No matching notifications found.';
-  return notifs.map(n => `[${n.occurred_at}] ${n.source} — ${n.sender || 'unknown'}: ${n.body || ''}`).join('\n');
+  if (!notifs.length) return { text: 'No matching notifications found.', items: [] };
+  const items = notifs.map(n => ({ identifier: n.sender || 'unknown', displayName: n.sender || 'unknown', snippet: n.body || '', occurred_at: n.occurred_at }));
+  const text = notifs.map(n => `[${n.occurred_at}] ${n.source} — ${n.sender || 'unknown'}: ${n.body || ''}`).join('\n');
+  return { text, items };
 }
 
 export async function getSwitchcraftJobs() {
   let r;
   try {
     r = await fetch(`${process.env.SWITCHCRAFT_BASE_URL}/api/reverb/jobs?key=${process.env.SWITCHCRAFT_FEED_KEY}`);
-  } catch (err) { return `Could not reach switch-craft-booking: ${err.message}`; }
-  if (!r.ok) return `Could not reach switch-craft-booking (status ${r.status})`;
+  } catch (err) { return { text: `Could not reach switch-craft-booking: ${err.message}`, items: [] }; }
+  if (!r.ok) return { text: `Could not reach switch-craft-booking (status ${r.status})`, items: [] };
   const jobs = await r.json();
-  if (!jobs.length) return 'No open jobs found.';
-  return jobs.map(j => {
-    const when = j.scheduled_date ? `${j.scheduled_date.slice(0, 10)}${j.scheduled_time ? ' ' + j.scheduled_time : ''}` : 'unscheduled';
-    return `[${j.status}] ${when} — ${j.description} (${j.client_name || 'unknown client'})`;
-  }).join('\n');
+  if (!jobs.length) return { text: 'No open jobs found.', items: [] };
+  const items = jobs.map(j => ({
+    identifier: j.client_name || 'unknown client', displayName: j.client_name || 'unknown client',
+    snippet: j.description || '', status: j.status,
+    when: j.scheduled_date ? `${j.scheduled_date.slice(0, 10)}${j.scheduled_time ? ' ' + j.scheduled_time : ''}` : 'unscheduled',
+  }));
+  const text = items.map(j => `[${j.status}] ${j.when} — ${j.snippet} (${j.identifier})`).join('\n');
+  return { text, items };
 }

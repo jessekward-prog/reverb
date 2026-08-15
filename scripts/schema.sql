@@ -29,3 +29,20 @@ CREATE TABLE IF NOT EXISTS swept_done (
   task_id    TEXT PRIMARY KEY,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- tier is nullable: NULL means no manual override, in which case importance
+-- is derived from seen/replied/dismissed counts + rule hits at read time
+-- (see src/lib/contacts.js). A user-set tier ('vip'|'normal'|'muted') always
+-- wins over the derived score.
+CREATE TABLE IF NOT EXISTS contacts (
+  id               SERIAL PRIMARY KEY,
+  kind             TEXT NOT NULL,        -- sms|email|bizemail|whatsapp|messenger|instagram|job
+  identifier       TEXT NOT NULL,        -- normalized email/phone/handle
+  display_name     TEXT,
+  tier             TEXT,
+  seen_count       INTEGER NOT NULL DEFAULT 0,
+  replied_count    INTEGER NOT NULL DEFAULT 0,
+  dismissed_count  INTEGER NOT NULL DEFAULT 0,
+  last_seen_at     TIMESTAMPTZ,
+  UNIQUE (kind, identifier)
+);

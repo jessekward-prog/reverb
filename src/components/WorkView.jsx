@@ -60,6 +60,84 @@ function timeAgo(iso) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 
+const TIER_OPTIONS = [
+  { value: null,     label: 'auto' },
+  { value: 'vip',    label: 'vip' },
+  { value: 'normal', label: 'normal' },
+  { value: 'muted',  label: 'muted' },
+];
+
+// Manual override list for Reverb's contact memory — auto (derived from
+// seen/reply/dismiss counts) vs a pinned vip/normal/muted. Sits on its own
+// overlay rather than reusing SettingsDrawer's style.css classes, since
+// WorkView/SweepView are fully inline-styled CRT screens with no shared
+// theming context for those classes.
+function PeopleDrawer({ open, auth, onClose }) {
+  const [contacts, setContacts] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    fetch('/api/contacts', { headers: authHeaders(auth?.token) })
+      .then(r => r.json())
+      .then(rows => setContacts(Array.isArray(rows) ? rows : []))
+      .catch(() => setContacts([]))
+      .finally(() => setLoading(false));
+  }, [open, auth]);
+
+  function setTier(id, tier) {
+    setContacts(prev => prev.map(c => c.id === id ? { ...c, tier } : c));
+    fetch(`/api/contacts/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
+      body: JSON.stringify({ tier }),
+    }).catch(() => {});
+  }
+
+  if (!open) return null;
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 20, background: 'rgba(0,0,0,.6)',
+                                     display: 'flex', justifyContent: 'flex-end' }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: 'min(360px, 92vw)', height: '100%', background: '#0b0b0a',
+        borderLeft: '1px solid rgba(232,232,228,.18)', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      padding: '18px 16px', borderBottom: '1px solid rgba(232,232,228,.14)' }}>
+          <div style={{ fontWeight: 700 }}>// people</div>
+          <button type="button" onClick={onClose} style={{ appearance: 'none', border: 0, background: 'none',
+                                                            color: INK, fontFamily: 'inherit', fontSize: 14, cursor: 'pointer' }}>&#10005;</button>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+          {loading && <div style={{ padding: 16, opacity: .4 }}>loading…</div>}
+          {!loading && !contacts.length && <div style={{ padding: 16, opacity: .4, textTransform: 'none' }}>nobody tracked yet — run a scan</div>}
+          {contacts.map(c => (
+            <div key={c.id} style={{ padding: '11px 16px', borderBottom: '1px solid rgba(232,232,228,.08)' }}>
+              <div style={{ fontSize: 12, textTransform: 'none', overflow: 'hidden', textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap' }}>{c.display_name || c.identifier}</div>
+              <div style={{ fontSize: 9.5, opacity: .4, marginTop: 2 }}>
+                {c.kind} · seen {c.seen_count} · replied {c.replied_count} · dismissed {c.dismissed_count}
+              </div>
+              <div style={{ display: 'flex', gap: 1, marginTop: 8, background: 'rgba(232,232,228,.14)',
+                            border: '1px solid rgba(232,232,228,.14)' }}>
+                {TIER_OPTIONS.map(opt => (
+                  <button key={opt.label} type="button" onClick={() => setTier(c.id, opt.value)} style={{
+                    appearance: 'none', flex: 1, border: 0, margin: 0, cursor: 'pointer', fontFamily: 'inherit',
+                    fontSize: 9.5, letterSpacing: '.06em', padding: '7px 4px',
+                    background: c.tier === opt.value ? 'rgba(217,147,47,.22)' : '#060606',
+                    color: c.tier === opt.value ? AMBER : INK,
+                  }}>{opt.label}</button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function WorkView({ auth, onLockout, onOpenChat, onOpenSweep, onOpenTexts, onDraftReply }) {
   const [phase, setPhase] = useState('loading');   // 'loading' | 'idle' | 'scanning' | 'ready'
   const [summary, setSummary] = useState('');
@@ -67,6 +145,7 @@ export default function WorkView({ auth, onLockout, onOpenChat, onOpenSweep, onO
   const [scannedAt, setScannedAt] = useState(null);
   const [expandedId, setExpandedId] = useState(null);
   const [toast, setToast] = useState('');
+  const [peopleOpen, setPeopleOpen] = useState(false);
   const pushRipple = useRef(() => {});
   const toastTimer = useRef(null);
 
@@ -115,7 +194,7 @@ export default function WorkView({ auth, onLockout, onOpenChat, onOpenSweep, onO
     }
   }
 
-  function dismiss(id, e) {
+  function dismiss(id, task, e) {
     e?.stopPropagation();
     setCategories(prev => prev
       .map(c => ({ ...c, items: c.items.filter(t => t.id !== id) }))
@@ -124,7 +203,7 @@ export default function WorkView({ auth, onLockout, onOpenChat, onOpenSweep, onO
     fetch(`/api/work/${id}/done`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
-      body: JSON.stringify({ done: true }),
+      body: JSON.stringify({ done: true, kind: task?.kind, from: task?.from }),
     }).catch(() => {});
   }
 
@@ -155,17 +234,20 @@ export default function WorkView({ auth, onLockout, onOpenChat, onOpenSweep, onO
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
                       gap: 12, padding: '20px 20px 0' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
-            <div style={{ fontWeight: 700 }}>// work</div>
+            <div style={{ fontWeight: 700 }}>// home</div>
             <div style={label}>
               {scanning ? 'reading your channels…' : scannedAt ? `last scan ${timeAgo(scannedAt)}` : 'no scan yet'}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 1, background: 'rgba(232,232,228,.18)',
-                        border: '1px solid rgba(232,232,228,.18)' }}>
-            <button type="button" style={navBtn(false)} onClick={() => onOpenChat?.()}>chat</button>
-            <button type="button" style={navBtn(false)} onClick={() => onOpenSweep?.()}>sweep</button>
-            <button type="button" style={navBtn(true)}>work</button>
-            <button type="button" style={navBtn(false)} onClick={() => onOpenTexts?.()}>texts</button>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 1, background: 'rgba(232,232,228,.18)',
+                          border: '1px solid rgba(232,232,228,.18)' }}>
+              <button type="button" style={navBtn(false)} onClick={() => onOpenChat?.()}>chat</button>
+              <button type="button" style={navBtn(false)} onClick={() => onOpenSweep?.()}>sweep</button>
+              <button type="button" style={navBtn(true)}>home</button>
+              <button type="button" style={navBtn(false)} onClick={() => onOpenTexts?.()}>texts</button>
+            </div>
+            <button type="button" onClick={() => setPeopleOpen(true)} style={{ ...navBtn(false), opacity: .6 }}>people</button>
           </div>
         </div>
 
@@ -223,7 +305,7 @@ export default function WorkView({ auth, onLockout, onOpenChat, onOpenSweep, onO
                   const expanded = expandedId === t.id;
                   const actions = [
                     ...(t.reply ? [{ label: 'draft reply', onPress: () => onDraftReply?.(t) }] : []),
-                    { label: 'done', onPress: e => dismiss(t.id, e) },
+                    { label: 'done', onPress: e => dismiss(t.id, t, e) },
                   ];
                   return (
                     <div key={t.id} style={{
@@ -232,7 +314,7 @@ export default function WorkView({ auth, onLockout, onOpenChat, onOpenSweep, onO
                     }}>
                       <div onClick={() => setExpandedId(expanded ? null : t.id)}
                            style={{ display: 'flex', gap: 11, padding: '12px 12px 11px', cursor: 'pointer' }}>
-                        <div onClick={e => dismiss(t.id, e)} style={{
+                        <div onClick={e => dismiss(t.id, t, e)} style={{
                           width: 16, height: 16, flex: 'none', marginTop: 1,
                           border: '1px solid rgba(232,232,228,.5)',
                         }} />
@@ -240,6 +322,9 @@ export default function WorkView({ auth, onLockout, onOpenChat, onOpenSweep, onO
                           <div style={{ fontSize: 12.5, lineHeight: 1.45, letterSpacing: '.02em',
                                         textTransform: 'none', textWrap: 'pretty' }}>{t.text}</div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 7, opacity: .5, fontSize: 10 }}>
+                            {t.tier === 'vip' && (
+                              <div style={{ flex: 'none', color: AMBER, opacity: 1, fontWeight: 700 }}>VIP</div>
+                            )}
                             <div style={{ textTransform: 'none', overflow: 'hidden',
                                           textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.from}</div>
                             {t.when && (<><div>·</div><div style={{ flex: 'none' }}>{t.when}</div></>)}
@@ -290,6 +375,8 @@ export default function WorkView({ auth, onLockout, onOpenChat, onOpenSweep, onO
           <div style={{ opacity: .4, animation: 'rv-blink 1s step-end infinite' }}>_</div>
         </div>
       )}
+
+      <PeopleDrawer open={peopleOpen} auth={auth} onClose={() => setPeopleOpen(false)} />
     </div>
   );
 }

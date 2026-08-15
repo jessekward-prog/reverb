@@ -4,13 +4,13 @@ import ChatView from './components/ChatView.jsx';
 import SweepView from './components/SweepView.jsx';
 import WorkView from './components/WorkView.jsx';
 import TextsView from './components/TextsView.jsx';
-import { getStoredAuth, saveAuth, clearStoredAuth } from './api.js';
+import { getStoredAuth, saveAuth, clearStoredAuth, authHeaders } from './api.js';
 
 export default function App() {
   const [stage, setStage]     = useState('loading'); // 'loading' | 'pin' | 'chat'
   const [pinMode, setPinMode] = useState('enter');   // 'setup' | 'enter'
   const [auth, setAuth]       = useState({ token: null, role: null });
-  const [view, setView]       = useState('chat');    // 'chat' | 'sweep' | 'work' | 'texts'
+  const [view, setView]       = useState('work');    // 'chat' | 'sweep' | 'work' | 'texts' — home (work) is the landing tab
   const [draftPrompt, setDraftPrompt] = useState(null);
 
   useEffect(() => {
@@ -40,8 +40,17 @@ export default function App() {
   }
 
   // Stages a drafted-reply prompt and switches to chat — the user reviews and
-  // sends it themselves; reverb never sends messages on your behalf.
+  // sends it themselves; reverb never sends messages on your behalf. Also the
+  // positive signal into contact memory: acting on someone's message is
+  // stronger evidence they matter than just seeing it go by.
   function stageDraft(task) {
+    if (task.kind && task.from) {
+      fetch('/api/contacts/signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
+        body: JSON.stringify({ kind: task.kind, from: task.from, action: 'reply' }),
+      }).catch(() => {});
+    }
     setDraftPrompt(`Draft a reply to ${task.from} (${task.kind}) about this:\n\n"${task.snippet}"`);
     setView('chat');
   }
