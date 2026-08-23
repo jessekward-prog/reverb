@@ -83,13 +83,31 @@ export const SWITCHCRAFT_JOBS_TOOL = {
 
 // SMS flows through notify-cmd now (MacroDroid "SMS Received" trigger), not
 // text-cmd — that pipeline went stale (no ingested messages for a month) and
-// was abandoned rather than kept on life support. sender is a raw phone
-// number (no contact-name resolution available from this path), so the
-// `contact` filter matches against it as a substring.
+// was abandoned rather than kept on life support. notify-cmd's sender is a
+// raw phone number with no name attached, so we borrow text-cmd's `contacts`
+// table purely as a phonebook (it's still Jesse's actively-maintained
+// phone->name mapping, just no longer the message source) to resolve display
+// names and let the `contact` filter match by name, not just raw digits.
 // Chat's tool-calling path only ever wants the .text string (see ChatView's
 // call sites in server.js's proxyChat); gatherSources (Sweep/Work) also
 // wants the structured .items so it can track senders in the contacts table
 // without a second round-trip to the same source.
+const normalizePhone = p => {
+  const d = String(p || '').replace(/[^\d+]/g, '');
+  return /^0\d{9}$/.test(d) ? '+61' + d.slice(1) : d;
+};
+
+async function getPhonebook() {
+  try {
+    const r = await fetch(`${process.env.TEXT_CMD_BASE_URL}/api/contacts`, {
+      headers: { 'X-Service-Token': process.env.TEXT_CMD_SERVICE_TOKEN },
+    });
+    if (!r.ok) return new Map();
+    const rows = await r.json();
+    return new Map(rows.map(c => [normalizePhone(c.phone), c.name]));
+  } catch { return new Map(); }
+}
+
 export async function getRecentTexts({ contact, limit = 20 } = {}) {
   const params = new URLSearchParams({ source: 'sms', limit: String(limit) });
   let r;
@@ -99,11 +117,16 @@ export async function getRecentTexts({ contact, limit = 20 } = {}) {
     });
   } catch (err) { return { text: `Could not reach notify-cmd: ${err.message}`, items: [] }; }
   if (!r.ok) return { text: `Could not reach notify-cmd (status ${r.status})`, items: [] };
-  let msgs = await r.json();
-  if (contact) msgs = msgs.filter(m => (m.sender || '').includes(contact));
+  const raw = await r.json();
+  const phonebook = await getPhonebook();
+  let msgs = raw.map(m => ({ ...m, name: phonebook.get(normalizePhone(m.sender)) || null }));
+  if (contact) {
+    const needle = contact.toLowerCase();
+    msgs = msgs.filter(m => (m.sender || '').includes(contact) || (m.name || '').toLowerCase().includes(needle));
+  }
   if (!msgs.length) return { text: 'No matching text messages found.', items: [] };
-  const items = msgs.map(m => ({ identifier: m.sender, displayName: m.sender, snippet: m.body, occurred_at: m.occurred_at }));
-  return { text: msgs.map(m => `[${m.occurred_at}] ${m.sender}: ${m.body}`).join('\n'), items };
+  const items = msgs.map(m => ({ identifier: m.sender, displayName: m.name || m.sender, snippet: m.body, occurred_at: m.occurred_at }));
+  return { text: msgs.map(m => `[${m.occurred_at}] ${m.name || m.sender}: ${m.body}`).join('\n'), items };
 }
 
 export async function getUpcomingEvents({ days_ahead = 1 } = {}) {
