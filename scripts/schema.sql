@@ -63,3 +63,15 @@ CREATE TABLE IF NOT EXISTS contacts (
   last_seen_at     TIMESTAMPTZ,
   UNIQUE (kind, identifier)
 );
+
+-- User-editable priority/ignore rules (Rules drawer, next to People). Plain
+-- substring patterns matched in code (matchRules in server.js) at pull time —
+-- never interpreted by the model. "ignore" drops an item before any LLM call
+-- ever sees it; "priority" carries through as a {priority} tag and is sorted
+-- to the top deterministically, same treatment as a vip contact.
+CREATE TABLE IF NOT EXISTS rules (
+  id         SERIAL PRIMARY KEY,
+  pattern    TEXT NOT NULL,
+  action     TEXT NOT NULL CHECK (action IN ('priority','ignore')),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);

@@ -65,3 +65,17 @@ export async function signalContact(pool, kind, identifier, action) {
     [kind, identifier]
   );
 }
+
+// User-editable priority/ignore rules (Rules drawer) — plain substring patterns,
+// matched in code, never interpreted by the model. "ignore" wins when rules of
+// both kinds match the same item: dropping it is safer than surfacing it anyway.
+export function matchRules(text, rules) {
+  const t = String(text || '').toLowerCase();
+  // A blank pattern matches every item, and a blank "ignore" rule silences the
+  // whole assistant. The POST route rejects blanks; this is the second line of
+  // defence, because that exact silence already cost a month of dead texts.
+  const hit = pattern => String(pattern).trim() !== '' && t.includes(String(pattern).toLowerCase());
+  if (rules.some(r => r.action === 'ignore' && hit(r.pattern))) return 'ignore';
+  if (rules.some(r => r.action === 'priority' && hit(r.pattern))) return 'priority';
+  return null;
+}

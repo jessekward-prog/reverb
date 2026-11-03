@@ -8,7 +8,7 @@ import {
   TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL,
   getRecentTexts, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
 } from './src/lib/tools.js';
-import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag } from './src/lib/contacts.js';
+import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules } from './src/lib/contacts.js';
 
 const { Pool } = pg;
 
@@ -76,6 +76,12 @@ async function initDb() {
       dismissed_count  INTEGER NOT NULL DEFAULT 0,
       last_seen_at     TIMESTAMPTZ,
       UNIQUE (kind, identifier)
+    );
+    CREATE TABLE IF NOT EXISTS rules (
+      id         SERIAL PRIMARY KEY,
+      pattern    TEXT NOT NULL,
+      action     TEXT NOT NULL CHECK (action IN ('priority','ignore')),
+      created_at TIMESTAMPTZ DEFAULT NOW()
     );
   `);
 }
@@ -420,6 +426,7 @@ const tagSuffix = i => {
   if (i.tier === 'vip') tags.push('vip');
   if (i.hasAttachment) tags.push('attachment');
   if (i.moneyFlag) tags.push('money');
+  if (i.rulePriority) tags.push('priority');
   return tags.length ? ` {${tags.join(',')}}` : '';
 };
 const lineSms   = i => `[${i.occurred_at}] ${i.identifier}${tagSuffix(i)}: ${i.snippet}`;
@@ -439,29 +446,38 @@ const lineJob   = i => `[${i.status}] ${i.when} — ${i.snippet} (${i.identifier
 // wins whenever a snippet match is found.
 function applyContactMatch(t, index) {
   const hit = index.get(indexKey(t.kind, t.snippet)) || {};
-  return { ...t, from: hit.displayName || t.from, tier: hit.tier, moneyFlag: hit.moneyFlag, hasAttachment: hit.hasAttachment };
+  return { ...t, from: hit.displayName || t.from, tier: hit.tier, moneyFlag: hit.moneyFlag, hasAttachment: hit.hasAttachment, rulePriority: !!hit.rulePriority };
 }
 function importanceScore(t) {
-  return (t.tier === 'vip' ? 3 : 0) + (t.moneyFlag ? 2 : 0) + (t.hasAttachment ? 2 : 0);
+  return (t.tier === 'vip' ? 3 : 0) + (t.moneyFlag ? 2 : 0) + (t.hasAttachment ? 2 : 0) + (t.rulePriority ? 3 : 0);
 }
 
-async function annotateAndFormat(kind, items, lineFn, sep, index) {
+async function annotateAndFormat(kind, items, lineFn, sep, index, rules) {
   const kept = [];
   for (const item of items) {
     const identifier = normalizeIdentifier(kind, item.identifier);
     const contact = await upsertContact(pool, kind, identifier, item.displayName);
     const tier = deriveTier(contact);
     if (tier === 'muted') continue;
-    const annotated = { ...item, identifier, tier, moneyFlag: hasMoneyFlag(`${item.subject || ''} ${item.snippet || ''}`) };
+    const ruleHit = matchRules(`${item.displayName || ''} ${identifier} ${item.subject || ''} ${item.snippet || ''}`, rules);
+    if (ruleHit === 'ignore') continue;
+    const annotated = {
+      ...item, identifier, tier,
+      moneyFlag: hasMoneyFlag(`${item.subject || ''} ${item.snippet || ''}`),
+      rulePriority: ruleHit === 'priority',
+    };
     kept.push(annotated);
     index.set(indexKey(kind, item.snippet), {
-      tier, moneyFlag: annotated.moneyFlag, hasAttachment: !!item.hasAttachment, displayName: item.displayName,
+      tier, moneyFlag: annotated.moneyFlag, hasAttachment: !!item.hasAttachment,
+      displayName: item.displayName, rulePriority: annotated.rulePriority,
     });
   }
   return kept.length ? kept.map(lineFn).join(sep) : 'No matching items found.';
 }
 
 async function gatherSources(perSource = 20, jobsCap = 20) {
+  const { rows: rules } = await pool.query('SELECT pattern, action FROM rules');
+
   const [texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobsRes] = await Promise.all([
     getRecentTexts({ limit: perSource }),
     getUpcomingEvents({ days_ahead: 7 }),
@@ -479,13 +495,13 @@ async function gatherSources(perSource = 20, jobsCap = 20) {
 
   const contactIndex = new Map();
   const [textsText, emailsText, bizEmailsText, whatsappText, messengerText, instagramText, jobsText] = await Promise.all([
-    annotateAndFormat('sms', texts.items, lineSms, '\n', contactIndex),
-    annotateAndFormat('email', emails.items, lineEmail, '\n\n', contactIndex),
-    annotateAndFormat('bizemail', bizEmails.items, lineEmail, '\n\n', contactIndex),
-    annotateAndFormat('whatsapp', whatsapp.items, lineSms, '\n', contactIndex),
-    annotateAndFormat('messenger', messenger.items, lineSms, '\n', contactIndex),
-    annotateAndFormat('instagram', instagram.items, lineSms, '\n', contactIndex),
-    annotateAndFormat('job', jobItems, lineJob, '\n', contactIndex),
+    annotateAndFormat('sms', texts.items, lineSms, '\n', contactIndex, rules),
+    annotateAndFormat('email', emails.items, lineEmail, '\n\n', contactIndex, rules),
+    annotateAndFormat('bizemail', bizEmails.items, lineEmail, '\n\n', contactIndex, rules),
+    annotateAndFormat('whatsapp', whatsapp.items, lineSms, '\n', contactIndex, rules),
+    annotateAndFormat('messenger', messenger.items, lineSms, '\n', contactIndex, rules),
+    annotateAndFormat('instagram', instagram.items, lineSms, '\n', contactIndex, rules),
+    annotateAndFormat('job', jobItems, lineJob, '\n', contactIndex, rules),
   ]);
 
   return {
@@ -500,7 +516,7 @@ async function gatherSources(perSource = 20, jobsCap = 20) {
   };
 }
 
-const TAG_LEGEND = `Some lines carry a {tag} suffix from Reverb's contact memory: {vip} = someone you interact with often, reply to, or have flagged as important; {attachment} = the email has an attachment; {money} = mentions an invoice, bill, or payment. Weight tagged items higher — they should usually lead their bucket/category, and {money} items are a strong hint for a billing/"pay this" grouping.`;
+const TAG_LEGEND = `Some lines carry a {tag} suffix from Reverb's contact memory: {vip} = someone you interact with often, reply to, or have flagged as important; {attachment} = the email has an attachment; {money} = mentions an invoice, bill, or payment; {priority} = matches one of the user's own priority rules. Weight tagged items higher — they should usually lead their bucket/category, and {money}/{priority} items are a strong hint for importance.`;
 
 function sourcesBlock({ texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobs }) {
   return `TEXTS:
@@ -535,7 +551,7 @@ async function pickModel() {
   return ids.find(id => id.toLowerCase().includes(PREFER_MODEL)) || ids[0];
 }
 
-async function askModel(prompt) {
+async function askModel(prompt, maxTokens = 1400) {
   const model = await pickModel();
   const cr = await fetch(`${LM_URL}/v1/chat/completions`, {
     // Cloudflare's tunnel edge timeout sits around 125s (observed via 524s);
@@ -543,7 +559,7 @@ async function askModel(prompt) {
     signal: AbortSignal.timeout(115_000),
     method: 'POST',
     headers: LM_HEADERS,
-    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.2, max_tokens: 1400 }),
+    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.2, max_tokens: maxTokens }),
   });
   const data = await cr.json();
   return data.choices?.[0]?.message?.content || '';
@@ -632,6 +648,39 @@ async function handleContactTier(req, res, id) {
   res.end('{"ok":true}');
 }
 
+// User-editable priority/ignore rules (Rules drawer) — plain substring
+// patterns, matched in code via matchRules, not interpreted by the model.
+async function handleRules(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  if (req.method === 'GET') {
+    const { rows } = await pool.query('SELECT id, pattern, action, created_at FROM rules ORDER BY created_at DESC');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(rows));
+    return;
+  }
+  if (req.method === 'POST') {
+    const { pattern, action } = JSON.parse(await readBody(req));
+    if (!pattern || !String(pattern).trim() || !['priority', 'ignore'].includes(action)) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'pattern and a valid action are required' }));
+      return;
+    }
+    const { rows } = await pool.query(
+      'INSERT INTO rules (pattern, action) VALUES ($1,$2) RETURNING id, pattern, action, created_at',
+      [pattern.trim(), action]
+    );
+    res.writeHead(201, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(rows[0]));
+  }
+}
+
+async function handleRuleDelete(req, res, id) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  await pool.query('DELETE FROM rules WHERE id=$1', [id]);
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end('{"ok":true}');
+}
+
 // ── Work / Life reports ──────────────────────────────────
 // Both read the same pulled sources (see pullCache above) — one prompt asks
 // for business-relevant items, the other for personal ones. Persisted so
@@ -668,57 +717,96 @@ async function handleLife(req, res) {
   res.end(JSON.stringify(await readSummaryTable('life_summary')));
 }
 
-const CATEGORY_SCHEMA = `{"summary":"2-sentence overview","categories":[{"label":"short category name","items":[{"kind":"sms"|"email"|"cal"|"bizemail"|"whatsapp"|"messenger"|"instagram"|"job","from":"string","when":"short string like '2d' or 'tomorrow 09:00'","text":"imperative one-line action, under 100 chars","snippet":"verbatim quote from the source, under 100 chars, never paraphrase","reply":true|false}]}]}`;
+// ── Generate pipeline: classify -> work report -> life report ───────────
+// Three narrower sequential calls instead of two mega-prompts run
+// concurrently. Sequential because LM Studio is one GPU/one model server —
+// concurrent requests almost certainly queue there anyway, so staggering
+// costs little wall-clock time while keeping each call's job small:
+// classify only ever sorts+labels (no summary/categories to juggle), and
+// each report call only ever sees its own already-filtered item list, never
+// the full raw source dump the old prompts each had to re-read.
+const CLASSIFY_SCHEMA = `[{"kind":"sms"|"email"|"cal"|"bizemail"|"whatsapp"|"messenger"|"instagram"|"job","from":"string","when":"short string like '2d' or 'tomorrow 09:00'","bucket":"work"|"life","text":"imperative one-line action naming the specific channel/app, under 100 chars","snippet":"verbatim quote from the source, under 100 chars, never paraphrase","reply":true|false}]`;
 
-function workPrompt(sources, today) {
+function classifyPrompt(sources, today) {
   return `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs).
 
 ${TAG_LEGEND}
 
-This report is Switch Craft work only — jobs, clients, suppliers, business money. Ignore anything personal or about friends/family (that goes in a separate report). Every item's "text" must name the specific channel it needs action on (e.g. "Reply to Adam Johnson's booking request on Messenger", "Pay AWM's June invoice") so it can be found again without re-searching.
+For every item that needs a reply, needs action, or is worth knowing about, decide which report it belongs in:
+- WORK: Switch Craft jobs, clients, suppliers, business money.
+- LIFE: personal messages from friends or family, upcoming personal events (not job appointments), anything involving the kids Peyton and Jude, plans or invites.
+Ignore routine or no-action items entirely — read receipts, newsletters, marketing/promotional emails, delivery notifications, and automated confirmations never belong in either bucket, even if their subject line happens to mention something family- or kids-adjacent. Only include something under Peyton/Jude if it is genuinely about them (school, an appointment, an activity), not because a word matched.
 
-Write a 2-sentence summary of how the work day/week is shaping up, then group the most important actionable items into at most 5 categories that make sense for what's actually here (e.g. "jobs to confirm", "bills to pay", "parts to grab before tomorrow") — don't invent empty categories. Cap each category at 5 items — pick the most important/urgent ones if there are more. Keep "text" and "snippet" each under 100 characters.
+Include at most 25 items total across both buckets combined — if there's more than that, pick the most urgent/important and drop the rest, but never drop an item tagged {money}, {vip}, or {priority} — those are always included even if it means cutting an untagged item first. This list must stay short enough to fit in one response; going over 25 breaks the output.
 
-Respond with ONLY a JSON object, no prose outside it, no markdown fences:
-${CATEGORY_SCHEMA}
-If nothing needs action, categories should be [] and the summary should say work looks clear.
+Every item's "text" must name the specific channel/app it needs action on (e.g. "Reply to Adam Johnson's booking request on Messenger", "Pay AWM's June invoice") so it can be found again without re-searching. "snippet" must be copied from exactly one source line — never combine or summarize two different items into one snippet.
 
-${sourcesBlock(sources)}`;
-}
-
-function lifePrompt(sources, today) {
-  return `Today is ${today}. Read the raw data below from several sources (texts, calendar, personal email, business email, WhatsApp, Messenger, Instagram, Switch Craft jobs).
-
-${TAG_LEGEND}
-
-This report is personal life only — ignore Switch Craft jobs, clients, suppliers, and business invoices (that's a separate report). Focus on: messages from friends or family that deserve a reply, upcoming personal events on the calendar (not job appointments), anything involving the kids Peyton and Jude (school, appointments, activities), and plans or invites from friends. Every message-based item's "text" must name the specific app it's on (Text, WhatsApp, Messenger, Instagram, or email) so it can be found again without re-searching.
-
-Write a 2-sentence summary of what's going on personally this week, then group items into at most 5 categories that fit what's actually here (e.g. "people to get back to", "upcoming events", "peyton & jude") — don't invent empty categories. Cap each category at 5 items. Keep "text" and "snippet" each under 100 characters.
-
-Respond with ONLY a JSON object, no prose outside it, no markdown fences:
-${CATEGORY_SCHEMA}
-If nothing needs action, categories should be [] and the summary should say things look quiet.
+Respond with ONLY a JSON array, no prose, no markdown fences:
+${CLASSIFY_SCHEMA}
+If nothing needs action, respond with [].
 
 ${sourcesBlock(sources)}`;
 }
 
-async function runCategorization(sources, prompt) {
+async function runClassify(sources) {
+  const today = new Date().toISOString().slice(0, 10);
   let raw;
   try {
-    raw = await askModel(prompt);
+    // Higher budget than the default — this is the one call that reads
+    // every source at once, so its output is the largest in the pipeline
+    // even with the 25-item cap above.
+    raw = await askModel(classifyPrompt(sources, today), 2200);
+  } catch {
+    return { work: [], life: [], error: 'LM Studio unreachable' };
+  }
+  const parsedRaw = parseJsonFence(raw, []);
+  const parsed = Array.isArray(parsedRaw) ? parsedRaw : [];
+  const items = parsed
+    .filter(t => t && t.kind && t.text && t.snippet && (t.bucket === 'work' || t.bucket === 'life'))
+    .map(t => applyContactMatch(t, sources.contactIndex))
+    .sort((a, b) => importanceScore(b) - importanceScore(a));
+  const strip = ({ bucket, ...rest }) => rest;
+  return {
+    work: items.filter(t => t.bucket === 'work').map(strip),
+    life: items.filter(t => t.bucket === 'life').map(strip),
+  };
+}
+
+const REPORT_SCHEMA = `{"summary":"2-sentence overview","categories":[{"label":"short category name","indexes":[0,2]}]}`;
+const REPORT_EXAMPLES = { work: '"jobs to confirm", "bills to pay", "parts to grab before tomorrow"', life: '"people to get back to", "upcoming events", "peyton & jude"' };
+const REPORT_CLEAR = { work: 'work looks clear', life: 'things look quiet' };
+
+// Items are given fully-formed (classify already wrote "text" and picked a
+// channel) and referenced only by index — the model groups and summarizes,
+// it never re-touches the actual content, so it can't mangle a snippet or
+// invent a detail while writing this report.
+function reportPrompt(items, label) {
+  const listing = items.map((t, i) => `${i}. [${t.kind}] ${t.from}${t.when ? ` (${t.when})` : ''}: ${t.text}${tagSuffix(t)}`).join('\n');
+  return `These are today's ${label} items, already filtered and numbered:
+
+${listing}
+
+Write a 2-sentence summary of how things look, then group the items into at most 5 categories that fit what's actually here (e.g. ${REPORT_EXAMPLES[label]}) — don't invent empty categories. Cap each category at 5 item indexes — pick the most important/urgent ones if there are more (priority-tagged items should usually be included). Reference items ONLY by their index number, never rewrite their text.
+
+Respond with ONLY a JSON object, no prose outside it, no markdown fences:
+${REPORT_SCHEMA}`;
+}
+
+async function runReport(items, label) {
+  if (!items.length) return { summary: `Nothing on ${label} today.`, categories: [] };
+  let raw;
+  try {
+    raw = await askModel(reportPrompt(items, label));
   } catch {
     return { summary: '', categories: [], error: 'LM Studio unreachable' };
   }
   const parsed = parseJsonFence(raw, {});
-  const summary = typeof parsed.summary === 'string' ? parsed.summary : '';
+  const summary = typeof parsed.summary === 'string' && parsed.summary ? parsed.summary : REPORT_CLEAR[label];
   const categories = (Array.isArray(parsed.categories) ? parsed.categories : [])
-    .filter(c => c && typeof c.label === 'string' && Array.isArray(c.items))
+    .filter(c => c && typeof c.label === 'string' && Array.isArray(c.indexes))
     .map(c => ({
       label: c.label,
-      items: c.items
-        .filter(t => t && t.text && t.snippet && t.from)
-        .map(t => applyContactMatch(t, sources.contactIndex))
-        .sort((a, b) => importanceScore(b) - importanceScore(a)),
+      items: [...new Set(c.indexes)].map(i => items[i]).filter(Boolean).slice(0, 5),
     }))
     .filter(c => c.items.length);
   return { summary, categories };
@@ -742,12 +830,16 @@ async function handleReportGenerate(req, res) {
   }
 
   const { sources } = pullCache;
-  const today = new Date().toISOString().slice(0, 10);
+  const classified = await runClassify(sources);
+  if (classified.error) {
+    const errResult = { summary: '', categories: [], error: classified.error };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ work: errResult, life: errResult }));
+    return;
+  }
 
-  const [work, life] = await Promise.all([
-    runCategorization(sources, workPrompt(sources, today)),
-    runCategorization(sources, lifePrompt(sources, today)),
-  ]);
+  const work = await runReport(classified.work, 'work');
+  const life = await runReport(classified.life, 'life');
   await Promise.all([persistSummary('work_summary', work), persistSummary('life_summary', life)]);
 
   const scannedAt = new Date().toISOString();
@@ -866,6 +958,9 @@ createServer(async (req, res) => {
     if (req.method === 'POST' && u === '/api/contacts/signal') return await handleContactSignal(req, res);
     const contactMatch = u.match(/^\/api\/contacts\/(\d+)$/);
     if (req.method === 'PATCH' && contactMatch) return await handleContactTier(req, res, contactMatch[1]);
+    if (u === '/api/rules') return await handleRules(req, res);
+    const ruleMatch = u.match(/^\/api\/rules\/(\d+)$/);
+    if (req.method === 'DELETE' && ruleMatch) return await handleRuleDelete(req, res, ruleMatch[1]);
     return await serveStatic(req, res);
   } catch (err) {
     console.error(err);

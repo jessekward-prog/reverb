@@ -100,6 +100,114 @@ function PeopleDrawer({ open, auth, onClose }) {
   );
 }
 
+// "emails from these guys must be a priority" / "ignore emails from this
+// address" — plain patterns, matched by substring in server.js's
+// matchRules, applied at pull time (same point muted contacts get filtered).
+// No LLM involved in matching, so a rule always sticks.
+function RulesDrawer({ open, auth, onClose }) {
+  const [rules, setRules] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [pattern, setPattern] = useState('');
+  const [action, setAction] = useState('priority');
+
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    fetch('/api/rules', { headers: authHeaders(auth?.token) })
+      .then(r => r.json())
+      .then(rows => setRules(Array.isArray(rows) ? rows : []))
+      .catch(() => setRules([]))
+      .finally(() => setLoading(false));
+  }, [open, auth]);
+
+  async function addRule(e) {
+    e.preventDefault();
+    const p = pattern.trim();
+    if (!p) return;
+    try {
+      const res = await fetch('/api/rules', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
+        body: JSON.stringify({ pattern: p, action }),
+      });
+      if (!res.ok) return;
+      const row = await res.json();
+      setRules(prev => [row, ...prev]);
+      setPattern('');
+    } catch { /* leave the input as-is, nothing was saved */ }
+  }
+
+  function removeRule(id) {
+    setRules(prev => prev.filter(r => r.id !== id));
+    fetch(`/api/rules/${id}`, { method: 'DELETE', headers: authHeaders(auth?.token) }).catch(() => {});
+  }
+
+  if (!open) return null;
+  const inputStyle = {
+    appearance: 'none', border: '1px solid rgba(232,232,228,.24)', background: '#060606',
+    color: INK, fontFamily: 'inherit', fontSize: 12, textTransform: 'none',
+    padding: '9px 10px', width: '100%', boxSizing: 'border-box',
+  };
+  return (
+    <div onClick={onClose} style={{ position: 'fixed', inset: 0, zIndex: 20, background: 'rgba(0,0,0,.6)',
+                                     display: 'flex', justifyContent: 'flex-end' }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        width: 'min(360px, 92vw)', height: '100%', background: '#0b0b0a',
+        borderLeft: '1px solid rgba(232,232,228,.18)', display: 'flex', flexDirection: 'column', overflow: 'hidden',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      padding: '18px 16px', borderBottom: '1px solid rgba(232,232,228,.14)' }}>
+          <div style={{ fontWeight: 700 }}>// rules</div>
+          <button type="button" onClick={onClose} style={{ appearance: 'none', border: 0, background: 'none',
+                                                            color: INK, fontFamily: 'inherit', fontSize: 14, cursor: 'pointer' }}>&#10005;</button>
+        </div>
+
+        <form onSubmit={addRule} style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 8,
+                                          borderBottom: '1px solid rgba(232,232,228,.14)' }}>
+          <input value={pattern} onChange={e => setPattern(e.target.value)} style={inputStyle}
+                 placeholder="e.g. awm.com.au, or a name/address" />
+          <div style={{ display: 'flex', gap: 1, background: 'rgba(232,232,228,.14)', border: '1px solid rgba(232,232,228,.14)' }}>
+            {['priority', 'ignore'].map(a => (
+              <button key={a} type="button" onClick={() => setAction(a)} style={{
+                appearance: 'none', flex: 1, border: 0, margin: 0, cursor: 'pointer', fontFamily: 'inherit',
+                fontSize: 10, letterSpacing: '.06em', textTransform: 'uppercase', padding: '9px 4px',
+                background: action === a ? 'rgba(217,147,47,.22)' : '#060606',
+                color: action === a ? AMBER : INK,
+              }}>{a}</button>
+            ))}
+          </div>
+          <button type="submit" disabled={!pattern.trim()} style={{
+            appearance: 'none', border: '1px solid rgba(217,147,47,.55)', background: 'rgba(217,147,47,.09)',
+            color: INK, fontFamily: 'inherit', fontSize: 10.5, letterSpacing: '.08em', textTransform: 'uppercase',
+            padding: '11px', cursor: pattern.trim() ? 'pointer' : 'default', opacity: pattern.trim() ? 1 : .4,
+          }}>add rule</button>
+        </form>
+
+        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}>
+          {loading && <div style={{ padding: 16, opacity: .4 }}>loading…</div>}
+          {!loading && !rules.length && <div style={{ padding: 16, opacity: .4, textTransform: 'none' }}>no rules yet</div>}
+          {rules.map(r => (
+            <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 10,
+                                     padding: '11px 16px', borderBottom: '1px solid rgba(232,232,228,.08)' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, textTransform: 'none', overflow: 'hidden', textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap' }}>{r.pattern}</div>
+                <div style={{ fontSize: 9.5, opacity: .4, marginTop: 2, color: r.action === 'priority' ? AMBER : undefined }}>
+                  {r.action}
+                </div>
+              </div>
+              <button type="button" onClick={() => removeRule(r.id)} style={{
+                appearance: 'none', border: 0, background: 'none', color: INK, opacity: .5,
+                fontFamily: 'inherit', fontSize: 13, cursor: 'pointer', flex: 'none', padding: 4,
+              }}>&#10005;</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Shared by WorkView and LifeView — both are read-only digests of a
 // persisted report (work_summary / life_summary), regenerated only from
 // Sweep's Pull Data -> Generate Report flow, not from a button in here.
@@ -114,6 +222,7 @@ export default function ReportView({
   const [expandedId, setExpandedId] = useState(null);
   const [toast, setToast] = useState('');
   const [peopleOpen, setPeopleOpen] = useState(false);
+  const [rulesOpen, setRulesOpen] = useState(false);
   const toastTimer = useRef(null);
 
   function say(text) {
@@ -188,7 +297,10 @@ export default function ReportView({
               <button type="button" style={navBtn(active === 'life')} onClick={() => onOpenLife?.()}>life</button>
               <button type="button" style={navBtn(false)} onClick={() => onOpenTexts?.()}>texts</button>
             </div>
-            <button type="button" onClick={() => setPeopleOpen(true)} style={{ ...navBtn(false), opacity: .6 }}>people</button>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button type="button" onClick={() => setPeopleOpen(true)} style={{ ...navBtn(false), opacity: .6 }}>people</button>
+              <button type="button" onClick={() => setRulesOpen(true)} style={{ ...navBtn(false), opacity: .6 }}>rules</button>
+            </div>
           </div>
         </div>
 
@@ -319,6 +431,7 @@ export default function ReportView({
       )}
 
       <PeopleDrawer open={peopleOpen} auth={auth} onClose={() => setPeopleOpen(false)} />
+      <RulesDrawer open={rulesOpen} auth={auth} onClose={() => setRulesOpen(false)} />
     </div>
   );
 }
