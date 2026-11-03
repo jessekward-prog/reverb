@@ -92,41 +92,33 @@ export const SWITCHCRAFT_JOBS_TOOL = {
 // call sites in server.js's proxyChat); gatherSources (Sweep/Work) also
 // wants the structured .items so it can track senders in the contacts table
 // without a second round-trip to the same source.
-const normalizePhone = p => {
-  const d = String(p || '').replace(/[^\d+]/g, '');
-  return /^0\d{9}$/.test(d) ? '+61' + d.slice(1) : d;
-};
-
-async function getPhonebook() {
-  try {
-    const r = await fetch(`${process.env.TEXT_CMD_BASE_URL}/api/contacts`, {
-      headers: { 'X-Service-Token': process.env.TEXT_CMD_SERVICE_TOKEN },
-    });
-    if (!r.ok) return new Map();
-    const rows = await r.json();
-    return new Map(rows.map(c => [normalizePhone(c.phone), c.name]));
-  } catch { return new Map(); }
-}
-
 export async function getRecentTexts({ contact, limit = 20 } = {}) {
-  const params = new URLSearchParams({ source: 'sms', limit: String(limit) });
   let r;
   try {
-    r = await fetch(`${process.env.NOTIFY_CMD_BASE_URL}/api/notifications/recent?${params}`, {
-      headers: { 'X-Service-Token': process.env.NOTIFY_CMD_SERVICE_TOKEN },
+    r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/sms?limit=${limit}`, {
+      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
     });
-  } catch (err) { return { text: `Could not reach notify-cmd: ${err.message}`, items: [] }; }
-  if (!r.ok) return { text: `Could not reach notify-cmd (status ${r.status})`, items: [] };
-  const raw = await r.json();
-  const phonebook = await getPhonebook();
-  let msgs = raw.map(m => ({ ...m, name: phonebook.get(normalizePhone(m.sender)) || null }));
+  } catch (err) { return { text: `Could not reach browser-bridge: ${err.message}`, items: [] }; }
+  if (!r.ok) return { text: `Could not reach browser-bridge (status ${r.status})`, items: [] };
+  const { sms = [], health = {} } = await r.json();
+
+  // A dead source used to look identical to a quiet week. Say which one it is.
+  if (!sms.length) return { text: `No texts available (${health.sms || 'unknown'}).`, items: [] };
+
+  let msgs = sms;
   if (contact) {
     const needle = contact.toLowerCase();
-    msgs = msgs.filter(m => (m.sender || '').includes(contact) || (m.name || '').toLowerCase().includes(needle));
+    msgs = msgs.filter(m => (m.name || '').toLowerCase().includes(needle));
   }
   if (!msgs.length) return { text: 'No matching text messages found.', items: [] };
-  const items = msgs.map(m => ({ identifier: m.sender, displayName: m.name || m.sender, snippet: m.body, occurred_at: m.occurred_at }));
-  return { text: msgs.map(m => `[${m.occurred_at}] ${m.name || m.sender}: ${m.body}`).join('\n'), items };
+
+  const items = msgs.map(m => ({
+    identifier: m.name, displayName: m.name, snippet: m.snippet, occurred_at: m.at,
+  }));
+  const text = msgs
+    .map(m => `[${m.at}] ${m.name}${m.outbound ? ' (you replied last)' : ''}${m.unread ? ' (unread)' : ''}: ${m.snippet}`)
+    .join('\n');
+  return { text, items };
 }
 
 export async function getUpcomingEvents({ days_ahead = 1 } = {}) {
