@@ -58,7 +58,7 @@ function Waveform({ busy }) {
 // gathers all 9 sources (no LLM yet, so it's fast and free), then "Generate
 // Report" runs that same pull through the model twice — once for Work
 // (business), once for Life (personal) — and both tabs pick up the result.
-export default function SweepView({ auth, onLockout, onOpenChat, onOpenWork, onOpenLife, onOpenTexts }) {
+export default function SweepView({ auth, onLockout, onOpenTasks, onOpenChat, onOpenWork, onOpenLife, onOpenTexts }) {
   const [phase, setPhase] = useState('idle'); // 'idle' | 'pulling' | 'pulled' | 'generating' | 'done' | 'error'
   const [step, setStep] = useState(0);
   const [counts, setCounts] = useState({});
@@ -180,6 +180,7 @@ export default function SweepView({ auth, onLockout, onOpenChat, onOpenWork, onO
             <div style={label}>{statusLine()}</div>
           </div>
           <div className="rv-head-nav" style={{ background: EDGE, border: `1px solid ${EDGE}` }}>
+            <button type="button" style={navBtn(false)} onClick={() => onOpenTasks?.()}>to-do</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenChat?.()}>chat</button>
             <button type="button" style={navBtn(true)}>sweep</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenWork?.()}>work</button>

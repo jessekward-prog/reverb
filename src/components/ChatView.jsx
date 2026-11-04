@@ -68,7 +68,7 @@ function LinkPreview({ content, token }) {
 }
 
 
-export default function ChatView({ auth, onLockout, onOpenSweep, onOpenWork, onOpenLife, onOpenTexts, draftPrompt, onDraftConsumed }) {
+export default function ChatView({ auth, onLockout, onOpenTasks, onOpenSweep, onOpenWork, onOpenLife, onOpenTexts, draftPrompt, onDraftConsumed }) {
   const [messages, setMessages]       = useState([]);
   const [pending, setPending]         = useState(null); // {status, text} | {retry, fn} | null
   const [convId, setConvId]           = useState(null);
@@ -372,6 +372,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, onOpenWork, onO
               pill sits at, since it has nothing after it either. */}
           <div className="rv-head-nav" style={{ display: 'flex', gap: 1, background: 'rgba(232,232,228,.18)',
                         border: '1px solid rgba(232,232,228,.18)' }}>
+            <button type="button" style={navBtn(false)} onClick={() => onOpenTasks?.()}>to-do</button>
             <button type="button" style={navBtn(true)}>chat</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenSweep?.()}>sweep</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenWork?.()}>work</button>

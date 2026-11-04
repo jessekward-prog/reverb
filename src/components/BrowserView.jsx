@@ -110,6 +110,7 @@ export default function BrowserView({ auth, onLockout, ...nav }) {
           </div>
           <div className="rv-head-side">
             <div className="rv-head-nav" style={{ background: EDGE, border: `1px solid ${EDGE}` }}>
+              <button type="button" style={tabBtn(false)} onClick={() => nav.onOpenTasks?.()}>to-do</button>
               <button type="button" style={tabBtn(false)} onClick={() => nav.onOpenChat?.()}>chat</button>
               <button type="button" style={tabBtn(false)} onClick={() => nav.onOpenWork?.()}>work</button>
             </div>

@@ -6,8 +6,9 @@ import { INK, AMBER, EDGE, HAIR, RAISED, FILM } from './CrtBackdrop.jsx';
 // Hidden below 1024px by .nav-rail's `hidden lg:flex` (see style.css); the
 // per-view pill is hidden ABOVE 1024px, so exactly one is visible at any width.
 const ITEMS = [
-  { key: 'work',  label: 'work',  hint: 'things to do' },
-  { key: 'life',  label: 'life',  hint: 'personal' },
+  { key: 'tasks', label: 'to-do', hint: 'the list' },
+  { key: 'work',  label: 'work',  hint: 'business report' },
+  { key: 'life',  label: 'life',  hint: 'personal report' },
   { key: 'sweep', label: 'sweep', hint: 'pull + generate' },
   { key: 'texts', label: 'texts', hint: 'message threads' },
   { key: 'browser', label: 'browser', hint: 'live logged-in tabs' },
@@ -32,8 +33,9 @@ function Row({ item, active, onClick, outstanding }) {
     >
       <span style={{ color: active ? AMBER : 'rgba(232,232,228,.3)', width: 8 }}>{active ? '▸' : ''}</span>
       <span style={{ flex: 1 }}>{item.label}</span>
-      {/* the aging nudge rides on the work tab — the only place items accumulate */}
-      {item.key === 'work' && outstanding > 0 && (
+      {/* the chase nudge rides on the championed to-do tab — the one list that
+          pushes you to clear what's been sitting */}
+      {item.key === 'tasks' && outstanding > 0 && (
         <span style={{
           flex: 'none', minWidth: 18, textAlign: 'center', fontSize: 10,
           color: AMBER, border: `1px solid ${AMBER}`, padding: '1px 5px', letterSpacing: 0,

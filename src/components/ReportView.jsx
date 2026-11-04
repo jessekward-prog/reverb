@@ -110,9 +110,11 @@ function PeopleDrawer({ open, auth, onClose }) {
 }
 
 // "emails from these guys must be a priority" / "ignore emails from this
-// address" — plain patterns, matched by substring in server.js's
-// matchRules, applied at pull time (same point muted contacts get filtered).
-// No LLM involved in matching, so a rule always sticks.
+// address" — plain patterns, matched by substring in server.js's matchRules
+// when the report is assembled (annotateGrounded), the same point muted
+// contacts get dropped and VIPs flagged. No LLM involved in matching, so a
+// rule always sticks: priority floats the item up the to-do list, ignore drops
+// it entirely.
 function RulesDrawer({ open, auth, onClose }) {
   const [rules, setRules] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -222,7 +224,7 @@ function RulesDrawer({ open, auth, onClose }) {
 // Sweep's Pull Data -> Generate Report flow, not from a button in here.
 export default function ReportView({
   auth, onLockout, active, title, apiPath, emptyHint,
-  onOpenChat, onOpenSweep, onOpenWork, onOpenLife, onOpenTexts, onOpenBrowser, onDraftReply,
+  onOpenChat, onOpenSweep, onOpenTasks, onOpenWork, onOpenLife, onOpenTexts, onOpenBrowser, onDraftReply,
 }) {
   const [phase, setPhase] = useState('loading'); // 'loading' | 'ready'
   const [summary, setSummary] = useState('');
@@ -334,6 +336,7 @@ export default function ReportView({
           </div>
           <div className="rv-head-side">
             <div className="rv-head-nav" style={{ background: EDGE, border: `1px solid ${EDGE}` }}>
+              <button type="button" style={navBtn(active === 'tasks')} onClick={() => onOpenTasks?.()}>to-do</button>
               <button type="button" style={navBtn(false)} onClick={() => onOpenChat?.()}>chat</button>
               <button type="button" style={navBtn(false)} onClick={() => onOpenSweep?.()}>sweep</button>
               <button type="button" style={navBtn(active === 'work')} onClick={() => onOpenWork?.()}>work</button>

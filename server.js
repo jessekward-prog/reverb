@@ -764,6 +764,49 @@ async function handleLife(req, res) {
   res.end(JSON.stringify(await readSummaryTable('life_summary')));
 }
 
+// ── To-do: the one championed list ────────────────────────
+// Work and Life are the two reports to read; the to-do list is the single
+// actionable thing to DO, pulled from both and ranked so the right item is at
+// the top. No new generation, no new store — it reads the same persisted
+// reports (so it's always in step with them), merges their groups, drops what's
+// already ticked off (swept_done, via readSummaryTable), then ranks:
+//   priority rule > VIP > money > chased (2+ days open) > age.
+// That ranking is the trust contract: the list says what to do first, by rule,
+// not by model whim. Ticking an item posts to /api/tasks/:id/done, the same
+// swept_done both reports already use.
+const CHASE_DAYS = 2;
+const daysOpen = iso => iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86400000) : 0;
+const taskScore = t => {
+  const d = daysOpen(t.firstSeenAt);
+  return (t.rulePriority ? 4 : 0) + (t.tier === 'vip' ? 3 : 0) + (t.moneyFlag ? 2 : 0)
+    + (d >= CHASE_DAYS ? 2 : 0) + Math.min(d, 20) * 0.01; // age as a tiny tiebreak
+};
+const groupHeat = c => c.items.reduce((m, t) => Math.max(m, taskScore(t)), 0);
+
+async function handleTasks(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const [work, life] = await Promise.all([
+    readSummaryTable('work_summary'), readSummaryTable('life_summary'),
+  ]);
+  const tag = (r, bucket) => (r.categories || []).map(c => ({
+    label: c.label, bucket, items: c.items.map(t => ({ ...t, bucket })),
+  }));
+  const categories = [...tag(work, 'work'), ...tag(life, 'life')];
+  for (const c of categories) c.items.sort((a, b) => taskScore(b) - taskScore(a));
+  categories.sort((a, b) => groupHeat(b) - groupHeat(a));
+
+  const all = categories.flatMap(c => c.items);
+  const total = all.length;
+  const chase = all.filter(t => daysOpen(t.firstSeenAt) >= CHASE_DAYS).length;
+  const scannedAt = [work.scannedAt, life.scannedAt].filter(Boolean).sort().pop() || null;
+  const summary = total
+    ? `${total} ${total === 1 ? 'thing' : 'things'} on the list${chase ? `, ${chase} need chasing` : ''}.`
+    : 'nothing on the list right now.';
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ summary, categories, scannedAt, outstanding: chase }));
+}
+
 // ── Generate pipeline: classify -> work report -> life report ───────────
 // Three narrower sequential calls instead of two mega-prompts run
 // concurrently. Sequential because LM Studio is one GPU/one model server —
@@ -965,7 +1008,38 @@ async function collectGroundedItems() {
     items.push({ kind: 'cal', from: ev.text,
                  snippet: `${ev.date}${ev.time ? ' ' + ev.time : ''}${ev.location ? ' @ ' + ev.location : ''}`,
                  when: `${ev.date}${ev.time ? ' ' + ev.time : ''}`, text: ev.text, hintBucket: 'life' });
-  return items;
+  return annotateGrounded(items);
+}
+
+// The deterministic rule layer — the part you can trust, because no model
+// touches it. Runs over the grounded facts before they're grouped:
+//   - an `ignore` rule or a muted contact drops the item entirely;
+//   - a `priority` rule, a VIP contact, or an invoice/payment keyword flags it
+//     so /api/tasks floats it to the top of the list.
+// Rules and contact tiers come from the user's own Rules/People drawers, matched
+// in code (matchRules/deriveTier), so a rule always sticks regardless of what
+// the model does next. This is what moved the user's rules from the old dead
+// pull path onto the live report.
+async function annotateGrounded(items) {
+  const [{ rows: rules }, { rows: contactRows }] = await Promise.all([
+    pool.query('SELECT pattern, action FROM rules'),
+    pool.query('SELECT kind, identifier, tier, seen_count, replied_count, dismissed_count, last_seen_at FROM contacts'),
+  ]);
+  const tierOf = new Map(contactRows.map(c => [`${c.kind}|${c.identifier}`, deriveTier(c)]));
+  const out = [];
+  for (const t of items) {
+    const rule = matchRules(`${t.from || ''} ${t.subject || ''} ${t.snippet || ''} ${t.text || ''}`, rules);
+    if (rule === 'ignore') continue;
+    const tier = tierOf.get(`${t.kind}|${normalizeIdentifier(t.kind, t.from)}`) || null;
+    if (tier === 'muted') continue;
+    out.push({
+      ...t,
+      tier: tier === 'vip' ? 'vip' : (t.tier || null),
+      rulePriority: rule === 'priority',
+      moneyFlag: hasMoneyFlag(`${t.subject || ''} ${t.snippet || ''}`),
+    });
+  }
+  return out;
 }
 
 // If the model call fails, never lose the grounded facts — fall back to one
@@ -1205,10 +1279,13 @@ createServer(async (req, res) => {
     if (req.method === 'POST' && u === '/api/report/generate') return await handleReportGenerate(req, res);
     if (req.method === 'GET'  && u === '/api/work') return await handleWork(req, res);
     if (req.method === 'GET'  && u === '/api/life') return await handleLife(req, res);
+    if (req.method === 'GET'  && u === '/api/tasks') return await handleTasks(req, res);
     const workDoneMatch = u.match(/^\/api\/work\/([a-f0-9]+)\/done$/);
     if (workDoneMatch) return await handleTaskDone(req, res, workDoneMatch[1]);
     const lifeDoneMatch = u.match(/^\/api\/life\/([a-f0-9]+)\/done$/);
     if (lifeDoneMatch) return await handleTaskDone(req, res, lifeDoneMatch[1]);
+    const tasksDoneMatch = u.match(/^\/api\/tasks\/([a-f0-9]+)\/done$/);
+    if (tasksDoneMatch) return await handleTaskDone(req, res, tasksDoneMatch[1]);
     if (req.method === 'GET' && u === '/api/texts') return await handleTexts(req, res);
     if (req.method === 'GET'  && u === '/api/contacts') return await handleContacts(req, res);
     if (req.method === 'POST' && u === '/api/contacts/signal') return await handleContactSignal(req, res);

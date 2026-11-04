@@ -3,6 +3,7 @@ import PinGate from './components/PinGate.jsx';
 import NavRail from './components/NavRail.jsx';
 import ChatView from './components/ChatView.jsx';
 import SweepView from './components/SweepView.jsx';
+import TasksView from './components/TasksView.jsx';
 import WorkView from './components/WorkView.jsx';
 import LifeView from './components/LifeView.jsx';
 import TextsView from './components/TextsView.jsx';
@@ -13,15 +14,15 @@ export default function App() {
   const [stage, setStage]     = useState('loading'); // 'loading' | 'pin' | 'chat'
   const [pinMode, setPinMode] = useState('enter');   // 'setup' | 'enter'
   const [auth, setAuth]       = useState({ token: null, role: null });
-  const [view, setView]       = useState('work');    // 'chat' | 'sweep' | 'work' | 'life' | 'texts' — home (work) is the landing tab
+  const [view, setView]       = useState('tasks');   // 'tasks' | 'chat' | 'sweep' | 'work' | 'life' | 'texts' | 'browser' — to-do is the landing tab
   const [draftPrompt, setDraftPrompt] = useState(null);
-  const [outstanding, setOutstanding] = useState(0); // items open 2+ days, for the rail badge
+  const [outstanding, setOutstanding] = useState(0); // items chased 2+ days, for the rail badge
 
-  // Keep the rail's chase badge current: refetch the work report's outstanding
-  // count on auth and whenever the view changes (so it updates after a sweep).
+  // Keep the rail's chase badge current: refetch the to-do list's chase count
+  // on auth and whenever the view changes (so it updates after a sweep).
   useEffect(() => {
     if (stage !== 'chat' || !auth.token) return;
-    fetch('/api/work', { headers: authHeaders(auth.token) })
+    fetch('/api/tasks', { headers: authHeaders(auth.token) })
       .then(r => (r.ok ? r.json() : null))
       .then(d => d && setOutstanding(d.outstanding || 0))
       .catch(() => {});
@@ -78,6 +79,7 @@ export default function App() {
   const nav = {
     onOpenChat:  () => setView('chat'),
     onOpenSweep: () => setView('sweep'),
+    onOpenTasks: () => setView('tasks'),
     onOpenWork:  () => setView('work'),
     onOpenLife:  () => setView('life'),
     onOpenTexts: () => setView('texts'),
@@ -86,6 +88,7 @@ export default function App() {
 
   let content;
   if (view === 'sweep')        content = <SweepView auth={auth} onLockout={handleLockout} {...nav} />;
+  else if (view === 'tasks')   content = <TasksView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
   else if (view === 'work')    content = <WorkView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
   else if (view === 'life')    content = <LifeView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
   else if (view === 'texts')   content = <TextsView auth={auth} onLockout={handleLockout} {...nav} />;
