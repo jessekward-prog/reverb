@@ -1007,6 +1007,84 @@ Respond with ONLY this JSON, no prose, no markdown:
   return { work: build('work'), life: build('life') };
 }
 
+// Full thread behind a report item — "get context" so the user can see what a
+// one-line snippet ("👍 to '...'") is actually about.
+async function handleItemContext(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const from = new URL(req.url, 'http://x').searchParams.get('from');
+  if (!from) { res.writeHead(400); res.end('{}'); return; }
+  try {
+    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?contact=${encodeURIComponent(from)}&limit=1`, {
+      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+    });
+    const { threads = [] } = r.ok ? await r.json() : {};
+    const messages = (threads[0]?.messages || []).map(m => ({ outbound: !!m.outbound, text: m.text }));
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ from, messages }));
+  } catch (e) { res.writeHead(502); res.end(JSON.stringify({ error: e.message })); }
+}
+
+// "Add to cal": read the real thread, extract the agreed job/appointment as a
+// structured event (grounded in the conversation, so it can't invent a time),
+// and open a pre-filled Google Calendar event in the logged-in calendar tab for
+// the user to confirm and save. Nothing is written without the user's click.
+async function handleItemToCal(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const { from, text } = JSON.parse(await readBody(req));
+  try {
+    // 1. context
+    const tr = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?contact=${encodeURIComponent(from)}&limit=1`, {
+      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+    });
+    const { threads = [] } = tr.ok ? await tr.json() : {};
+    const convo = (threads[0]?.messages || [])
+      .map(m => `${m.outbound ? 'me' : 'them'}: ${m.text}`).join('\n');
+    if (!convo) { res.writeHead(200); res.end(JSON.stringify({ error: 'no conversation found to read' })); return; }
+
+    // 2. extract a structured event, grounded in the thread
+    const today = new Date().toISOString().slice(0, 10);
+    const prompt = `Today is ${today}. This is a text conversation with ${from}:
+
+${convo}
+
+If a specific job, appointment, or meeting has been AGREED here, extract it as JSON:
+{"found":true,"title":"short event title","date":"YYYY-MM-DD","time":"HH:MM 24h or empty if none","durationMins":60}
+Resolve relative dates ("Friday", "Tuesday next week", "tomorrow") against today. If NOTHING concrete was agreed, respond {"found":false}. Respond with ONLY the JSON.`;
+    const ev = parseJsonFence(await askModel(prompt, 400), { found: false });
+    if (!ev || !ev.found || !ev.date) {
+      res.writeHead(200); res.end(JSON.stringify({ error: 'no concrete time was agreed in this conversation' })); return;
+    }
+
+    // 3. build a Google Calendar event-edit URL (pre-filled; user saves)
+    const pad = n => String(n).padStart(2, '0');
+    const [y, mo, d] = ev.date.split('-').map(Number);
+    let start, end;
+    if (ev.time && /^\d{1,2}:\d{2}$/.test(ev.time)) {
+      const [hh, mm] = ev.time.split(':').map(Number);
+      const s = new Date(y, mo - 1, d, hh, mm);
+      const e = new Date(s.getTime() + (ev.durationMins || 60) * 60000);
+      const fmt = t => `${t.getFullYear()}${pad(t.getMonth()+1)}${pad(t.getDate())}T${pad(t.getHours())}${pad(t.getMinutes())}00`;
+      start = fmt(s); end = fmt(e);
+    } else {
+      const day = `${y}${pad(mo)}${pad(d)}`; // all-day
+      start = day; end = day;
+    }
+    const title = ev.title || text || `Job for ${from}`;
+    const details = `Agreed over text with ${from}. Added via Reverb.`;
+    const calUrl = `https://calendar.google.com/calendar/u/0/r/eventedit?text=${encodeURIComponent(title)}&dates=${start}/${end}&details=${encodeURIComponent(details)}`;
+
+    // 4. open it in the logged-in calendar tab
+    await fetch(`${process.env.BRIDGE_BASE_URL}/api/navigate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+      body: JSON.stringify({ source: 'calendar', url: calUrl }),
+    }).catch(() => {});
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, event: { title, date: ev.date, time: ev.time || '' } }));
+  } catch (e) { res.writeHead(502); res.end(JSON.stringify({ error: e.message })); }
+}
+
 async function handleReportGenerate(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
 
@@ -1141,6 +1219,8 @@ createServer(async (req, res) => {
     if (req.method === 'DELETE' && ruleMatch) return await handleRuleDelete(req, res, ruleMatch[1]);
     if (req.method === 'GET'  && u === '/api/browser/frame') return await handleBrowserFrame(req, res);
     if (req.method === 'POST' && u === '/api/browser/input') return await handleBrowserInput(req, res);
+    if (req.method === 'GET'  && u === '/api/item/context') return await handleItemContext(req, res);
+    if (req.method === 'POST' && u === '/api/item/tocal')   return await handleItemToCal(req, res);
     return await serveStatic(req, res);
   } catch (err) {
     console.error(err);

@@ -222,13 +222,15 @@ function RulesDrawer({ open, auth, onClose }) {
 // Sweep's Pull Data -> Generate Report flow, not from a button in here.
 export default function ReportView({
   auth, onLockout, active, title, apiPath, emptyHint,
-  onOpenChat, onOpenSweep, onOpenWork, onOpenLife, onOpenTexts, onDraftReply,
+  onOpenChat, onOpenSweep, onOpenWork, onOpenLife, onOpenTexts, onOpenBrowser, onDraftReply,
 }) {
   const [phase, setPhase] = useState('loading'); // 'loading' | 'ready'
   const [summary, setSummary] = useState('');
   const [categories, setCategories] = useState([]);
   const [scannedAt, setScannedAt] = useState(null);
   const [outstanding, setOutstanding] = useState(0);
+  const [context, setContext] = useState({});   // itemId -> {loading, messages} full thread
+  const [calState, setCalState] = useState({});  // itemId -> 'adding' | 'done' | error string
   const [expandedId, setExpandedId] = useState(null);
   const [toast, setToast] = useState('');
   const [peopleOpen, setPeopleOpen] = useState(false);
@@ -268,6 +270,38 @@ export default function ReportView({
       headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
       body: JSON.stringify({ done: true, kind: task?.kind, from: task?.from }),
     }).catch(() => {});
+  }
+
+  // Pull the full thread behind an item so its one-line snippet makes sense.
+  function loadContext(t) {
+    if (context[t.id]) return; // already loading/loaded
+    setContext(c => ({ ...c, [t.id]: { loading: true, messages: [] } }));
+    fetch(`/api/item/context?from=${encodeURIComponent(t.from)}`, { headers: authHeaders(auth?.token) })
+      .then(r => (r.ok ? r.json() : { messages: [] }))
+      .then(d => setContext(c => ({ ...c, [t.id]: { loading: false, messages: d.messages || [] } })))
+      .catch(() => setContext(c => ({ ...c, [t.id]: { loading: false, messages: [] } })));
+  }
+
+  // Extract the agreed event from the thread and open it pre-filled in the live
+  // calendar tab; the user saves it there. Switches them to that tab on success.
+  function addToCal(t, e) {
+    e?.stopPropagation();
+    setCalState(s => ({ ...s, [t.id]: 'adding' }));
+    fetch('/api/item/tocal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
+      body: JSON.stringify({ from: t.from, text: t.text }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) { setCalState(s => ({ ...s, [t.id]: d.error })); return; }
+        setCalState(s => ({ ...s, [t.id]: 'done' }));
+        setToast(`event ready in calendar — hit save`);
+        clearTimeout(toastTimer.current);
+        toastTimer.current = setTimeout(() => setToast(''), 3000);
+        onOpenBrowser?.();
+      })
+      .catch(() => setCalState(s => ({ ...s, [t.id]: 'could not reach calendar' })));
   }
 
   const total = categories.reduce((sum, c) => sum + c.items.length, 0);
@@ -386,8 +420,11 @@ export default function ReportView({
                 {c.items.map((t, i) => {
                   const k = KINDS[t.kind] || KINDS.email;
                   const expanded = expandedId === t.id;
+                  const isText = t.kind === 'sms' || t.kind === 'meta';
+                  const cal = calState[t.id];
                   const actions = [
                     ...(t.reply ? [{ label: 'draft reply', onPress: () => onDraftReply?.(t) }] : []),
+                    ...(isText ? [{ label: cal === 'adding' ? 'adding…' : 'add to cal', onPress: e => addToCal(t, e) }] : []),
                     { label: 'done', onPress: e => dismiss(t.id, t, e) },
                   ];
                   return (
@@ -396,7 +433,7 @@ export default function ReportView({
                       background: expanded ? FILM : undefined,
                       animation: 'rv-rise .26s ease-out both', animationDelay: `${(i * 0.05).toFixed(2)}s`,
                     }}>
-                      <div onClick={() => setExpandedId(expanded ? null : t.id)}
+                      <div onClick={() => { const open = !expanded; setExpandedId(open ? t.id : null); if (open && isText) loadContext(t); }}
                            style={{ display: 'flex', gap: 11, padding: ROW, cursor: 'pointer' }}>
                         <div onClick={e => dismiss(t.id, t, e)} style={{
                           width: 16, height: 16, flex: 'none', marginTop: 1,
@@ -433,11 +470,36 @@ export default function ReportView({
                       {expanded && (
                         <div style={{ borderTop: `1px solid ${HAIR}`, padding: '12px 16px 13px',
                                       display: 'flex', flexDirection: 'column', gap: 12 }}>
-                          <div style={{ fontSize: 11.5, lineHeight: 1.6, letterSpacing: '.01em',
-                                        textTransform: 'none', opacity: .62, textWrap: 'pretty',
-                                        borderLeft: `2px solid ${tint}`, paddingLeft: 10 }}>
-                            {t.snippet}
-                          </div>
+                          {/* Full thread context for a text item, so a one-line snippet
+                              ("👍 to '...'") can actually be understood. */}
+                          {isText && context[t.id] ? (
+                            <div style={{ borderLeft: `2px solid ${tint}`, paddingLeft: 10,
+                                          display: 'flex', flexDirection: 'column', gap: 5,
+                                          maxHeight: 220, overflowY: 'auto' }}>
+                              {context[t.id].loading && <div style={{ fontSize: 11, opacity: .4 }}>reading the thread…</div>}
+                              {!context[t.id].loading && !context[t.id].messages.length && (
+                                <div style={{ fontSize: 11, opacity: .4, textTransform: 'none' }}>{t.snippet}</div>
+                              )}
+                              {context[t.id].messages.slice(-14).map((m, mi) => (
+                                <div key={mi} style={{ fontSize: 11.5, lineHeight: 1.5, textTransform: 'none', textWrap: 'pretty',
+                                                       opacity: m.outbound ? .85 : .62 }}>
+                                  <span style={{ color: m.outbound ? AMBER : undefined, opacity: .8 }}>{m.outbound ? 'you' : 'them'}:</span> {m.text}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div style={{ fontSize: 11.5, lineHeight: 1.6, letterSpacing: '.01em',
+                                          textTransform: 'none', opacity: .62, textWrap: 'pretty',
+                                          borderLeft: `2px solid ${tint}`, paddingLeft: 10 }}>
+                              {t.snippet}
+                            </div>
+                          )}
+                          {cal && cal !== 'adding' && cal !== 'done' && (
+                            <div style={{ fontSize: 10.5, color: AMBER, textTransform: 'none', opacity: .8 }}>⚠ {cal}</div>
+                          )}
+                          {cal === 'done' && (
+                            <div style={{ fontSize: 10.5, color: AMBER, textTransform: 'none', opacity: .8 }}>✓ opened in calendar — hit save there</div>
+                          )}
                           <div style={{ display: 'flex', gap: 1, background: EDGE,
                                         border: `1px solid ${EDGE}` }}>
                             {actions.map(a => (

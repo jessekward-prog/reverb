@@ -1,7 +1,7 @@
 import React from 'react';
 import ReportView from './ReportView.jsx';
 
-export default function LifeView({ auth, onLockout, onOpenChat, onOpenSweep, onOpenWork, onOpenTexts, onDraftReply }) {
+export default function LifeView({ auth, onLockout, onOpenChat, onOpenSweep, onOpenWork, onOpenTexts, onOpenBrowser, onDraftReply }) {
   return (
     <ReportView
       auth={auth}
@@ -15,6 +15,7 @@ export default function LifeView({ auth, onLockout, onOpenChat, onOpenSweep, onO
       onOpenWork={onOpenWork}
       onOpenLife={() => {}}
       onOpenTexts={onOpenTexts}
+      onOpenBrowser={onOpenBrowser}
       onDraftReply={onDraftReply}
     />
   );
