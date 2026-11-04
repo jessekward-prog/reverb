@@ -42,11 +42,12 @@ export const FILM    = 'rgba(232,232,228,.05)'; // a fill that reads as tinted g
    so Work, Life, Texts and the drawers scan at the same rhythm. */
 export const ROW = '11px 16px';
 export const PANEL = 'rgba(6,6,6,.72)';     // list wells - opaque enough to read over the dither
-// Black skull and pulses: near-black dots that read as a dark form over the
-// well rather than the old grey-green glow. A hair of separation between the two
-// shades keeps the skull's internal structure from flattening into one blob.
+// Black skull and pulses: every dot is pure black, so the whole form reads black
+// with no grey highlights. Shape still comes from which dots are drawn (the
+// luminance threshold below), not from two shades, so flattening the colours
+// doesn't lose the skull — it just makes all of it black.
 const SKULL_DARK = '#000000';
-const SKULL_LIGHT = '#161616';
+const SKULL_LIGHT = '#000000';
 const REF_W = 390; // design reference: the width the original pixel constants were tuned at
 const BAYER = [0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];
 
@@ -90,7 +91,7 @@ function useMeasure(ref) {
   return size;
 }
 
-export function DitherField({ pushRef, centerYFrac = 0.31, ambientMs = 5000, opacity = 0.5 }) {
+export function DitherField({ pushRef, centerYFrac = 0.31, ambientMs = 5000, opacity = 0.9 }) {
   const canvasRef = useRef(null);
   const ripples = useRef([]);
   const skull = useRef(null);
