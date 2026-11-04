@@ -875,6 +875,48 @@ async function persistSummary(table, result) {
   );
 }
 
+// ── Live browser proxy ────────────────────────────────────
+// The user's browser can't reach the bridge (host LAN, behind the firewall);
+// this container can, so Reverb proxies the frame feed and input back. Auth is
+// Reverb's PIN — the bridge token stays server-side.
+const BROWSER_SOURCES = ['messages', 'email', 'bizemail', 'meta', 'calendar'];
+const SOURCE_ALIAS = { messages: 'sms' }; // UI label -> bridge source key
+
+async function handleBrowserFrame(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const label = new URL(req.url, 'http://x').searchParams.get('source');
+  if (!BROWSER_SOURCES.includes(label)) { res.writeHead(404); res.end('{}'); return; }
+  const source = SOURCE_ALIAS[label] || label;
+  try {
+    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/frame?source=${source}`, {
+      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+    });
+    if (!r.ok) { res.writeHead(502); res.end('{}'); return; }
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.writeHead(200, {
+      'Content-Type': 'image/jpeg', 'Content-Length': buf.length,
+      'X-Viewport': r.headers.get('x-viewport') || '', 'Cache-Control': 'no-store',
+    });
+    res.end(buf);
+  } catch (e) { res.writeHead(502); res.end(JSON.stringify({ error: e.message })); }
+}
+
+async function handleBrowserInput(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const body = JSON.parse(await readBody(req));
+  const label = body.source;
+  if (!BROWSER_SOURCES.includes(label)) { res.writeHead(404); res.end('{}'); return; }
+  try {
+    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/input`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+      body: JSON.stringify({ ...body, source: SOURCE_ALIAS[label] || label }),
+    });
+    res.writeHead(r.ok ? 200 : 502, { 'Content-Type': 'application/json' });
+    res.end(await r.text());
+  } catch (e) { res.writeHead(502); res.end(JSON.stringify({ error: e.message })); }
+}
+
 async function handleReportGenerate(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
   if (!pullCache) {
@@ -1021,6 +1063,8 @@ createServer(async (req, res) => {
     if (u === '/api/rules') return await handleRules(req, res);
     const ruleMatch = u.match(/^\/api\/rules\/(\d+)$/);
     if (req.method === 'DELETE' && ruleMatch) return await handleRuleDelete(req, res, ruleMatch[1]);
+    if (req.method === 'GET'  && u === '/api/browser/frame') return await handleBrowserFrame(req, res);
+    if (req.method === 'POST' && u === '/api/browser/input') return await handleBrowserInput(req, res);
     return await serveStatic(req, res);
   } catch (err) {
     console.error(err);

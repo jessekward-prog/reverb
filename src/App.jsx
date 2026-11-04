@@ -6,6 +6,7 @@ import SweepView from './components/SweepView.jsx';
 import WorkView from './components/WorkView.jsx';
 import LifeView from './components/LifeView.jsx';
 import TextsView from './components/TextsView.jsx';
+import BrowserView from './components/BrowserView.jsx';
 import { getStoredAuth, saveAuth, clearStoredAuth, authHeaders } from './api.js';
 
 export default function App() {
@@ -80,13 +81,15 @@ export default function App() {
     onOpenWork:  () => setView('work'),
     onOpenLife:  () => setView('life'),
     onOpenTexts: () => setView('texts'),
+    onOpenBrowser: () => setView('browser'),
   };
 
   let content;
-  if (view === 'sweep')      content = <SweepView auth={auth} onLockout={handleLockout} {...nav} />;
-  else if (view === 'work')  content = <WorkView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
-  else if (view === 'life')  content = <LifeView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
-  else if (view === 'texts') content = <TextsView auth={auth} onLockout={handleLockout} {...nav} />;
+  if (view === 'sweep')        content = <SweepView auth={auth} onLockout={handleLockout} {...nav} />;
+  else if (view === 'work')    content = <WorkView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
+  else if (view === 'life')    content = <LifeView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
+  else if (view === 'texts')   content = <TextsView auth={auth} onLockout={handleLockout} {...nav} />;
+  else if (view === 'browser') content = <BrowserView auth={auth} onLockout={handleLockout} {...nav} />;
   else content = <ChatView auth={auth} onLockout={handleLockout} {...nav}
                    draftPrompt={draftPrompt} onDraftConsumed={() => setDraftPrompt(null)} />;
 

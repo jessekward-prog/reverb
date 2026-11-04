@@ -10,6 +10,7 @@ const ITEMS = [
   { key: 'life',  label: 'life',  hint: 'personal' },
   { key: 'sweep', label: 'sweep', hint: 'pull + generate' },
   { key: 'texts', label: 'texts', hint: 'message threads' },
+  { key: 'browser', label: 'browser', hint: 'live logged-in tabs' },
   { key: 'chat',  label: 'chat',  hint: 'ask reverb' },
 ];
 
