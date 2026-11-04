@@ -237,6 +237,7 @@ export default function ReportView({
   const [toast, setToast] = useState('');
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
   const toastTimer = useRef(null);
 
   function say(text) {
@@ -245,9 +246,9 @@ export default function ReportView({
     toastTimer.current = setTimeout(() => setToast(''), 2400);
   }
 
-  useEffect(() => {
+  function load() {
     setPhase('loading');
-    fetch(apiPath, { headers: authHeaders(auth?.token) })
+    return fetch(apiPath, { headers: authHeaders(auth?.token) })
       .then(r => { if (r.status === 401) { onLockout?.(); throw new Error('401'); } return r.json(); })
       .then(data => {
         setSummary(data.summary || '');
@@ -257,6 +258,26 @@ export default function ReportView({
         setPhase('ready');
       })
       .catch(() => setPhase('ready'));
+  }
+
+  // Re-run the report over the current live items, in place — no trip to Sweep.
+  // This is what applies a changed method (new rules, the per-category synopsis)
+  // to the existing list: /api/report/generate re-collects and re-groups, then
+  // we reload whatever this tab shows (/api/tasks, /api/work, /api/life).
+  function regenerate() {
+    if (regenerating) return;
+    setRegenerating(true);
+    say('regenerating — reading everything again…');
+    fetch('/api/report/generate', { method: 'POST', headers: authHeaders(auth?.token) })
+      .then(r => { if (r.status === 401) { onLockout?.(); throw new Error('401'); } return r.json(); })
+      .then(() => load())
+      .then(() => say('report regenerated'))
+      .catch(() => say('regenerate failed — try again'))
+      .finally(() => setRegenerating(false));
+  }
+
+  useEffect(() => {
+    load();
     return () => clearTimeout(toastTimer.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiPath]);
@@ -350,13 +371,23 @@ export default function ReportView({
           </div>
         </div>
 
-        <div style={{ margin: '20px 20px 0' }}>
+        <div style={{ margin: '20px 20px 0', display: 'flex', gap: 1, background: EDGE, border: `1px solid ${EDGE}` }}>
+          {/* Regenerate re-reads the live items and re-runs them through the
+              current method (rules + synopsis) in place — the one-tap way to
+              apply a change to the list you're already looking at. The Sweep
+              link is the heavier path (also refreshes the pulled counts). */}
+          <button type="button" onClick={regenerate} disabled={regenerating} style={{
+            appearance: 'none', flex: 1, margin: 0, border: 0,
+            background: regenerating ? FILM : 'rgba(217,147,47,.09)', color: INK, fontFamily: 'inherit',
+            fontSize: 10.5, letterSpacing: '.1em', textTransform: 'uppercase',
+            padding: '11px 16px', cursor: regenerating ? 'default' : 'pointer',
+          }}>{regenerating ? 'regenerating…' : 'regenerate now ↻'}</button>
           <button type="button" onClick={() => onOpenSweep?.()} style={{
-            appearance: 'none', width: '100%', margin: 0, border: `1px solid ${HAIR}`,
+            appearance: 'none', flex: 1, margin: 0, border: 0,
             background: PANEL, color: INK, fontFamily: 'inherit',
             fontSize: 10.5, letterSpacing: '.1em', textTransform: 'uppercase',
             padding: '11px 16px', cursor: 'pointer', opacity: .7,
-          }}>{scannedAt ? 'pull fresh data on sweep →' : 'go pull data on sweep →'}</button>
+          }}>{scannedAt ? 'fresh pull on sweep →' : 'go pull data on sweep →'}</button>
         </div>
 
         <div className="report-scroll" style={{ flex: 1, overflowY: 'auto', padding: '0 20px 26px',
