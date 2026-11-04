@@ -13,6 +13,20 @@ export const TEXTS_TOOL = {
   },
 };
 
+export const WAITING_TOOL = {
+  type: 'function',
+  function: {
+    name: 'get_waiting_replies',
+    description: "Threads across texts, Messenger/Instagram and email where someone else sent the last message, so they may be waiting on a reply. Use this for \"is anyone waiting for me to reply\", \"who do I need to get back to\", \"what haven't I replied to\".",
+    parameters: {
+      type: 'object',
+      properties: {
+        limit: { type: 'integer', description: 'Max threads to return, default 25' },
+      },
+    },
+  },
+};
+
 export const CALENDAR_TOOL = {
   type: 'function',
   function: {
@@ -118,6 +132,44 @@ export async function getRecentTexts({ contact, limit = 20 } = {}) {
   const text = msgs
     .map(m => `[${m.at}] ${m.name}${m.outbound ? ' (you replied last)' : ''}${m.unread ? ' (unread)' : ''}: ${m.snippet}`)
     .join('\n');
+  return { text, items };
+}
+
+export async function getWaitingReplies({ limit = 25 } = {}) {
+  let r;
+  try {
+    r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/waiting?limit=${limit}`, {
+      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+    });
+  } catch (err) { return { text: `Could not reach browser-bridge: ${err.message}`, items: [] }; }
+  if (!r.ok) return { text: `Could not reach browser-bridge (status ${r.status})`, items: [] };
+  const { waiting = [], bulk = [], bulkCount = 0, alsoUnanswered = 0, health = {} } = await r.json();
+
+  // A source that died should be visible in the answer, not hidden behind a short list.
+  const broken = Object.entries(health)
+    .filter(([k, v]) => !k.startsWith('newest') && v !== 'ok')
+    .map(([k, v]) => `${k}: ${v}`);
+  const caveat = broken.length ? `\n\nSOURCE PROBLEMS - this list is incomplete: ${broken.join(' | ')}` : '';
+
+  if (!waiting.length) return { text: `Nothing is waiting on a reply.${caveat}`, items: [] };
+
+  const items = waiting.map(w => ({
+    identifier: w.who, displayName: w.who, snippet: w.snippet, occurred_at: w.at, kind: w.source,
+  }));
+  const line = w => `[${w.source}] ${w.who}${w.unread ? ' (unread)' : ''} - ${w.when}: ${w.subject ? w.subject + ' - ' : ''}${w.snippet}`;
+
+  // The bulk rows are deliberately NOT in what the model receives. Telling it to
+  // exclude automated senders from one combined list failed (it listed a parcel
+  // notice and a car dealership as people awaiting a reply); labelling them as
+  // already set aside failed too (it pulled an Instagram spam DM back out and
+  // suggested replying). If the model can see them it will use them. They stay in
+  // /api/waiting's response for the UI, so nothing is hidden from Jesse - only
+  // from the prompt. Same rule the Rules drawer already follows.
+  const bulkBlock = bulkCount
+    ? `\n\n(${bulkCount} automated senders - parcel and appointment notices, dealership form letters, cold sales - were set aside and are not listed here.)`
+    : '';
+
+  const text = `${waiting.length} threads where someone else sent the last message. Some of these are conversations that simply ended with a thanks - judge from the wording whether a reply is actually needed, and say so. ${alsoUnanswered} further unanswered items were excluded as non-conversational.\n\n${waiting.map(line).join('\n')}${bulkBlock}${caveat}`;
   return { text, items };
 }
 
