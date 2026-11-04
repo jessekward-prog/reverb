@@ -79,7 +79,6 @@ export default function ChatView({ auth, onLockout, onOpenSweep, onOpenWork, onO
   const [sendDisabled, setSendDisabled] = useState(false);
   const [showHistory, setShowHistory]       = useState(false);
   const [showSettings, setShowSettings]     = useState(false);
-  const [showModelPicker, setShowModelPicker] = useState(false);
   const [pwaPrompt, setPwaPrompt]           = useState(null);
   const [showScrollBtn, setShowScrollBtn]   = useState(false);
   const [lightboxSrc, setLightboxSrc]       = useState(null);
@@ -94,7 +93,6 @@ export default function ChatView({ auth, onLockout, onOpenSweep, onOpenWork, onO
   const autoScrollRef   = useRef(true);
   const inputRef        = useRef(null);
   const deferredInstall = useRef(null);
-  const modelPickerRef  = useRef(null);
   const pushRipple      = useRef(() => {});
 
   // ── Init ────────────────────────────────────────────────
@@ -121,16 +119,6 @@ export default function ChatView({ auth, onLockout, onOpenSweep, onOpenWork, onO
     inputRef.current?.focus();
     onDraftConsumed?.();
   }, [draftPrompt, onDraftConsumed]);
-
-  useEffect(() => {
-    if (!showModelPicker) return;
-    const handler = e => {
-      if (modelPickerRef.current && !modelPickerRef.current.contains(e.target))
-        setShowModelPicker(false);
-    };
-    document.addEventListener('mousedown', handler);
-    return () => document.removeEventListener('mousedown', handler);
-  }, [showModelPicker]);
 
   // ── Models ───────────────────────────────────────────────
   async function loadModels() {
@@ -369,27 +357,9 @@ export default function ChatView({ auth, onLockout, onOpenSweep, onOpenWork, onO
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
-          <div className="model-picker-wrap" ref={modelPickerRef}>
-            <button
-              className="icon-header-btn"
-              title={selectedModel || 'Select model'}
-              onClick={() => setShowModelPicker(p => !p)}
-            >&#8853;</button>
-            {showModelPicker && (
-              <div className="model-picker">
-                {models.length === 0
-                  ? <span className="model-option">No models found</span>
-                  : models.map(id => (
-                    <button
-                      key={id}
-                      className={`model-option${id === selectedModel ? ' active' : ''}`}
-                      onClick={() => { setSelectedModel(id); setShowModelPicker(false); }}
-                    >{id}</button>
-                  ))
-                }
-              </div>
-            )}
-          </div>
+          {/* Model is fixed to gemma — no picker. Reverb's tools (text search,
+              waiting, unbooked jobs) were tuned against gemma's behaviour; letting
+              it swap to another model is what made answers inconsistent. */}
           <button className="icon-header-btn" title="Chats" onClick={() => setShowHistory(true)}>&#9776;</button>
           <button className="icon-header-btn" title="Settings" onClick={() => setShowSettings(true)}>&#9881;</button>
           {/* Toggle last, flush against the right edge — same position Sweep's
