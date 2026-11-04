@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import PinGate from './components/PinGate.jsx';
+import NavRail from './components/NavRail.jsx';
 import ChatView from './components/ChatView.jsx';
 import SweepView from './components/SweepView.jsx';
 import WorkView from './components/WorkView.jsx';
@@ -13,6 +14,17 @@ export default function App() {
   const [auth, setAuth]       = useState({ token: null, role: null });
   const [view, setView]       = useState('work');    // 'chat' | 'sweep' | 'work' | 'life' | 'texts' — home (work) is the landing tab
   const [draftPrompt, setDraftPrompt] = useState(null);
+  const [outstanding, setOutstanding] = useState(0); // items open 2+ days, for the rail badge
+
+  // Keep the rail's chase badge current: refetch the work report's outstanding
+  // count on auth and whenever the view changes (so it updates after a sweep).
+  useEffect(() => {
+    if (stage !== 'chat' || !auth.token) return;
+    fetch('/api/work', { headers: authHeaders(auth.token) })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => d && setOutstanding(d.outstanding || 0))
+      .catch(() => {});
+  }, [stage, auth.token, view]);
 
   useEffect(() => {
     const { token, role } = getStoredAuth();
@@ -58,56 +70,30 @@ export default function App() {
 
   if (stage === 'loading') return null;
   if (stage === 'pin')     return <PinGate mode={pinMode} onAuth={handleAuth} />;
-  if (view === 'sweep') {
-    return <SweepView
-      auth={auth}
-      onLockout={handleLockout}
-      onOpenChat={() => setView('chat')}
-      onOpenWork={() => setView('work')}
-      onOpenLife={() => setView('life')}
-      onOpenTexts={() => setView('texts')}
-    />;
-  }
-  if (view === 'work') {
-    return <WorkView
-      auth={auth}
-      onLockout={handleLockout}
-      onOpenChat={() => setView('chat')}
-      onOpenSweep={() => setView('sweep')}
-      onOpenLife={() => setView('life')}
-      onOpenTexts={() => setView('texts')}
-      onDraftReply={stageDraft}
-    />;
-  }
-  if (view === 'life') {
-    return <LifeView
-      auth={auth}
-      onLockout={handleLockout}
-      onOpenChat={() => setView('chat')}
-      onOpenSweep={() => setView('sweep')}
-      onOpenWork={() => setView('work')}
-      onOpenTexts={() => setView('texts')}
-      onDraftReply={stageDraft}
-    />;
-  }
-  if (view === 'texts') {
-    return <TextsView
-      auth={auth}
-      onLockout={handleLockout}
-      onOpenChat={() => setView('chat')}
-      onOpenSweep={() => setView('sweep')}
-      onOpenWork={() => setView('work')}
-      onOpenLife={() => setView('life')}
-    />;
-  }
-  return <ChatView
-    auth={auth}
-    onLockout={handleLockout}
-    onOpenSweep={() => setView('sweep')}
-    onOpenWork={() => setView('work')}
-    onOpenLife={() => setView('life')}
-    onOpenTexts={() => setView('texts')}
-    draftPrompt={draftPrompt}
-    onDraftConsumed={() => setDraftPrompt(null)}
-  />;
+
+  // Every view takes the same set of tab-switch callbacks; extra ones a view
+  // doesn't use are harmless. Collected here so the shell wraps once instead of
+  // the nav rail being bolted onto five near-identical returns.
+  const nav = {
+    onOpenChat:  () => setView('chat'),
+    onOpenSweep: () => setView('sweep'),
+    onOpenWork:  () => setView('work'),
+    onOpenLife:  () => setView('life'),
+    onOpenTexts: () => setView('texts'),
+  };
+
+  let content;
+  if (view === 'sweep')      content = <SweepView auth={auth} onLockout={handleLockout} {...nav} />;
+  else if (view === 'work')  content = <WorkView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
+  else if (view === 'life')  content = <LifeView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
+  else if (view === 'texts') content = <TextsView auth={auth} onLockout={handleLockout} {...nav} />;
+  else content = <ChatView auth={auth} onLockout={handleLockout} {...nav}
+                   draftPrompt={draftPrompt} onDraftConsumed={() => setDraftPrompt(null)} />;
+
+  return (
+    <div className="rv-app">
+      <NavRail active={view} onView={setView} onLockout={handleLockout} outstanding={outstanding} />
+      <div className="rv-main">{content}</div>
+    </div>
+  );
 }

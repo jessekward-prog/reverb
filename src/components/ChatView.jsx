@@ -394,7 +394,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, onOpenWork, onO
           <button className="icon-header-btn" title="Settings" onClick={() => setShowSettings(true)}>&#9881;</button>
           {/* Toggle last, flush against the right edge — same position Sweep's
               pill sits at, since it has nothing after it either. */}
-          <div style={{ display: 'flex', gap: 1, background: 'rgba(232,232,228,.18)',
+          <div className="rv-head-nav" style={{ display: 'flex', gap: 1, background: 'rgba(232,232,228,.18)',
                         border: '1px solid rgba(232,232,228,.18)' }}>
             <button type="button" style={navBtn(true)}>chat</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenSweep?.()}>sweep</button>

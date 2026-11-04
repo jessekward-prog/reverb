@@ -16,6 +16,14 @@ const CSS = BACKDROP_CSS + `
 // LLM-chosen and open-ended, not a fixed set.
 const TINTS = [AMBER, '#8fa8c4', '#7fbf8f', '#c48fb0', '#9fb0a8', '#c4a35f'];
 
+// Whole days an item has been surfaced without being actioned. Null under a day,
+// so a fresh item carries no badge; at/over two days it's the chase threshold.
+const CHASE_DAYS = 2;
+function daysOpen(iso) {
+  if (!iso) return 0;
+  return Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+}
+
 function timeAgo(iso) {
   if (!iso) return null;
   const s = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -220,6 +228,7 @@ export default function ReportView({
   const [summary, setSummary] = useState('');
   const [categories, setCategories] = useState([]);
   const [scannedAt, setScannedAt] = useState(null);
+  const [outstanding, setOutstanding] = useState(0);
   const [expandedId, setExpandedId] = useState(null);
   const [toast, setToast] = useState('');
   const [peopleOpen, setPeopleOpen] = useState(false);
@@ -240,6 +249,7 @@ export default function ReportView({
         setSummary(data.summary || '');
         setCategories(data.categories || []);
         setScannedAt(data.scannedAt || null);
+        setOutstanding(data.outstanding || 0);
         setPhase('ready');
       })
       .catch(() => setPhase('ready'));
@@ -334,6 +344,23 @@ export default function ReportView({
             </div>
           )}
 
+          {/* The chase: items that have been surfaced 2+ days running and still
+              aren't done. This is the "push me to finish it" — it only appears
+              when something is actually being left, and names the count. */}
+          {outstanding > 0 && (
+            <div style={{
+              marginBottom: 18, padding: '11px 14px', border: `1px solid ${AMBER}`,
+              background: 'rgba(217,147,47,.09)', display: 'flex', alignItems: 'center', gap: 10,
+              fontSize: 11.5, letterSpacing: '.02em', textTransform: 'none',
+            }}>
+              <div style={{ width: 7, height: 7, flex: 'none', background: AMBER }} />
+              <div style={{ flex: 1 }}>
+                <span style={{ color: AMBER, fontWeight: 700 }}>{outstanding}</span>
+                {' '}{outstanding === 1 ? 'thing has' : 'things have'} been sitting 2+ days — clear these before they slip.
+              </div>
+            </div>
+          )}
+
           {scannedAt && (
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
                           paddingBottom: 11, borderBottom: `1px solid ${RULE}` }}>
@@ -387,6 +414,15 @@ export default function ReportView({
                             <div style={{ textTransform: 'none', overflow: 'hidden',
                                           textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.from}</div>
                             {t.when && (<><div>·</div><div style={{ flex: 'none' }}>{t.when}</div></>)}
+                            {/* How long this has been on the list across reports — the nudge
+                                that something keeps getting skipped. Amber once it's stale. */}
+                            {daysOpen(t.firstSeenAt) >= 1 && (
+                              <div style={{
+                                flex: 'none', opacity: 1,
+                                color: daysOpen(t.firstSeenAt) >= CHASE_DAYS ? AMBER : undefined,
+                                fontWeight: daysOpen(t.firstSeenAt) >= CHASE_DAYS ? 700 : 400,
+                              }}>· open {daysOpen(t.firstSeenAt)}d</div>
+                            )}
                           </div>
                         </div>
                         <div style={{ flex: 'none', opacity: .35, fontSize: 14, lineHeight: 1 }}>

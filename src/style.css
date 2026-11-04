@@ -16,6 +16,20 @@
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+/* ── App shell with the desktop nav rail ──────────────────────────────────
+   Below 1024px it's a plain block: the rail is hidden and each view shows its
+   own top nav pill, exactly as before. At >=1024px the rail appears on the left
+   and the view fills the rest; the per-view pill (.rv-head-nav) is hidden so the
+   rail is the only nav. One of the two is visible at every width, never both. */
+.rv-app { height: 100dvh; }
+.nav-rail { display: none; }
+@media (min-width: 1024px) {
+  .rv-app { display: flex; }
+  .rv-main { flex: 1; min-width: 0; height: 100dvh; }
+  .nav-rail { display: flex; }
+  .rv-head-nav { display: none !important; }
+}
+
 html, body {
   height: 100%;
   background: var(--bg);
