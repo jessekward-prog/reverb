@@ -5,9 +5,9 @@ import { fileURLToPath } from 'url';
 import { createHmac, createHash } from 'crypto';
 import pg from 'pg';
 import {
-  TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL,
+  TEXTS_TOOL, SEARCH_TEXTS_TOOL, searchTexts, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL,
   WAITING_TOOL, getWaitingReplies, UNBOOKED_JOBS_TOOL, getUnbookedJobs,
-  getRecentTexts, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
+  getRecentTexts, getRecentTextsBrief, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
 } from './src/lib/tools.js';
 import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules } from './src/lib/contacts.js';
 
@@ -51,6 +51,19 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS swept_done (
       task_id    TEXT PRIMARY KEY,
       created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    -- Memory of what has already been surfaced. first_seen_at is the point: it
+    -- survives every regeneration (ON CONFLICT keeps it), so an item that keeps
+    -- reappearing and never gets done can be aged and chased. swept_done still
+    -- removes the ones you have actioned; this only tracks the ones you haven't.
+    CREATE TABLE IF NOT EXISTS surfaced_items (
+      task_id       TEXT PRIMARY KEY,
+      bucket        TEXT NOT NULL,
+      kind          TEXT,
+      from_label    TEXT,
+      snippet       TEXT,
+      first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS work_summary (
       id         INTEGER PRIMARY KEY DEFAULT 1,
@@ -319,7 +332,7 @@ async function proxyModels(req, res) {
   }
 }
 
-const TOOLS = [WAITING_TOOL, UNBOOKED_JOBS_TOOL, TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
+const TOOLS = [WAITING_TOOL, UNBOOKED_JOBS_TOOL, TEXTS_TOOL, SEARCH_TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
 
 async function proxyChat(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
@@ -360,6 +373,9 @@ async function proxyChat(req, res) {
       } else if (tc.function.name === 'get_recent_texts') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking texts…' })}\n\n`);
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getRecentTexts(args)).text });
+      } else if (tc.function.name === 'search_texts') {
+        res.write(`data: ${JSON.stringify({ type: 'status', message: `Searching texts for “${args.query || ''}”…` })}\n\n`);
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await searchTexts(args)).text });
       } else if (tc.function.name === 'get_upcoming_events') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking calendar…' })}\n\n`);
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await getUpcomingEvents(args) });
@@ -486,7 +502,7 @@ async function gatherSources(perSource = 20, jobsCap = 20) {
   const { rows: rules } = await pool.query('SELECT pattern, action FROM rules');
 
   const [texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobsRes] = await Promise.all([
-    getRecentTexts({ limit: perSource }),
+    getRecentTextsBrief({ limit: perSource }),
     getUpcomingEvents({ days_ahead: 7 }),
     getRecentEmails({ limit: Math.round(perSource * 0.75) }),
     getRecentBusinessEmails({ limit: Math.round(perSource * 0.75) }),
@@ -693,16 +709,47 @@ async function handleRuleDelete(req, res, id) {
 // for business-relevant items, the other for personal ones. Persisted so
 // each tab loads instantly; POST /api/report/generate is the only path that
 // re-runs the model, and it always writes both reports from one pull.
+// Upsert every live item into the memory. first_seen_at is set once and never
+// moved; last_seen_at and the preview text follow the latest report. Called
+// only from the generate path, so "first seen" means "first reported", not
+// "first opened the tab".
+async function recordSurfaced(bucket, categories) {
+  for (const c of categories || []) {
+    for (const t of c.items || []) {
+      await pool.query(
+        `INSERT INTO surfaced_items (task_id, bucket, kind, from_label, snippet)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (task_id) DO UPDATE SET last_seen_at=NOW(), snippet=EXCLUDED.snippet, bucket=EXCLUDED.bucket`,
+        [workItemId(t), bucket, t.kind || null, t.from || null, t.snippet || null]
+      );
+    }
+  }
+}
+
 async function buildCategorizedResponse(summary, categories, scannedAt) {
-  const { rows: doneRows } = await pool.query('SELECT task_id FROM swept_done');
+  const [{ rows: doneRows }, { rows: seenRows }] = await Promise.all([
+    pool.query('SELECT task_id FROM swept_done'),
+    pool.query('SELECT task_id, first_seen_at FROM surfaced_items'),
+  ]);
   const doneSet = new Set(doneRows.map(r => r.task_id));
+  const firstSeen = new Map(seenRows.map(r => [r.task_id, r.first_seen_at]));
   const filtered = categories
     .map(c => ({
       label: c.label,
-      items: c.items.map(t => ({ ...t, id: workItemId(t) })).filter(t => !doneSet.has(t.id)),
+      items: c.items
+        .map(t => {
+          const id = workItemId(t);
+          return { ...t, id, firstSeenAt: firstSeen.get(id) || scannedAt };
+        })
+        .filter(t => !doneSet.has(t.id)),
     }))
     .filter(c => c.items.length);
-  return { summary, categories: filtered, scannedAt };
+  // How many have been sitting unactioned for 2+ days — the number the UI nags with.
+  const twoDaysAgo = Date.now() - 2 * 86400000;
+  const outstanding = filtered
+    .flatMap(c => c.items)
+    .filter(t => new Date(t.firstSeenAt).getTime() < twoDaysAgo).length;
+  return { summary, categories: filtered, scannedAt, outstanding };
 }
 
 async function readSummaryTable(table) {
@@ -848,6 +895,12 @@ async function handleReportGenerate(req, res) {
   const work = await runReport(classified.work, 'work');
   const life = await runReport(classified.life, 'life');
   await Promise.all([persistSummary('work_summary', work), persistSummary('life_summary', life)]);
+
+  // Remember what this report surfaced, so first_seen_at can age items that keep
+  // reappearing without being actioned. Done at generate time, not on every GET,
+  // so "first seen" means "first reported".
+  if (!work.error) await recordSurfaced('work', work.categories);
+  if (!life.error) await recordSurfaced('life', life.categories);
 
   const scannedAt = new Date().toISOString();
   res.writeHead(200, { 'Content-Type': 'application/json' });
