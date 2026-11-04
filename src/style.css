@@ -30,6 +30,18 @@
   .rv-head-nav { display: none !important; }
 }
 
+/* Chat lays out as [conversation list][chat] on desktop; a plain block (chat
+   only, list hidden) on mobile where the hamburger drawer still carries it.
+   This block comes AFTER the base .chat-convs rule so flex wins at >=1024. */
+.chat-wrap { height: 100dvh; }
+.chat-convs { display: none; }
+@media (min-width: 1024px) {
+  .chat-wrap { display: flex; }
+  .chat-wrap .app-backdrop { flex: 1; min-width: 0; }
+  .chat-convs { display: flex; }        /* visible conversation list */
+  .chat-hamburger { display: none !important; } /* redundant once the list shows */
+}
+
 html, body {
   height: 100%;
   background: var(--bg);

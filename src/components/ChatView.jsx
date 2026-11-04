@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import HistoryDrawer from './HistoryDrawer.jsx';
+import ChatSidebar from './ChatSidebar.jsx';
 import SettingsDrawer from './SettingsDrawer.jsx';
 import { DitherField, CrtLayers, BACKDROP_CSS } from './CrtBackdrop.jsx';
 import { authHeaders, renderText } from '../api.js';
@@ -72,6 +73,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, onOpenWork, onO
   const [pending, setPending]         = useState(null); // {status, text} | {retry, fn} | null
   const [convId, setConvId]           = useState(null);
   const [convTitle, setConvTitle]     = useState('');
+  const [listVersion, setListVersion] = useState(0); // bump to refresh the visible chat list
   const [models, setModels]           = useState([]);
   const [selectedModel, setSelectedModel] = useState('');
   const [systemPrompt, setSystemPrompt]   = useState(() => localStorage.getItem('lm_system') || DEFAULT_SYSTEM);
@@ -160,6 +162,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, onOpenWork, onO
     setConvId(null);
     setConvTitle('');
     setMessages([]);
+    setListVersion(v => v + 1);
   }
 
   // ── Persistence ──────────────────────────────────────────
@@ -239,7 +242,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, onOpenWork, onO
           if (!r.ok) return;
           const list = await r.json();
           const conv = list.find(c => c.id === id);
-          if (conv?.title && conv.title !== 'New chat') setConvTitle(conv.title);
+          if (conv?.title && conv.title !== 'New chat') { setConvTitle(conv.title); setListVersion(v => v + 1); }
         } catch {}
       }, 3000);
 
@@ -338,6 +341,9 @@ export default function ChatView({ auth, onLockout, onOpenSweep, onOpenWork, onO
   });
 
   return (
+    <div className="chat-wrap">
+    <ChatSidebar auth={auth} currentId={convId} onSwitch={switchConversation}
+                 onNewChat={startNewChat} version={listVersion} />
     <div className="app-backdrop">
     <style>{BACKDROP_CSS}</style>
     <DitherField pushRef={pushRipple} />
@@ -360,7 +366,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, onOpenWork, onO
           {/* Model is fixed to gemma — no picker. Reverb's tools (text search,
               waiting, unbooked jobs) were tuned against gemma's behaviour; letting
               it swap to another model is what made answers inconsistent. */}
-          <button className="icon-header-btn" title="Chats" onClick={() => setShowHistory(true)}>&#9776;</button>
+          <button className="icon-header-btn chat-hamburger" title="Chats" onClick={() => setShowHistory(true)}>&#9776;</button>
           <button className="icon-header-btn" title="Settings" onClick={() => setShowSettings(true)}>&#9881;</button>
           {/* Toggle last, flush against the right edge — same position Sweep's
               pill sits at, since it has nothing after it either. */}
@@ -513,6 +519,7 @@ export default function ChatView({ auth, onLockout, onOpenSweep, onOpenWork, onO
           <button className="pwa-dismiss" onClick={() => setPwaPrompt(false)}>✕</button>
         </div>
       )}
+    </div>
     </div>
     </div>
   );
