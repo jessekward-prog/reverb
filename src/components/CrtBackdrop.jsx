@@ -42,8 +42,11 @@ export const FILM    = 'rgba(232,232,228,.05)'; // a fill that reads as tinted g
    so Work, Life, Texts and the drawers scan at the same rhythm. */
 export const ROW = '11px 16px';
 export const PANEL = 'rgba(6,6,6,.72)';     // list wells - opaque enough to read over the dither
-const SKULL_DARK = '#41473f';
-const SKULL_LIGHT = '#5a625c';
+// Black skull and pulses: near-black dots that read as a dark form over the
+// well rather than the old grey-green glow. A hair of separation between the two
+// shades keeps the skull's internal structure from flattening into one blob.
+const SKULL_DARK = '#000000';
+const SKULL_LIGHT = '#161616';
 const REF_W = 390; // design reference: the width the original pixel constants were tuned at
 const BAYER = [0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];
 
@@ -107,7 +110,7 @@ export function DitherField({ pushRef, centerYFrac = 0.31, ambientMs = 5000, opa
     const img = new Image();
     img.onload = () => {
       const scale = W / REF_W;
-      const w = Math.round(190 * scale), h = Math.round(w * img.height / img.width);
+      const w = Math.round(150 * scale), h = Math.round(w * img.height / img.width);
       const cv = document.createElement('canvas');
       cv.width = w; cv.height = h;
       const c2 = cv.getContext('2d');
@@ -160,7 +163,7 @@ export function DitherField({ pushRef, centerYFrac = 0.31, ambientMs = 5000, opa
           }
           for (const r of ripples.current) {
             const t = (now - r.t0) / 1000;
-            const R = (190 + t * 150) * S;
+            const R = (150 + t * 120) * S;
             const d = Math.hypot(x + skew - r.x, y - r.y);
             const g = Math.exp(-Math.pow((d - R) / (20 * S), 2));
             v += r.amp * g * Math.exp(-t * 0.45);
