@@ -282,6 +282,11 @@ export default function ReportView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [apiPath]);
 
+  // task given -> "done" (handled): also nudges the sender's contact memory.
+  // task null -> "ignore this one": drops just this notification, no contact
+  // signal and no standing rule, so the conversation stays active and a later,
+  // different message from them still shows. Both hide the item by its content
+  // hash, so this exact notification won't come back.
   function dismiss(id, task, e) {
     e?.stopPropagation();
     setCategories(prev => prev
@@ -294,6 +299,7 @@ export default function ReportView({
       body: JSON.stringify({ done: true, kind: task?.kind, from: task?.from }),
     }).catch(() => {});
   }
+  const ignore = (id, e) => dismiss(id, null, e);
 
   // Pull the full thread behind an item so its one-line snippet makes sense.
   function loadContext(t) {
@@ -472,6 +478,7 @@ export default function ReportView({
                   const actions = [
                     ...(t.reply ? [{ label: 'draft reply', onPress: () => onDraftReply?.(t) }] : []),
                     ...(isText ? [{ label: cal === 'adding' ? 'adding…' : 'add to cal', onPress: e => addToCal(t, e) }] : []),
+                    { label: 'ignore', onPress: e => ignore(t.id, e) },
                     { label: 'done', onPress: e => dismiss(t.id, t, e) },
                   ];
                   return (

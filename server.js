@@ -1116,7 +1116,7 @@ async function handleItemToCal(req, res) {
   const { from, text } = JSON.parse(await readBody(req));
   try {
     // 1. context
-    const tr = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?contact=${encodeURIComponent(from)}&limit=1`, {
+    const tr = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?contact=${encodeURIComponent(from)}&limit=1&live=1`, {
       headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
     });
     const { threads = [] } = tr.ok ? await tr.json() : {};
