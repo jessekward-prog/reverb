@@ -37,9 +37,9 @@ export async function searchTexts({ query } = {}) {
     });
   } catch (err) { return { text: `Could not reach browser-bridge: ${err.message}`, items: [] }; }
   if (!r.ok) return { text: `Could not reach browser-bridge (status ${r.status})`, items: [] };
-  const { hits = [], indexing } = await r.json();
+  const { threads = [], indexing } = await r.json();
 
-  if (!hits.length) {
+  if (!threads.length) {
     return {
       text: indexing
         ? `The text index is still building — ask again in a minute. Nothing for "${query}" yet.`
@@ -48,19 +48,20 @@ export async function searchTexts({ query } = {}) {
     };
   }
 
-  // Group hits by thread so the model sees one block per conversation, each hit
-  // with its surrounding messages — enough to answer without opening the thread.
-  const byThread = new Map();
-  for (const h of hits) {
-    if (!byThread.has(h.thread)) byThread.set(h.thread, []);
-    byThread.get(h.thread).push(h);
-  }
-  const blocks = [...byThread.entries()].map(([thread, hs]) => {
-    const ctx = hs.map(h => (h.context || [`${h.outbound ? '(you)' : '(them)'} ${h.text}`]).join('\n')).join('\n  …\n');
-    return `— ${thread} —\n${ctx}`;
+  // One full conversation per matching thread, messages oldest->newest, so the
+  // model can read the whole exchange — the answer (a day, a price) is often far
+  // from where the search term appears.
+  const blocks = threads.map(t => {
+    const body = (t.messages || [])
+      .map(m => `${m.outbound ? '(you)' : '(them)'} ${m.text}`)
+      .join('\n');
+    return `— ${t.thread}${t.when ? ` (last activity ${t.when})` : ''} —\n${body}`;
   });
-  const items = hits.map(h => ({ thread: h.thread, outbound: h.outbound, text: h.text }));
-  return { text: `Matches for "${query}":\n\n` + blocks.join('\n\n'), items };
+  const items = threads.map(t => ({ thread: t.thread, when: t.when, matchCount: t.matchCount }));
+  const note = threads.length > 1
+    ? `Found "${query}" in ${threads.length} conversations. Full threads below — check which one the user means.\n\n`
+    : `Full conversation mentioning "${query}":\n\n`;
+  return { text: note + blocks.join('\n\n'), items };
 }
 
 export const WAITING_TOOL = {
