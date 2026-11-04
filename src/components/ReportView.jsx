@@ -520,17 +520,27 @@ export default function ReportView({
                           {/* Full thread context for a text item, so a one-line snippet
                               ("👍 to '...'") can actually be understood. */}
                           {isText && context[t.id] ? (
-                            <div style={{ borderLeft: `2px solid ${tint}`, paddingLeft: 10,
-                                          display: 'flex', flexDirection: 'column', gap: 5,
-                                          maxHeight: 220, overflowY: 'auto' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 6,
+                                          maxHeight: 300, overflowY: 'auto', paddingRight: 2 }}>
                               {context[t.id].loading && <div style={{ fontSize: 11, opacity: .4 }}>reading the thread…</div>}
                               {!context[t.id].loading && !context[t.id].messages.length && (
                                 <div style={{ fontSize: 11, opacity: .4, textTransform: 'none' }}>{t.snippet}</div>
                               )}
-                              {context[t.id].messages.slice(-14).map((m, mi) => (
-                                <div key={mi} style={{ fontSize: 11.5, lineHeight: 1.5, textTransform: 'none', textWrap: 'pretty',
-                                                       opacity: m.outbound ? .85 : .62 }}>
-                                  <span style={{ color: m.outbound ? AMBER : undefined, opacity: .8 }}>{m.outbound ? 'you' : 'them'}:</span> {m.text}
+                              {/* The thread as a text chain: your replies right-aligned and
+                                  amber, theirs left-aligned and neutral, so it reads like the
+                                  Messages app rather than a flat you:/them: list. */}
+                              {context[t.id].messages.slice(-30).map((m, mi) => (
+                                <div key={mi} style={{ display: 'flex',
+                                                       justifyContent: m.outbound ? 'flex-end' : 'flex-start' }}>
+                                  <div style={{
+                                    maxWidth: '82%', padding: '7px 10px',
+                                    fontSize: 11.5, lineHeight: 1.45, textTransform: 'none',
+                                    textWrap: 'pretty', wordBreak: 'break-word',
+                                    borderRadius: m.outbound ? '9px 9px 2px 9px' : '9px 9px 9px 2px',
+                                    border: `1px solid ${m.outbound ? 'rgba(217,147,47,.38)' : HAIR}`,
+                                    background: m.outbound ? 'rgba(217,147,47,.13)' : WELL,
+                                    color: INK, opacity: m.outbound ? 1 : .86,
+                                  }}>{m.text}</div>
                                 </div>
                               ))}
                             </div>
