@@ -503,29 +503,24 @@ async function annotateAndFormat(kind, items, lineFn, sep, index, rules) {
 async function gatherSources(perSource = 20, jobsCap = 20) {
   const { rows: rules } = await pool.query('SELECT pattern, action FROM rules');
 
-  const [texts, events, emails, bizEmails, whatsapp, messenger, instagram, jobsRes] = await Promise.all([
+  // WhatsApp/Messenger/Instagram notification feeds (via notify-cmd) were dropped:
+  // stale, noisy, and not channels acted on here. The report is built from the
+  // deterministic tools now (collectGroundedItems), so this only feeds the Pull
+  // step's counts.
+  const [texts, events, emails, bizEmails, jobsRes] = await Promise.all([
     getRecentTextsBrief({ limit: perSource }),
     getUpcomingEvents({ days_ahead: 7 }),
     getRecentEmails({ limit: Math.round(perSource * 0.75) }),
     getRecentBusinessEmails({ limit: Math.round(perSource * 0.75) }),
-    getRecentNotifications({ source: 'whatsapp', limit: Math.round(perSource * 0.75) }),
-    getRecentNotifications({ source: 'messenger', limit: Math.round(perSource * 0.75) }),
-    getRecentNotifications({ source: 'instagram', limit: Math.round(perSource * 0.75) }),
     getSwitchcraftJobs(),
   ]);
-  // getSwitchcraftJobs has no limit param (its endpoint caps at 50 server-side);
-  // trim here too since job descriptions can be long free text and this is the
-  // single biggest contributor to prompt size once there's real backlog.
   const jobItems = jobsRes.items.slice(0, jobsCap);
 
   const contactIndex = new Map();
-  const [textsText, emailsText, bizEmailsText, whatsappText, messengerText, instagramText, jobsText] = await Promise.all([
+  const [textsText, emailsText, bizEmailsText, jobsText] = await Promise.all([
     annotateAndFormat('sms', texts.items, lineSms, '\n', contactIndex, rules),
     annotateAndFormat('email', emails.items, lineEmail, '\n\n', contactIndex, rules),
     annotateAndFormat('bizemail', bizEmails.items, lineEmail, '\n\n', contactIndex, rules),
-    annotateAndFormat('whatsapp', whatsapp.items, lineSms, '\n', contactIndex, rules),
-    annotateAndFormat('messenger', messenger.items, lineSms, '\n', contactIndex, rules),
-    annotateAndFormat('instagram', instagram.items, lineSms, '\n', contactIndex, rules),
     annotateAndFormat('job', jobItems, lineJob, '\n', contactIndex, rules),
   ]);
 
@@ -533,9 +528,6 @@ async function gatherSources(perSource = 20, jobsCap = 20) {
     texts: textsText, textsRaw: texts.text, events,
     emails: emailsText, emailsRaw: emails.text,
     bizEmails: bizEmailsText, bizEmailsRaw: bizEmails.text,
-    whatsapp: whatsappText, whatsappRaw: whatsapp.text,
-    messenger: messengerText, messengerRaw: messenger.text,
-    instagram: instagramText, instagramRaw: instagram.text,
     jobs: jobsText, jobsRaw: jobsRes.text,
     contactIndex,
   };
@@ -605,7 +597,7 @@ async function handlePull(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
 
   const sources = await gatherSources();
-  const { textsRaw, events, emailsRaw, bizEmailsRaw, whatsappRaw, messengerRaw, instagramRaw, jobsRaw } = sources;
+  const { textsRaw, events, emailsRaw, bizEmailsRaw, jobsRaw } = sources;
   pullCache = { sources, pulledAt: new Date().toISOString() };
 
   const countEmailBlock = s => (s.includes('No matching') ? 0 : s.split('\n\n').filter(Boolean).length);
@@ -615,15 +607,10 @@ async function handlePull(req, res) {
     sms:       `${countLines(textsRaw)} msgs`,
     email:     `${emailCount} msgs`,
     cal:       `${countLines(events)} events`,
-    call:      'not connected',
     bizemail:  `${bizEmailCount} msgs`,
-    whatsapp:  `${countLines(whatsappRaw)} msgs`,
-    messenger: `${countLines(messengerRaw)} msgs`,
-    instagram: `${countLines(instagramRaw)} msgs`,
     job:       `${countLines(jobsRaw)} jobs`,
   };
-  const scanned = countLines(textsRaw) + countLines(events) + emailCount + bizEmailCount
-    + countLines(whatsappRaw) + countLines(messengerRaw) + countLines(instagramRaw) + countLines(jobsRaw);
+  const scanned = countLines(textsRaw) + countLines(events) + emailCount + bizEmailCount + countLines(jobsRaw);
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ scanned, counts, pulledAt: pullCache.pulledAt }));
@@ -923,38 +910,121 @@ async function handleBrowserInput(req, res) {
   } catch (e) { res.writeHead(502); res.end(JSON.stringify({ error: e.message })); }
 }
 
+// ── Agentic report: assemble from the deterministic tools, not a raw dump ──
+// The old flow dumped every source's raw text into one classify prompt and let
+// the model structure it — which is where it confabulated a "Sarah Ward". This
+// instead gathers FACTS from the tools (waiting replies, unbooked jobs, open
+// jobs, email, calendar), each of which traces to code that can't invent a
+// contact or a message. The model's only job is to split work/life and group —
+// it organises verified items, so it cannot fabricate one.
+// A short automated message (an OTP, a verification code, a "do not reply")
+// slips under the waiting tool's length-based bulk filter and looks like a
+// person awaiting a reply. Drop those here so they don't become report items.
+const AUTOMATED_SNIPPET = /\b(verification code|security code|is your\b.{0,20}\bcode|one.?time|do not (share|reply)|unsubscribe|password reset)\b/i;
+
+async function collectGroundedItems() {
+  // Unbooked jobs is deliberately NOT here: its .items are the raw messages it
+  // inspects, not the jobs it finds (the finding is a model judgment on .text),
+  // so pulling .items would label every recent text a "job". It stays a chat
+  // tool you can ask explicitly. Waiting replies already surface the job-
+  // agreement texts, and switch-craft covers actual bookings.
+  const [waiting, jobs, email, bizEmail] = await Promise.all([
+    getWaitingReplies({ limit: 25 }).catch(() => ({ items: [] })),
+    getSwitchcraftJobs().catch(() => ({ items: [] })),
+    getRecentEmails({ limit: 10 }).catch(() => ({ items: [] })),
+    getRecentBusinessEmails({ limit: 10 }).catch(() => ({ items: [] })),
+  ]);
+
+  let events = [];
+  try {
+    const r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/events`);
+    if (r.ok) {
+      const all = await r.json();
+      const today = new Date().toISOString().slice(0, 10);
+      const end = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
+      events = all.filter(e => e.date >= today && e.date <= end);
+    }
+  } catch {}
+
+  const items = [];
+  for (const w of waiting.items || []) {
+    if (AUTOMATED_SNIPPET.test(w.snippet || '')) continue;
+    items.push({ kind: w.kind || 'sms', from: w.identifier, snippet: w.snippet,
+                 text: `Reply to ${w.identifier}`, reply: true, hintBucket: null });
+  }
+  for (const j of jobs.items || [])
+    items.push({ kind: 'job', from: j.identifier, snippet: j.snippet, when: j.when,
+                 text: `${j.status} job — ${String(j.snippet || '').slice(0, 40)}`, hintBucket: 'work' });
+  for (const e of bizEmail.items || [])
+    items.push({ kind: 'bizemail', from: e.identifier, snippet: e.snippet, subject: e.subject,
+                 text: `Business email: ${e.subject}`, reply: true, hintBucket: 'work' });
+  for (const e of email.items || [])
+    items.push({ kind: 'email', from: e.identifier, snippet: e.snippet, subject: e.subject,
+                 text: `Email from ${e.identifier}: ${e.subject}`, reply: true, hintBucket: 'life' });
+  for (const ev of events)
+    items.push({ kind: 'cal', from: ev.text,
+                 snippet: `${ev.date}${ev.time ? ' ' + ev.time : ''}${ev.location ? ' @ ' + ev.location : ''}`,
+                 when: `${ev.date}${ev.time ? ' ' + ev.time : ''}`, text: ev.text, hintBucket: 'life' });
+  return items;
+}
+
+// If the model call fails, never lose the grounded facts — fall back to one
+// category per bucket, split by hint.
+function fallbackGroup(items) {
+  const by = b => items.filter(t => (t.hintBucket || 'life') === b);
+  const mk = (b, label) => { const its = by(b); return { summary: its.length ? `${its.length} grounded items.` : `${b} looks clear`, categories: its.length ? [{ label, items: its }] : [] }; };
+  return { work: mk('work', 'to do'), life: mk('life', 'to do') };
+}
+
+async function groupGrounded(items) {
+  if (!items.length) return { work: { summary: 'work looks clear', categories: [] }, life: { summary: 'things look quiet', categories: [] } };
+  const listing = items.map((t, i) =>
+    `${i}. [${t.kind}] ${t.from} — ${t.text}${t.hintBucket ? ` (hint: ${t.hintBucket})` : ''}\n   "${String(t.snippet || '').slice(0, 120)}"`
+  ).join('\n');
+  const prompt = `Today's items, already gathered as FACTS. Do not invent, add, or reword any — only organise these exact items by their index:
+
+${listing}
+
+Split them into two buckets:
+- work = Switch Craft Electrics jobs, trade customers, business email, bookings.
+- life = family, personal messages/email, personal appointments, the kids (Peyton/Jude).
+Respect any (hint: ...). For EACH bucket write a one-sentence summary and group its items into at most 5 categories. Prefer grouping by WHO it's for: two or more items for the same person go in one category named for them, e.g. "jobs for <name>". Reference items ONLY by index number. Each index goes in exactly one bucket. A bucket with no items gets an empty categories array.
+
+Respond with ONLY this JSON, no prose, no markdown:
+{"work":{"summary":"...","categories":[{"label":"...","indexes":[0]}]},"life":{"summary":"...","categories":[{"label":"...","indexes":[1]}]}}`;
+
+  let parsed = null;
+  try { parsed = parseJsonFence(await askModel(prompt, 1800), null); } catch {}
+  if (!parsed || typeof parsed !== 'object') return fallbackGroup(items);
+
+  const build = key => {
+    const b = parsed[key] || {};
+    const cats = (b.categories || [])
+      .map(c => ({ label: c.label || key, items: [...new Set(c.indexes || [])].map(i => items[i]).filter(Boolean) }))
+      .filter(c => c.items.length);
+    return { summary: b.summary || (key === 'work' ? 'work looks clear' : 'things look quiet'), categories: cats };
+  };
+  return { work: build('work'), life: build('life') };
+}
+
 async function handleReportGenerate(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
-  if (!pullCache) {
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'pull data first' }));
-    return;
-  }
 
-  const { sources } = pullCache;
-  const classified = await runClassify(sources);
-  if (classified.error) {
-    const errResult = { summary: '', categories: [], error: classified.error };
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ work: errResult, life: errResult }));
-    return;
-  }
-
-  const work = await runReport(classified.work, 'work');
-  const life = await runReport(classified.life, 'life');
+  const items = await collectGroundedItems();
+  const { work, life } = await groupGrounded(items);
   await Promise.all([persistSummary('work_summary', work), persistSummary('life_summary', life)]);
 
   // Remember what this report surfaced, so first_seen_at can age items that keep
   // reappearing without being actioned. Done at generate time, not on every GET,
   // so "first seen" means "first reported".
-  if (!work.error) await recordSurfaced('work', work.categories);
-  if (!life.error) await recordSurfaced('life', life.categories);
+  await recordSurfaced('work', work.categories);
+  await recordSurfaced('life', life.categories);
 
   const scannedAt = new Date().toISOString();
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({
-    work: work.error ? work : await buildCategorizedResponse(work.summary, work.categories, scannedAt),
-    life: life.error ? life : await buildCategorizedResponse(life.summary, life.categories, scannedAt),
+    work: await buildCategorizedResponse(work.summary, work.categories, scannedAt),
+    life: await buildCategorizedResponse(life.summary, life.categories, scannedAt),
   }));
 }
 

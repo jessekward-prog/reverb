@@ -18,10 +18,6 @@ export const SOURCES = [
   { key: 'sms',       label: 'get_recent_texts' },
   { key: 'email',     label: 'get_recent_emails' },
   { key: 'cal',       label: 'get_upcoming_events' },
-  { key: 'call',      label: 'call log', unavailable: true },
   { key: 'bizemail',  label: 'get_recent_business_emails' },
-  { key: 'whatsapp',  label: 'get_recent_notifications (whatsapp)' },
-  { key: 'messenger', label: 'get_recent_notifications (messenger)' },
-  { key: 'instagram', label: 'get_recent_notifications (instagram)' },
   { key: 'job',       label: 'get_switchcraft_jobs' },
 ];
