@@ -105,7 +105,7 @@ export default function BrowserView({ auth, onLockout, ...nav }) {
           <div className="rv-head-title">
             <div style={{ fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em' }}>// browser</div>
             <div style={{ opacity: .45, fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase' }}>
-              live · {status}
+              {source} · {status}
             </div>
           </div>
           <div className="rv-head-side">
