@@ -2,16 +2,66 @@ export const TEXTS_TOOL = {
   type: 'function',
   function: {
     name: 'get_recent_texts',
-    description: 'Get recent SMS text messages, optionally filtered to one contact. Use this for questions like "what did mom text me" or "any new messages".',
+    description: 'Read SMS from the live phone. WITHOUT contact: returns the latest line of each recent conversation (a quick index, not full threads). WITH contact (a name or number): returns that one conversation in full — every message, marked (you)/(them) — which is where the real detail lives, usually a few messages up from the latest line. For "what did I say about the range hood" or "what price did I quote Mark": first call with no contact to find the right conversation in the list, then call again with that person\'s name or number to read the whole thread. Marking a thread read is a side effect of opening it.',
     parameters: {
       type: 'object',
       properties: {
-        contact: { type: 'string', description: 'Optional contact name or phone number to filter by, e.g. "mom"' },
-        limit:   { type: 'integer', description: 'Max messages to return, default 20' },
+        contact: { type: 'string', description: 'A name or phone number, e.g. "mum" or "0438". Provide it to read that one conversation in full. Omit to get the list of recent conversations.' },
+        limit:   { type: 'integer', description: 'Only used without contact: how many recent conversations to list, default 25.' },
       },
     },
   },
 };
+
+export const SEARCH_TEXTS_TOOL = {
+  type: 'function',
+  function: {
+    name: 'search_texts',
+    description: 'Search the full text of every recent SMS conversation for a word or phrase, across all contacts at once. This is how to answer "what day did I say I\'d do the range hood", "did I quote a price for X", "who mentioned Friday" — a topic with no particular person attached. Returns each matching message with the two messages either side for context, and who said each ((you)/(them)). Searches a local index of the live phone\'s threads, so it finds things buried mid-conversation that the latest-line list never shows.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The word or phrase to look for, e.g. "range hood" or "deposit".' },
+      },
+      required: ['query'],
+    },
+  },
+};
+
+export async function searchTexts({ query } = {}) {
+  if (!query || !query.trim()) return { text: 'Give a word or phrase to search for.', items: [] };
+  let r;
+  try {
+    r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/search?q=${encodeURIComponent(query)}`, {
+      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+    });
+  } catch (err) { return { text: `Could not reach browser-bridge: ${err.message}`, items: [] }; }
+  if (!r.ok) return { text: `Could not reach browser-bridge (status ${r.status})`, items: [] };
+  const { hits = [], indexing } = await r.json();
+
+  if (!hits.length) {
+    return {
+      text: indexing
+        ? `The text index is still building — ask again in a minute. Nothing for "${query}" yet.`
+        : `No text messages found mentioning "${query}".`,
+      items: [],
+    };
+  }
+
+  // Group hits by thread so the model sees one block per conversation, each hit
+  // with its surrounding messages — enough to answer without opening the thread.
+  const byThread = new Map();
+  for (const h of hits) {
+    if (!byThread.has(h.thread)) byThread.set(h.thread, []);
+    byThread.get(h.thread).push(h);
+  }
+  const blocks = [...byThread.entries()].map(([thread, hs]) => {
+    const ctx = hs.map(h => (h.context || [`${h.outbound ? '(you)' : '(them)'} ${h.text}`]).join('\n')).join('\n  …\n');
+    return `— ${thread} —\n${ctx}`;
+  });
+  const items = hits.map(h => ({ thread: h.thread, outbound: h.outbound, text: h.text }));
+  return { text: `Matches for "${query}":\n\n` + blocks.join('\n\n'), items };
+}
 
 export const WAITING_TOOL = {
   type: 'function',
@@ -109,18 +159,75 @@ export const SWITCHCRAFT_JOBS_TOOL = {
   },
 };
 
-// SMS flows through notify-cmd now (MacroDroid "SMS Received" trigger), not
-// text-cmd — that pipeline went stale (no ingested messages for a month) and
-// was abandoned rather than kept on life support. notify-cmd's sender is a
-// raw phone number with no name attached, so we borrow text-cmd's `contacts`
-// table purely as a phonebook (it's still Jesse's actively-maintained
-// phone->name mapping, just no longer the message source) to resolve display
-// names and let the `contact` filter match by name, not just raw digits.
-// Chat's tool-calling path only ever wants the .text string (see ChatView's
-// call sites in server.js's proxyChat); gatherSources (Sweep/Work) also
-// wants the structured .items so it can track senders in the contacts table
-// without a second round-trip to the same source.
-export async function getRecentTexts({ contact, limit = 20 } = {}) {
+// SMS comes from the live Messages session via browser-bridge — not notify-cmd,
+// not text-cmd. Two shapes for two needs:
+//   getRecentTexts       full thread bodies (opens conversations) — the chat,
+//                        for "what did I say about X".
+//   getRecentTextsBrief  one latest line per thread (the list, nothing opened) —
+//                        Sweep/Work, scanning every sender cheaply.
+// Full thread bodies from the live Messages session, via the bridge. The
+// conversation list only carries each thread's latest line, so anything said a
+// few messages up is invisible to it; /api/threads opens the actual
+// conversations and reads every bubble. Opening a thread marks it read on every
+// device, so this is bounded and the bridge caches each thread briefly.
+//
+// With a `contact` the bridge opens just that thread (fast, exact) — the strong
+// path. Without one it opens the few most-recent threads; that cannot see a
+// topic buried in an older thread, because Messages web has no search box to
+// find it by. So the model is told to pass a contact whenever the question
+// names or implies a person.
+export async function getRecentTexts({ contact, limit } = {}) {
+  // No person named: don't open threads (slow, and marks them read). Hand back
+  // the cheap conversation list — latest line per thread — and tell the model
+  // how to pull a full thread once it knows who. The list is the only index
+  // Messages web offers; a topic buried in an old thread with an unrelated
+  // latest line genuinely can't be found without a name.
+  if (!contact) {
+    const brief = await getRecentTextsBrief({ limit: limit || 25 });
+    if (!brief.items.length) return brief;
+    const text =
+      'Latest line of each recent conversation (not full threads). To read a '
+      + 'whole conversation — e.g. to find what was said about a specific job or '
+      + 'topic — call get_recent_texts again with contact set to that person\'s '
+      + 'name or number:\n\n' + brief.text;
+    return { text, items: brief.items };
+  }
+
+  const qs = new URLSearchParams({ limit: '1', contact });
+  let r;
+  try {
+    r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?${qs}`, {
+      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+    });
+  } catch (err) { return { text: `Could not reach browser-bridge: ${err.message}`, items: [] }; }
+  if (!r.ok) return { text: `Could not reach browser-bridge (status ${r.status})`, items: [] };
+  const { threads = [] } = await r.json();
+
+  if (!threads.length) {
+    return { text: `No text thread found matching "${contact}".`, items: [] };
+  }
+
+  // One readable transcript per thread, messages oldest->newest so the exchange
+  // reads in order; (you)/(them) so the model can tell who committed to what.
+  const blocks = threads.map(t => {
+    const head = `— ${t.name}${t.when ? ` (last activity ${t.when})` : ''} —`;
+    const body = (t.messages || [])
+      .map(msg => `${msg.outbound ? '(you)' : '(them)'} ${msg.text}`)
+      .join('\n');
+    return `${head}\n${body || '(no readable messages)'}`;
+  });
+  const items = threads.map(t => ({
+    identifier: t.name, displayName: t.name, when: t.when,
+    messageCount: (t.messages || []).length,
+  }));
+  return { text: blocks.join('\n\n'), items };
+}
+
+// The cheap overview: one latest line per thread, from the bridge's conversation
+// list — no thread is opened, so nothing is marked read. Sweep/Work use this to
+// scan every sender quickly; the chat uses getRecentTexts (full bodies) instead.
+// Items keep the per-row shape gatherSources formats with (occurred_at + snippet).
+export async function getRecentTextsBrief({ contact, limit = 20 } = {}) {
   let r;
   try {
     r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/sms?limit=${limit}`, {
@@ -129,8 +236,6 @@ export async function getRecentTexts({ contact, limit = 20 } = {}) {
   } catch (err) { return { text: `Could not reach browser-bridge: ${err.message}`, items: [] }; }
   if (!r.ok) return { text: `Could not reach browser-bridge (status ${r.status})`, items: [] };
   const { sms = [], health = {} } = await r.json();
-
-  // A dead source used to look identical to a quiet week. Say which one it is.
   if (!sms.length) return { text: `No texts available (${health.sms || 'unknown'}).`, items: [] };
 
   let msgs = sms;

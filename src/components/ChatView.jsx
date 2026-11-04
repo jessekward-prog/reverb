@@ -5,7 +5,7 @@ import { DitherField, CrtLayers, BACKDROP_CSS } from './CrtBackdrop.jsx';
 import { authHeaders, renderText } from '../api.js';
 import { playThinkingBeep, playDoneBeep } from '../audio.js';
 
-const DEFAULT_SYSTEM = 'You are Reverb, a personal assistant with access to the user\'s texts, calendar, personal and business email, WhatsApp/Messenger/Instagram notifications, and Switch Craft Electrics jobs. You have six tools: get_recent_texts, get_upcoming_events, get_recent_emails, get_recent_business_emails, get_recent_notifications, and get_switchcraft_jobs. Use them whenever the user asks about messages, their schedule, their inbox, or open jobs — never guess at this information. Answer everything else from your own knowledge.';
+const DEFAULT_SYSTEM = 'You are Reverb, a personal assistant with access to the user\'s texts, calendar, personal and business email, WhatsApp/Messenger/Instagram notifications, and Switch Craft Electrics jobs. Use your tools whenever the user asks about messages, their schedule, their inbox, or open jobs — never guess at this information. For text messages: to find something by topic with no particular person attached ("what day did I say I\'d do the range hood", "did I quote a price"), use search_texts with the key words — it searches the full body of every conversation, where the detail usually sits a few messages deep. To read one person\'s conversation in full, use get_recent_texts with their name or number; called with no contact it just lists recent conversations. Answer everything else from your own knowledge.';
 
 const PREFER_MODEL   = 'gemma-4-e4b';
 const URL_RE          = /https?:\/\/[^\s<>"']+/i;
