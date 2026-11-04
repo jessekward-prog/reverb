@@ -27,6 +27,20 @@ export const WAITING_TOOL = {
   },
 };
 
+export const UNBOOKED_JOBS_TOOL = {
+  type: 'function',
+  function: {
+    name: 'get_unbooked_jobs',
+    description: "Recent conversational messages paired with the calendar, for spotting work that was agreed in a message but never booked. Use for \"are there any jobs I haven't put in my calendar\", \"what have I agreed to that isn't booked\", \"did I miss scheduling anything\".",
+    parameters: {
+      type: 'object',
+      properties: {
+        days_back: { type: 'integer', description: 'How far back to read messages, default 14' },
+      },
+    },
+  },
+};
+
 export const CALENDAR_TOOL = {
   type: 'function',
   function: {
@@ -171,6 +185,91 @@ export async function getWaitingReplies({ limit = 25 } = {}) {
 
   const text = `${waiting.length} threads where someone else sent the last message. Some of these are conversations that simply ended with a thanks - judge from the wording whether a reply is actually needed, and say so. ${alsoUnanswered} further unanswered items were excluded as non-conversational.\n\n${waiting.map(line).join('\n')}${bulkBlock}${caveat}`;
   return { text, items };
+}
+
+export async function getUnbookedJobs({ days_back = 14 } = {}) {
+  const since = Date.now() - days_back * 86400000;
+
+  let msgs = [], health = {};
+  try {
+    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/waiting?limit=200`, {
+      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+    });
+    if (!r.ok) return { text: `Could not reach browser-bridge (status ${r.status})`, items: [] };
+    const j = await r.json();
+    health = j.health || {};
+    // Only conversational rows, and only recent ones. A job is agreed in a
+    // conversation, never in a parcel notice, so the bulk bucket stays out.
+    msgs = (j.waiting || []).filter(w => w.at && Date.parse(w.at) >= since);
+  } catch (err) { return { text: `Could not reach browser-bridge: ${err.message}`, items: [] }; }
+
+  let events = [];
+  try {
+    const r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/events`);
+    if (r.ok) events = await r.json();
+  } catch { /* calendar block says it is missing, below */ }
+
+  const from = new Date(since).toISOString().slice(0, 10);
+  const to = new Date(Date.now() + 60 * 86400000).toISOString().slice(0, 10);
+  const window = events.filter(e => e.date >= from && e.date <= to);
+
+  const broken = Object.entries(health)
+    .filter(([k, v]) => !k.startsWith('newest') && v !== 'ok')
+    .map(([k, v]) => `${k}: ${v}`);
+
+  if (!msgs.length) return { text: `No conversational messages in the last ${days_back} days to check against the calendar.`, items: [] };
+
+  // The bridge only sees the LAST message per thread, and a reply like "Thursday
+  // works" is meaningless without the question it answers - the model correctly
+  // reported "no unbooked jobs" when shown only those. notify-cmd holds
+  // message-level SMS history with direction, so pull the preceding few lines in.
+  // Joined on the last 9 digits, which identifies an AU mobile however either side
+  // formats it. A thread the bridge shows under a contact NAME has no number to
+  // join on and gets no transcript - stated in the block below rather than hidden.
+  const phoneKey = v => { const d = String(v || '').replace(/\D/g, ''); return d.length >= 9 ? d.slice(-9) : null; };
+  const history = new Map();
+  try {
+    const params = new URLSearchParams({ source: 'sms', limit: '500', since: new Date(since).toISOString() });
+    const hr = await fetch(`${process.env.NOTIFY_CMD_BASE_URL}/api/notifications/recent?${params}`, {
+      headers: { 'X-Service-Token': process.env.NOTIFY_CMD_SERVICE_TOKEN },
+    });
+    if (hr.ok) {
+      for (const row of await hr.json()) {
+        const k = phoneKey(row.sender);
+        if (!k) continue;
+        if (!history.has(k)) history.set(k, []);
+        history.get(k).push(row);
+      }
+    }
+  } catch { /* transcripts are an enrichment; the messages still stand without them */ }
+
+  let noContext = 0;
+  const msgBlock = msgs.map(m => {
+    const head = `[${m.source}] ${m.who} - ${m.when}: ${m.snippet}`;
+    const k = phoneKey(m.who);
+    const thread = k && history.get(k);
+    if (!thread) { if (m.source === 'sms') noContext++; return head; }
+    const lines = thread
+      .sort((a, b) => String(a.occurred_at).localeCompare(String(b.occurred_at)))
+      .slice(-6)
+      .map(x => `    ${x.direction === 'out' ? 'me' : 'them'}: ${String(x.body || '').replace(/\s+/g, ' ').slice(0, 160)}`)
+      .join('\n');
+    return `${head}\n  thread:\n${lines}`;
+  }).join('\n');
+  const calBlock = window.length
+    ? window.map(e => `${e.date}${e.time ? ' ' + e.time : ''}: ${e.text}${e.location ? ' @ ' + e.location : ''}`).join('\n')
+    : events.length ? '(no events in this window)' : '(CALENDAR UNAVAILABLE - could not read it, so nothing below can be confirmed as booked)';
+
+  const gap = noContext ? `\n\n(${noContext} SMS threads are shown under a saved contact name, so no message history could be matched for them - judge those from the single line alone.)` : '';
+  const text = `Messages from the last ${days_back} days, then the calendar from ${from} to ${to}. Find only messages that agree to or request actual work or an appointment - a date someone proposed, a job someone asked for - and say which have no matching calendar entry. Quote the message verbatim. Ignore chit-chat, thanks and anything already on the calendar. If you are not sure a message is a job, leave it out.${broken.length ? `\n\nSOURCE PROBLEMS - this is incomplete: ${broken.join(' | ')}` : ''}
+
+MESSAGES (a "thread:" block is the recent back-and-forth, oldest first):
+${msgBlock}${gap}
+
+CALENDAR:
+${calBlock}`;
+
+  return { text, items: msgs.map(m => ({ identifier: m.who, displayName: m.who, snippet: m.snippet, occurred_at: m.at, kind: m.source })) };
 }
 
 export async function getUpcomingEvents({ days_ahead = 1 } = {}) {

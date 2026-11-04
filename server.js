@@ -6,7 +6,7 @@ import { createHmac, createHash } from 'crypto';
 import pg from 'pg';
 import {
   TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL,
-  WAITING_TOOL, getWaitingReplies,
+  WAITING_TOOL, getWaitingReplies, UNBOOKED_JOBS_TOOL, getUnbookedJobs,
   getRecentTexts, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
 } from './src/lib/tools.js';
 import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules } from './src/lib/contacts.js';
@@ -319,7 +319,7 @@ async function proxyModels(req, res) {
   }
 }
 
-const TOOLS = [WAITING_TOOL, TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
+const TOOLS = [WAITING_TOOL, UNBOOKED_JOBS_TOOL, TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
 
 async function proxyChat(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
@@ -354,6 +354,9 @@ async function proxyChat(req, res) {
       if (tc.function.name === 'get_waiting_replies') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking who is waiting…' })}\n\n`);
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getWaitingReplies(args)).text });
+      } else if (tc.function.name === 'get_unbooked_jobs') {
+        res.write(`data: ${JSON.stringify({ type: 'status', message: 'Cross-checking messages against the calendar…' })}\n\n`);
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getUnbookedJobs(args)).text });
       } else if (tc.function.name === 'get_recent_texts') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking texts…' })}\n\n`);
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getRecentTexts(args)).text });
