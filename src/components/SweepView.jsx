@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { DitherField, CrtLayers, BACKDROP_CSS, INK, AMBER } from './CrtBackdrop.jsx';
+import { DitherField, CrtLayers, BACKDROP_CSS, INK, AMBER,
+         EDGE, RULE, HAIR, WELL, RAISED, FILM, ROW, PANEL } from './CrtBackdrop.jsx';
 import { authHeaders } from '../api.js';
 import { SOURCES } from '../lib/kinds.js';
 
@@ -173,14 +174,12 @@ export default function SweepView({ auth, onLockout, onOpenChat, onOpenWork, onO
       <div style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column',
                     height: '100%', maxWidth: CONTENT_MAX, margin: '0 auto', boxSizing: 'border-box' }}>
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
-                      gap: 12, padding: '20px 20px 0' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <div className="rv-head">
+          <div className="rv-head-title">
             <div style={{ fontWeight: 700 }}>// sweep</div>
             <div style={label}>{statusLine()}</div>
           </div>
-          <div style={{ display: 'flex', gap: 1, background: 'rgba(232,232,228,.18)',
-                        border: '1px solid rgba(232,232,228,.18)' }}>
+          <div className="rv-head-nav" style={{ background: EDGE, border: `1px solid ${EDGE}` }}>
             <button type="button" style={navBtn(false)} onClick={() => onOpenChat?.()}>chat</button>
             <button type="button" style={navBtn(true)}>sweep</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenWork?.()}>work</button>
@@ -281,8 +280,8 @@ export default function SweepView({ auth, onLockout, onOpenChat, onOpenWork, onO
                           onClick={() => (k === 'work' ? onOpenWork?.() : onOpenLife?.())}
                           style={{
                             appearance: 'none', width: '100%', textAlign: 'left', cursor: 'pointer',
-                            border: '1px solid rgba(232,232,228,.16)', background: 'rgba(6,6,6,.72)',
-                            color: INK, fontFamily: 'inherit', padding: 14,
+                            border: `1px solid ${HAIR}`, background: PANEL,
+                            color: INK, fontFamily: 'inherit', padding: '13px 16px',
                             animation: 'rv-rise .26s ease-out both',
                           }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>

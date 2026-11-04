@@ -16,12 +16,57 @@ import React, { useEffect, useRef, useCallback, useState } from 'react';
 
 export const INK = '#e8e8e4';
 export const AMBER = '#d9932f';
+
+/* ── Surfaces & density ──────────────────────────────────────────────────
+   One set of values for every panel, row and rule in the app. These are
+   lifted from the People/Rules drawers, which were already the flattest,
+   tightest surfaces in Reverb; the report and sweep lists were boxier and
+   looser, so they read as a different app. Palette, glow and type are
+   deliberately NOT here - they stay exactly as they were.
+
+   Three border weights, used consistently:
+     EDGE  a panel or a control group's outer edge
+     RULE  a divider between sections inside a panel
+     HAIR  the separator between rows of one list - nearly invisible on
+           purpose, because a list of 20 rows draws 20 of them.
+   ──────────────────────────────────────────────────────────────────────── */
+export const EDGE = 'rgba(232,232,228,.18)';
+export const RULE = 'rgba(232,232,228,.14)';
+export const HAIR = 'rgba(232,232,228,.08)';
+
+export const WELL   = '#060606';            // the base the backdrop shows through
+export const RAISED = '#0b0b0a';            // drawers, toasts - sits above the well
+export const FILM    = 'rgba(232,232,228,.05)'; // a fill that reads as tinted glass
+
+/* Row padding is the density unit. Everything that is a list row uses ROW,
+   so Work, Life, Texts and the drawers scan at the same rhythm. */
+export const ROW = '11px 16px';
+export const PANEL = 'rgba(6,6,6,.72)';     // list wells - opaque enough to read over the dither
 const SKULL_DARK = '#41473f';
 const SKULL_LIGHT = '#5a625c';
 const REF_W = 390; // design reference: the width the original pixel constants were tuned at
 const BAYER = [0,8,2,10,12,4,14,6,3,11,1,9,15,7,13,5];
 
 export const BACKDROP_CSS = `
+/* ── View header ─────────────────────────────────────────────────────────
+   Title on the left, the five-tab nav on the right. At 390px the nav alone
+   is ~350px wide, which squeezed the title into a four-line wrap, so below
+   560px the nav drops to its own full-width row and the buttons share the
+   width evenly - bigger tap targets as a side effect.
+   ──────────────────────────────────────────────────────────────────────── */
+.rv-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; padding:20px 20px 0; }
+.rv-head-title { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.rv-head-title > :last-child { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.rv-head-side { display:flex; flex-direction:column; align-items:flex-end; gap:6px; flex:none; }
+.rv-head-nav { display:flex; gap:1px; }
+.rv-head-sub { display:flex; gap:10px; justify-content:flex-end; }
+@media (max-width:560px) {
+  .rv-head { flex-direction:column; gap:10px; }
+  .rv-head-side { align-items:stretch; width:100%; }
+  .rv-head-nav { width:100%; }
+  .rv-head-nav > button { flex:1; text-align:center; }
+}
+
 @keyframes rv-scan  { 0%{top:-2%} 100%{top:102%} }
 @keyframes rv-flick { 0%,100%{opacity:.05} 50%{opacity:.07} }
 @keyframes rv-drift { from{transform:translateY(0)} to{transform:translateY(3px)} }

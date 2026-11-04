@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { DitherField, CrtLayers, BACKDROP_CSS, INK, AMBER } from './CrtBackdrop.jsx';
+import { DitherField, CrtLayers, BACKDROP_CSS, INK, AMBER,
+         EDGE, RULE, HAIR, WELL, RAISED, FILM, ROW, PANEL } from './CrtBackdrop.jsx';
 import { authHeaders } from '../api.js';
 
 const CONTENT_MAX = 700; // matches Chat/Sweep/Work so the nav pill lands in the same spot
@@ -40,7 +41,7 @@ export default function TextsView({ auth, onLockout, onOpenChat, onOpenSweep, on
   const totalMessages = threads.reduce((sum, t) => sum + t.messages.length, 0);
 
   const navBtn = (active) => ({
-    appearance: 'none', border: 0, margin: 0, background: active ? 'rgba(232,232,228,.14)' : '#060606',
+    appearance: 'none', border: 0, margin: 0, background: active ? RULE : WELL,
     color: INK, fontFamily: 'inherit', fontSize: 11, letterSpacing: '.06em',
     textTransform: 'uppercase', padding: '7px 10px', cursor: 'pointer',
   });
@@ -49,7 +50,7 @@ export default function TextsView({ auth, onLockout, onOpenChat, onOpenSweep, on
   return (
     <div style={{
       position: 'relative', width: '100%', height: '100dvh', overflow: 'hidden',
-      background: '#060606', color: INK,
+      background: WELL, color: INK,
       fontFamily: "'JetBrains Mono', ui-monospace, monospace",
       fontSize: 11, letterSpacing: '.06em', textTransform: 'uppercase', userSelect: 'none',
     }}>
@@ -60,16 +61,14 @@ export default function TextsView({ auth, onLockout, onOpenChat, onOpenSweep, on
       <div style={{ position: 'relative', zIndex: 2, display: 'flex', flexDirection: 'column',
                     height: '100%', maxWidth: CONTENT_MAX, margin: '0 auto', boxSizing: 'border-box' }}>
 
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
-                      gap: 12, padding: '20px 20px 0' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+        <div className="rv-head">
+          <div className="rv-head-title">
             <div style={{ fontWeight: 700 }}>// texts</div>
             <div style={label}>
               {phase === 'loading' ? 'loading…' : `${threads.length} threads · ${totalMessages} msgs · last 5 days`}
             </div>
           </div>
-          <div style={{ display: 'flex', gap: 1, background: 'rgba(232,232,228,.18)',
-                        border: '1px solid rgba(232,232,228,.18)' }}>
+          <div className="rv-head-nav" style={{ background: EDGE, border: `1px solid ${EDGE}` }}>
             <button type="button" style={navBtn(false)} onClick={() => onOpenChat?.()}>chat</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenSweep?.()}>sweep</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenWork?.()}>work</button>
@@ -88,16 +87,19 @@ export default function TextsView({ auth, onLockout, onOpenChat, onOpenSweep, on
             </div>
           )}
 
+          {/* One well, hairline-separated rows - same surface as Work/Life. */}
+          <div style={threads.length ? { background: PANEL, border: `1px solid ${HAIR}` } : undefined}>
           {threads.map((t, i) => {
             const last = t.messages[t.messages.length - 1];
             const open = openPhone === t.phone;
             return (
               <div key={t.phone} style={{
-                marginBottom: 8, border: '1px solid rgba(232,232,228,.16)', background: 'rgba(6,6,6,.72)',
+                borderBottom: i === threads.length - 1 ? 0 : `1px solid ${HAIR}`,
+                background: open ? FILM : undefined,
                 animation: 'rv-rise .22s ease-out both', animationDelay: `${(i * 0.03).toFixed(2)}s`,
               }}>
                 <div onClick={() => setOpenPhone(open ? null : t.phone)}
-                     style={{ display: 'flex', gap: 11, padding: '13px 12px', cursor: 'pointer' }}>
+                     style={{ display: 'flex', gap: 11, padding: ROW, cursor: 'pointer' }}>
                   <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8 }}>
                       <div style={{ fontWeight: 700, textTransform: 'none' }}>{t.phone}</div>
@@ -115,7 +117,7 @@ export default function TextsView({ auth, onLockout, onOpenChat, onOpenSweep, on
                 </div>
 
                 {open && (
-                  <div style={{ borderTop: '1px solid rgba(232,232,228,.12)', padding: '12px',
+                  <div style={{ borderTop: `1px solid ${HAIR}`, padding: '12px 16px 13px',
                                 display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 360, overflowY: 'auto' }}>
                     {t.messages.map(m => (
                       <div key={m.id} style={{ display: 'flex', gap: 8, alignItems: 'baseline' }}>
@@ -130,6 +132,7 @@ export default function TextsView({ auth, onLockout, onOpenChat, onOpenSweep, on
               </div>
             );
           })}
+          </div>
         </div>
       </div>
     </div>
