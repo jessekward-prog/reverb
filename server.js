@@ -584,7 +584,11 @@ async function askModel(prompt, maxTokens = 1400) {
     signal: AbortSignal.timeout(115_000),
     method: 'POST',
     headers: LM_HEADERS,
-    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.2, max_tokens: maxTokens }),
+    // gemma-4-12b-qat is a reasoning model: without this it spends the whole
+    // budget on hidden chain-of-thought and returns EMPTY content (so every
+    // report came back "nothing today"). reasoning_effort:none makes it answer
+    // directly. See the token-floor lesson in memory.
+    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false, temperature: 0.2, max_tokens: maxTokens, reasoning_effort: 'none' }),
   });
   const data = await cr.json();
   return data.choices?.[0]?.message?.content || '';
