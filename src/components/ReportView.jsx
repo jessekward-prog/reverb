@@ -415,6 +415,19 @@ export default function ReportView({
                   <div style={{ opacity: .4 }}>{String(c.items.length).padStart(2, '0')}</div>
                 </div>
 
+                {/* The agent's read on this group: what's here and what to do next
+                    (check off the done ones, book or reply to the rest). Written at
+                    generate time, grounded in the group's own items. */}
+                {c.synopsis && (
+                  <div style={{
+                    display: 'flex', gap: 8, fontSize: 11.5, lineHeight: 1.55, letterSpacing: '.01em',
+                    textTransform: 'none', textWrap: 'pretty', opacity: .62, paddingLeft: 1,
+                  }}>
+                    <span style={{ color: tint, opacity: .8, flex: 'none' }}>▸</span>
+                    <span>{c.synopsis}</span>
+                  </div>
+                )}
+
                 {/* One well per category with hairline-separated rows, rather than a
                     bordered card per item. The background stays semi-opaque because
                     the dither field animates underneath and plain text over it is

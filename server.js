@@ -729,6 +729,7 @@ async function buildCategorizedResponse(summary, categories, scannedAt) {
   const filtered = categories
     .map(c => ({
       label: c.label,
+      synopsis: c.synopsis || '',
       items: c.items
         .map(t => {
           const id = workItemId(t);
@@ -789,7 +790,7 @@ async function handleTasks(req, res) {
     readSummaryTable('work_summary'), readSummaryTable('life_summary'),
   ]);
   const tag = (r, bucket) => (r.categories || []).map(c => ({
-    label: c.label, bucket, items: c.items.map(t => ({ ...t, bucket })),
+    label: c.label, synopsis: c.synopsis || '', bucket, items: c.items.map(t => ({ ...t, bucket })),
   }));
   const categories = [...tag(work, 'work'), ...tag(life, 'life')];
   for (const c of categories) c.items.sort((a, b) => taskScore(b) - taskScore(a));
@@ -1046,14 +1047,16 @@ async function annotateGrounded(items) {
 // category per bucket, split by hint.
 function fallbackGroup(items) {
   const by = b => items.filter(t => (t.hintBucket || 'life') === b);
-  const mk = (b, label) => { const its = by(b); return { summary: its.length ? `${its.length} grounded items.` : `${b} looks clear`, categories: its.length ? [{ label, items: its }] : [] }; };
+  const synopsis = 'Check off anything already handled, then book or reply to the rest.';
+  const mk = (b, label) => { const its = by(b); return { summary: its.length ? `${its.length} grounded items.` : `${b} looks clear`, categories: its.length ? [{ label, synopsis, items: its }] : [] }; };
   return { work: mk('work', 'to do'), life: mk('life', 'to do') };
 }
 
 async function groupGrounded(items) {
   if (!items.length) return { work: { summary: 'work looks clear', categories: [] }, life: { summary: 'things look quiet', categories: [] } };
+  const age = t => t.daysOnList >= 1 ? `${t.daysOnList}d on list` : 'new';
   const listing = items.map((t, i) =>
-    `${i}. [${t.kind}] ${t.from} — ${t.text}${t.hintBucket ? ` (hint: ${t.hintBucket})` : ''}\n   "${String(t.snippet || '').slice(0, 120)}"`
+    `${i}. [${t.kind}] ${t.from}${t.when ? ` (${t.when})` : ''} — ${t.text} · ${age(t)}${t.hintBucket ? ` (hint: ${t.hintBucket})` : ''}\n   "${String(t.snippet || '').slice(0, 120)}"`
   ).join('\n');
   const prompt = `Today's items, already gathered as FACTS. Do not invent, add, or reword any — only organise these exact items by their index:
 
@@ -1064,17 +1067,23 @@ Split them into two buckets:
 - life = family, personal messages/email, personal appointments, the kids (Peyton/Jude).
 Respect any (hint: ...). For EACH bucket write a one-sentence summary and group its items into at most 5 categories. Prefer grouping by WHO it's for: two or more items for the same person go in one category named for them, e.g. "jobs for <name>". Reference items ONLY by index number. Each index goes in exactly one bucket. A bucket with no items gets an empty categories array.
 
+For EACH category also write a "synopsis": 1-3 short, plain sentences, like a capable assistant who just sorted this pile for them. Say what's in the group and what to do next — check off anything already handled, check the calendar and book the rest, or reply. When the items differ in age (see "Nd on list" vs "new"), say so plainly, e.g. "some have been sitting a while and may already be done, a couple are fresh." Ground every word in the listed items only: never state a job, name, date, or count that isn't shown, and hedge ("may", "perhaps") rather than assert anything you can't see. Keep it brief and practical, no filler.
+
 Respond with ONLY this JSON, no prose, no markdown:
-{"work":{"summary":"...","categories":[{"label":"...","indexes":[0]}]},"life":{"summary":"...","categories":[{"label":"...","indexes":[1]}]}}`;
+{"work":{"summary":"...","categories":[{"label":"...","synopsis":"...","indexes":[0]}]},"life":{"summary":"...","categories":[{"label":"...","synopsis":"...","indexes":[1]}]}}`;
 
   let parsed = null;
-  try { parsed = parseJsonFence(await askModel(prompt, 1800), null); } catch {}
+  try { parsed = parseJsonFence(await askModel(prompt, 2600), null); } catch {}
   if (!parsed || typeof parsed !== 'object') return fallbackGroup(items);
 
   const build = key => {
     const b = parsed[key] || {};
     const cats = (b.categories || [])
-      .map(c => ({ label: c.label || key, items: [...new Set(c.indexes || [])].map(i => items[i]).filter(Boolean) }))
+      .map(c => ({
+        label: c.label || key,
+        synopsis: typeof c.synopsis === 'string' ? c.synopsis.trim().slice(0, 400) : '',
+        items: [...new Set(c.indexes || [])].map(i => items[i]).filter(Boolean),
+      }))
       .filter(c => c.items.length);
     return { summary: b.summary || (key === 'work' ? 'work looks clear' : 'things look quiet'), categories: cats };
   };
@@ -1163,6 +1172,14 @@ async function handleReportGenerate(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
 
   const items = await collectGroundedItems();
+  // How long each item has already been on the list, so the per-category synopsis
+  // can tell old from new ("some have been sitting a while and may be done").
+  const { rows: seen } = await pool.query('SELECT task_id, first_seen_at FROM surfaced_items');
+  const firstSeen = new Map(seen.map(r => [r.task_id, r.first_seen_at]));
+  for (const t of items) {
+    const fs = firstSeen.get(workItemId(t));
+    t.daysOnList = fs ? daysOpen(fs) : 0;
+  }
   const { work, life } = await groupGrounded(items);
   await Promise.all([persistSummary('work_summary', work), persistSummary('life_summary', life)]);
 
