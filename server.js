@@ -840,7 +840,7 @@ function reportPrompt(items, label) {
 
 ${listing}
 
-Write a 2-sentence summary of how things look, then group the items into at most 5 categories that fit what's actually here (e.g. ${REPORT_EXAMPLES[label]}) — don't invent empty categories. Cap each category at 5 item indexes — pick the most important/urgent ones if there are more (priority-tagged items should usually be included). Reference items ONLY by their index number, never rewrite their text.
+Write a 2-sentence summary of how things look, then group the items into at most 5 categories that fit what's actually here. Prefer grouping by WHO it's for: when two or more items are for the same person or customer (the name after the channel), put them in one category named for that person, e.g. "jobs for Murpheys — book asap" — do NOT scatter one customer's jobs across task-type categories like "lighting" and "troubleshooting". Only fall back to task-type categories (e.g. ${REPORT_EXAMPLES[label]}) for leftover items that don't cluster on one person. Don't invent empty categories. A person's category should list ALL of that person's items; otherwise cap a category at about 8 indexes, keeping the most urgent (priority-tagged items should usually be included). Reference items ONLY by their index number, never rewrite their text.
 
 Respond with ONLY a JSON object, no prose outside it, no markdown fences:
 ${REPORT_SCHEMA}`;
@@ -860,7 +860,7 @@ async function runReport(items, label) {
     .filter(c => c && typeof c.label === 'string' && Array.isArray(c.indexes))
     .map(c => ({
       label: c.label,
-      items: [...new Set(c.indexes)].map(i => items[i]).filter(Boolean).slice(0, 5),
+      items: [...new Set(c.indexes)].map(i => items[i]).filter(Boolean).slice(0, 10),
     }))
     .filter(c => c.items.length);
   return { summary, categories };
