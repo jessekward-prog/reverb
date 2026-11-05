@@ -978,6 +978,23 @@ async function handleBrowserInput(req, res) {
   } catch (e) { res.writeHead(502); res.end(JSON.stringify({ error: e.message })); }
 }
 
+// ── Job photos ────────────────────────────────────────────
+// The booking app holds the photos; Reverb proxies them behind its own PIN so
+// the browser never needs the booking app's address. Numeric ids only.
+async function handleJobPhoto(req, res, id) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end(); return; }
+  try {
+    const r = await fetch(`${process.env.SWITCHCRAFT_BASE_URL}/api/photos/${id}`);
+    if (!r.ok) { res.writeHead(r.status === 404 ? 404 : 502); res.end(); return; }
+    const type = r.headers.get('content-type') || '';
+    if (!type.startsWith('image/')) { res.writeHead(415); res.end(); return; }
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.writeHead(200, { 'Content-Type': type, 'Content-Length': buf.length,
+                         'Cache-Control': 'private, max-age=86400' });
+    res.end(buf);
+  } catch { res.writeHead(502); res.end(); }
+}
+
 // ── Agentic report: assemble from the deterministic tools, not a raw dump ──
 // The old flow dumped every source's raw text into one classify prompt and let
 // the model structure it — which is where it confabulated a "Sarah Ward". This
@@ -1036,7 +1053,7 @@ async function collectGroundedItems() {
                  address: j.address, phone: j.phone, business: j.business,
                  preferredDays: j.preferredDays, timeline: j.timeline,
                  tasks: j.tasks, noteCount: j.noteCount, photoCount: j.photoCount,
-                 lastNote: j.lastNote, raised: j.raised,
+                 photos: j.photos, lastNote: j.lastNote, raised: j.raised,
                  text: title.slice(0, 140), hintBucket: 'work' });
   }
   for (const e of bizEmail.items || [])
@@ -1553,6 +1570,8 @@ createServer(async (req, res) => {
     if (req.method === 'DELETE' && ruleMatch) return await handleRuleDelete(req, res, ruleMatch[1]);
     if (req.method === 'GET'  && u === '/api/browser/frame') return await handleBrowserFrame(req, res);
     if (req.method === 'POST' && u === '/api/browser/input') return await handleBrowserInput(req, res);
+    const jobPhotoMatch = u.match(/^\/api\/job-photo\/(\d+)$/);
+    if (req.method === 'GET' && jobPhotoMatch) return await handleJobPhoto(req, res, jobPhotoMatch[1]);
     if (req.method === 'GET'  && u === '/api/item/context') return await handleItemContext(req, res);
     if (req.method === 'POST' && u === '/api/item/tocal')   return await handleItemToCal(req, res);
     return await serveStatic(req, res);

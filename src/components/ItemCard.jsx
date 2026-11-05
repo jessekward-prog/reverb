@@ -1,5 +1,7 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { KINDS } from '../lib/kinds.js';
+import { getStoredAuth, authHeaders } from '../api.js';
 
 // ShelfStation's card, in Reverb. Palette is shelf-cmd's `theme-cmd` (the one
 // in Jesse's screenshot): black page, #111 surface, white accent, grey body
@@ -44,6 +46,55 @@ export function Bubbles({ entry, snippet }) {
   );
 }
 
+
+// A job photo, pulled through Reverb's PIN-guarded proxy. An <img src> can't
+// carry the bearer token, so fetch it as a blob and show that. Only mounted
+// when the card is opened, so a closed card never downloads anything.
+function JobPhoto({ id, name, onOpen }) {
+  const [src, setSrc] = useState(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let url = null, live = true;
+    fetch(`/api/job-photo/${id}`, { headers: authHeaders(getStoredAuth().token) })
+      .then(r => (r.ok ? r.blob() : Promise.reject(r.status)))
+      .then(b => { url = URL.createObjectURL(b); if (live) setSrc(url); else URL.revokeObjectURL(url); })
+      .catch(() => live && setFailed(true));
+    return () => { live = false; if (url) URL.revokeObjectURL(url); };
+  }, [id]);
+  const box = { width: 76, height: 76, flex: 'none', borderRadius: 6,
+                border: `1px solid ${SHELF.border}`, background: SHELF.surface2 };
+  if (failed) return <div style={{ ...box, display: 'grid', placeItems: 'center',
+                                   fontSize: 9.5, color: SHELF.text3 }}>no image</div>;
+  if (!src) return <div style={box} />;
+  return (
+    <button type="button" title={name || 'photo'}
+            onClick={e => { e.stopPropagation(); onOpen(src); }}
+            style={{ ...box, padding: 0, overflow: 'hidden', cursor: 'zoom-in' }}>
+      <img src={src} alt={name || 'job photo'}
+           style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }} />
+    </button>
+  );
+}
+
+function JobPhotos({ photos }) {
+  const [open, setOpen] = useState(null);
+  if (!photos || !photos.length) return null;
+  return (
+    <>
+      <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 2 }}>
+        {photos.map(p => <JobPhoto key={p.id} id={p.id} name={p.name} onOpen={setOpen} />)}
+      </div>
+      {/* Portalled: a card in the deck sits inside a transform, which would
+          trap a position:fixed overlay inside the card. */}
+      {open && createPortal(
+        <div className="lightbox" onClick={() => setOpen(null)}>
+          <img src={open} alt="" />
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
 
 // Everything known about a non-message item. Short, and honest about gaps:
 // if the source record is thin, this shows that rather than padding it.
@@ -117,6 +168,7 @@ function Facts({ t, showDescription }) {
             {t.noteCount || 0} note{t.noteCount === 1 ? '' : 's'}
             {t.photoCount ? ` · ${t.photoCount} photo${t.photoCount === 1 ? '' : 's'}` : ''}
           </div>
+          <JobPhotos photos={t.photos} />
           {t.lastNote && (
             <div style={{ fontSize: 11.5, lineHeight: 1.5, color: SHELF.text2,
                           textTransform: 'none', textWrap: 'pretty' }}>
