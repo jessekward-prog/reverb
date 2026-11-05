@@ -3,6 +3,8 @@ import { DitherField, CrtLayers, BACKDROP_CSS, INK, AMBER,
          EDGE, RULE, HAIR, WELL, RAISED, FILM, ROW, PANEL } from './CrtBackdrop.jsx';
 import { authHeaders } from '../api.js';
 import { KINDS } from '../lib/kinds.js';
+import CardDeck from './CardDeck.jsx';
+import CardGrid from './CardGrid.jsx';
 
 const CONTENT_MAX = 700; // matches Chat/Sweep so the nav pill lands in the same spot
 
@@ -238,6 +240,17 @@ export default function ReportView({
   const [peopleOpen, setPeopleOpen] = useState(false);
   const [rulesOpen, setRulesOpen] = useState(false);
   const [regenerating, setRegenerating] = useState(false);
+  // Deck is the normal way to work through a pile one card at a time; the list
+  // stays for scanning everything at once. Remembered so it isn't re-picked
+  // every visit.
+  const [mode, setMode] = useState(() => {
+    try { return localStorage.getItem('reverb.reportMode') || 'grid'; } catch { return 'grid'; }
+  });
+  const [focusLabel, setFocusLabel] = useState(null);
+  function pickMode(m) {
+    setMode(m);
+    try { localStorage.setItem('reverb.reportMode', m); } catch { /* private mode */ }
+  }
   const toastTimer = useRef(null);
 
   function say(text) {
@@ -300,6 +313,18 @@ export default function ReportView({
     }).catch(() => {});
   }
   const ignore = (id, e) => dismiss(id, null, e);
+
+  // Undo a "done" from the deck: the endpoint already un-dismisses on
+  // done:false, so this just reverses it and re-reads. (The sender's contact
+  // counter keeps the dismiss nudge — it's a soft signal, not worth a second
+  // endpoint to unwind.)
+  function undoDone(t) {
+    fetch(`${apiPath}/${t.id}/done`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
+      body: JSON.stringify({ done: false }),
+    }).then(() => load()).catch(() => {});
+  }
 
   // Pull the full thread behind an item so its one-line snippet makes sense.
   function loadContext(t) {
@@ -436,153 +461,65 @@ export default function ReportView({
           )}
 
           {scannedAt && (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline',
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                           paddingBottom: 11, borderBottom: `1px solid ${RULE}` }}>
               <div style={{ opacity: .8 }}>{total === 0 ? 'nothing outstanding' : `${total} things to do`}</div>
+              {total > 0 && (
+                <div style={{ display: 'flex', gap: 1, background: EDGE, border: `1px solid ${EDGE}`, flex: 'none' }}>
+                  {['grid', 'deck'].map(m => (
+                    <button key={m} type="button" onClick={() => pickMode(m)} style={{
+                      appearance: 'none', border: 0, margin: 0, cursor: 'pointer', fontFamily: 'inherit',
+                      background: mode === m ? 'rgba(217,147,47,.13)' : WELL,
+                      color: mode === m ? AMBER : INK, opacity: mode === m ? 1 : .55,
+                      fontWeight: mode === m ? 700 : 400,
+                      fontSize: 9.5, letterSpacing: '.1em', textTransform: 'uppercase', padding: '7px 11px',
+                    }}>{m}</button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
-          {categories.map((c, ci) => {
-            const tint = TINTS[ci % TINTS.length];
-            return (
-              <div key={c.label} style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                  <div style={{ fontWeight: 700, color: tint, textTransform: 'none' }}>{c.label}</div>
-                  <div style={{ flex: 1, height: 1, background: RULE }} />
-                  <div style={{ opacity: .4 }}>{String(c.items.length).padStart(2, '0')}</div>
-                </div>
+          {mode === 'deck' && categories.length > 0 && (
+            <div style={{ marginTop: 18 }}>
+              <CardDeck
+                categories={categories}
+                tints={TINTS}
+                context={context}
+                calState={calState}
+                onDone={t => dismiss(t.id, t)}
+                onIgnore={t => dismiss(t.id, null)}
+                onAddToCal={(t, e) => addToCal(t, e)}
+                onLoadContext={t => loadContext(t)}
+                onDraftReply={t => onDraftReply?.(t)}
+                onUndo={t => undoDone(t)}
+                initialLabel={focusLabel}
+                onExit={() => setFocusLabel(null)}
+              />
+            </div>
+          )}
 
-                {/* The agent's read on this group: what's here and what to do next
-                    (check off the done ones, book or reply to the rest). Written at
-                    generate time, grounded in the group's own items. */}
-                {c.synopsis && (
-                  <div style={{
-                    display: 'flex', gap: 8, fontSize: 11.5, lineHeight: 1.55, letterSpacing: '.01em',
-                    textTransform: 'none', textWrap: 'pretty', opacity: .62, paddingLeft: 1,
-                  }}>
-                    <span style={{ color: tint, opacity: .8, flex: 'none' }}>▸</span>
-                    <span>{c.synopsis}</span>
-                  </div>
-                )}
-
-                {/* One well per category with hairline-separated rows, rather than a
-                    bordered card per item. The background stays semi-opaque because
-                    the dither field animates underneath and plain text over it is
-                    hard to read. */}
-                <div style={{ background: PANEL, border: `1px solid ${HAIR}` }}>
-                {c.items.map((t, i) => {
-                  const k = KINDS[t.kind] || KINDS.email;
-                  const expanded = expandedId === t.id;
-                  const isText = t.kind === 'sms' || t.kind === 'meta';
-                  const cal = calState[t.id];
-                  const actions = [
-                    ...(t.reply ? [{ label: 'draft reply', onPress: () => onDraftReply?.(t) }] : []),
-                    ...(isText ? [{ label: cal === 'adding' ? 'adding…' : 'add to cal', onPress: e => addToCal(t, e) }] : []),
-                    { label: 'ignore', onPress: e => ignore(t.id, e) },
-                    { label: 'done', onPress: e => dismiss(t.id, t, e) },
-                  ];
-                  return (
-                    <div key={t.id} style={{
-                      borderBottom: i === c.items.length - 1 ? 0 : `1px solid ${HAIR}`,
-                      background: expanded ? FILM : undefined,
-                      animation: 'rv-rise .26s ease-out both', animationDelay: `${(i * 0.05).toFixed(2)}s`,
-                    }}>
-                      <div onClick={() => { const open = !expanded; setExpandedId(open ? t.id : null); if (open && isText) loadContext(t); }}
-                           style={{ display: 'flex', gap: 11, padding: ROW, cursor: 'pointer' }}>
-                        <div onClick={e => dismiss(t.id, t, e)} style={{
-                          width: 16, height: 16, flex: 'none', marginTop: 1,
-                          border: '1px solid rgba(232,232,228,.5)',
-                        }} />
-                        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
-                          <div style={{ fontSize: 12.5, lineHeight: 1.45, letterSpacing: '.02em',
-                                        textTransform: 'none', textWrap: 'pretty' }}>{t.text}</div>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 7, opacity: .5, fontSize: 10 }}>
-                            {t.tier === 'vip' && (
-                              <div style={{ flex: 'none', color: AMBER, opacity: 1, fontWeight: 700 }}>VIP</div>
-                            )}
-                            <div style={{ color: k.tint }}>{k.label}</div>
-                            <div>·</div>
-                            <div style={{ textTransform: 'none', overflow: 'hidden',
-                                          textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.from}</div>
-                            {t.when && (<><div>·</div><div style={{ flex: 'none' }}>{t.when}</div></>)}
-                            {/* How long this has been on the list across reports — the nudge
-                                that something keeps getting skipped. Amber once it's stale. */}
-                            {daysOpen(t.firstSeenAt) >= 1 && (
-                              <div style={{
-                                flex: 'none', opacity: 1,
-                                color: daysOpen(t.firstSeenAt) >= CHASE_DAYS ? AMBER : undefined,
-                                fontWeight: daysOpen(t.firstSeenAt) >= CHASE_DAYS ? 700 : 400,
-                              }}>· open {daysOpen(t.firstSeenAt)}d</div>
-                            )}
-                          </div>
-                        </div>
-                        <div style={{ flex: 'none', opacity: .35, fontSize: 14, lineHeight: 1 }}>
-                          {expanded ? '−' : '+'}
-                        </div>
-                      </div>
-
-                      {expanded && (
-                        <div style={{ borderTop: `1px solid ${HAIR}`, padding: '12px 16px 13px',
-                                      display: 'flex', flexDirection: 'column', gap: 12 }}>
-                          {/* Full thread context for a text item, so a one-line snippet
-                              ("👍 to '...'") can actually be understood. */}
-                          {isText && context[t.id] ? (
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: 6,
-                                          maxHeight: 300, overflowY: 'auto', paddingRight: 2 }}>
-                              {context[t.id].loading && <div style={{ fontSize: 11, opacity: .4 }}>reading the thread…</div>}
-                              {!context[t.id].loading && !context[t.id].messages.length && (
-                                <div style={{ fontSize: 11, opacity: .4, textTransform: 'none' }}>{t.snippet}</div>
-                              )}
-                              {/* The thread as a text chain: your replies right-aligned and
-                                  amber, theirs left-aligned and neutral, so it reads like the
-                                  Messages app rather than a flat you:/them: list. */}
-                              {context[t.id].messages.slice(-30).map((m, mi) => (
-                                <div key={mi} style={{ display: 'flex',
-                                                       justifyContent: m.outbound ? 'flex-end' : 'flex-start' }}>
-                                  <div style={{
-                                    maxWidth: '82%', padding: '7px 10px',
-                                    fontSize: 11.5, lineHeight: 1.45, textTransform: 'none',
-                                    textWrap: 'pretty', wordBreak: 'break-word',
-                                    borderRadius: m.outbound ? '9px 9px 2px 9px' : '9px 9px 9px 2px',
-                                    border: `1px solid ${m.outbound ? 'rgba(217,147,47,.38)' : HAIR}`,
-                                    background: m.outbound ? 'rgba(217,147,47,.13)' : WELL,
-                                    color: INK, opacity: m.outbound ? 1 : .86,
-                                  }}>{m.text}</div>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <div style={{ fontSize: 11.5, lineHeight: 1.6, letterSpacing: '.01em',
-                                          textTransform: 'none', opacity: .62, textWrap: 'pretty',
-                                          borderLeft: `2px solid ${tint}`, paddingLeft: 10 }}>
-                              {t.snippet}
-                            </div>
-                          )}
-                          {cal && cal !== 'adding' && cal !== 'done' && (
-                            <div style={{ fontSize: 10.5, color: AMBER, textTransform: 'none', opacity: .8 }}>⚠ {cal}</div>
-                          )}
-                          {cal === 'done' && (
-                            <div style={{ fontSize: 10.5, color: AMBER, textTransform: 'none', opacity: .8 }}>✓ opened in calendar — hit save there</div>
-                          )}
-                          <div style={{ display: 'flex', gap: 1, background: EDGE,
-                                        border: `1px solid ${EDGE}` }}>
-                            {actions.map(a => (
-                              <button key={a.label} type="button" onClick={a.onPress} style={{
-                                appearance: 'none', flex: 1, border: 0, margin: 0, background: WELL,
-                                color: INK, fontFamily: 'inherit', fontSize: 10, letterSpacing: '.08em',
-                                textTransform: 'uppercase', padding: '10px 4px', cursor: 'pointer',
-                              }}>{a.label}</button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                </div>
-              </div>
-            );
-          })}
+          {mode === 'grid' && categories.length > 0 && (
+            <div style={{ marginTop: 18 }}>
+              <CardGrid
+                categories={categories}
+                tints={TINTS}
+                context={context}
+                calState={calState}
+                expandedId={expandedId}
+                onToggle={t => {
+                  const open = expandedId !== t.id;
+                  setExpandedId(open ? t.id : null);
+                  if (open && (t.kind === 'sms' || t.kind === 'meta')) loadContext(t);
+                }}
+                onDone={(t, e) => dismiss(t.id, t, e)}
+                onIgnore={(t, e) => dismiss(t.id, null, e)}
+                onAddToCal={(t, e) => addToCal(t, e)}
+                onDraftReply={t => onDraftReply?.(t)}
+                onFocus={c => { setFocusLabel(c.label); pickMode('deck'); }}
+              />
+            </div>
+          )}
         </div>
       </div>
 
