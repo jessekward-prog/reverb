@@ -16,7 +16,7 @@ export default function CardGrid({
       {categories.map((c, ci) => {
         const tint = tints[ci % tints.length];
         return (
-          <div key={c.label} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div key={`${c.label}-${ci}`} style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
               <span style={{ width: 8, height: 8, borderRadius: '50%', background: tint, flex: 'none' }} />
               <div style={{ fontWeight: 700, color: SHELF.accent, textTransform: 'none' }}>{c.label}</div>
@@ -26,7 +26,7 @@ export default function CardGrid({
               <div style={{ flex: 1 }} />
               {/* Straight into the deck for just this pile - the grid is for
                   seeing everything, the deck for getting through it. */}
-              <motion.button type="button" whileTap={{ scale: 0.96 }} onClick={() => onFocus?.(c)}
+              <motion.button type="button" whileTap={{ scale: 0.96 }} onClick={() => onFocus?.(c, ci)}
                 style={{
                   appearance: 'none', border: `1px solid ${SHELF.border}`, borderRadius: 6,
                   background: SHELF.surface, color: SHELF.text1, fontFamily: 'inherit',

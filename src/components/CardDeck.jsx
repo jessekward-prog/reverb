@@ -23,10 +23,13 @@ const haptic = {
 };
 
 export default function CardDeck({
-  categories, tints, context, calState, initialLabel = null,
+  categories, tints, context, calState, initialIndex = null,
   onDone, onIgnore, onAddToCal, onLoadContext, onDraftReply, onUndo, onExit,
 }) {
-  const [label, setLabel] = useState(initialLabel);
+  // Index, not label: the model can emit two categories with the SAME name
+  // (seen live - two piles both called "to do"), and looking a pile up by
+  // label silently opens the first of them.
+  const [idx, setIdx] = useState(initialIndex);
   const [queue, setQueue] = useState([]);
   const [total, setTotal] = useState(0);
   const [expanded, setExpanded] = useState(false);
@@ -41,29 +44,29 @@ export default function CardDeck({
   const doneGlow = useTransform(x, [30, 140], [0, 1]);
   const skipGlow = useTransform(x, [-140, -30], [1, 0]);
 
-  const category = categories.find(c => c.label === label) || null;
+  const category = (idx != null && categories[idx]) || null;
   const tintOf = i => tints[i % tints.length];
-  const tint = category ? tintOf(categories.findIndex(c => c.label === label)) : SHELF.accent;
+  const tint = category ? tintOf(idx) : SHELF.accent;
 
   // Snapshot the pile on entry so a parent re-fetch can't reshuffle it.
-  function enter(c) {
+  function enter(c, i) {
     haptic.tap();
-    setLabel(c.label);
+    setIdx(i);
     setQueue(c.items);
     setTotal(c.items.length);
     setExpanded(false);
   }
   function leave() {
-    setLabel(null); setQueue([]); setExpanded(false); x.set(0);
+    setIdx(null); setQueue([]); setExpanded(false); x.set(0);
     onExit?.();
   }
 
   // Entering straight from the grid's "focus" button.
   useEffect(() => {
-    if (!initialLabel) return;
-    const c = categories.find(x => x.label === initialLabel);
-    if (c) enter(c);
-  }, [initialLabel]);
+    if (initialIndex == null) return;
+    const c = categories[initialIndex];
+    if (c) enter(c, initialIndex);
+  }, [initialIndex]);
 
   useEffect(() => () => clearTimeout(undoTimer.current), []);
   useEffect(() => { setExpanded(false); x.set(0); }, [queue[0]?.id]);
@@ -127,7 +130,7 @@ export default function CardDeck({
                       color: SHELF.text3 }}>pick a pile</div>
         {categories.map((c, ci) => (
           <motion.button
-            key={c.label} type="button" onClick={() => enter(c)} whileTap={{ scale: 0.98 }}
+            key={`${c.label}-${ci}`} type="button" onClick={() => enter(c, ci)} whileTap={{ scale: 0.98 }}
             style={{
               appearance: 'none', border: `1px solid ${SHELF.border}`, borderRadius: SHELF.radius,
               background: SHELF.surface, color: SHELF.text1, fontFamily: 'inherit',

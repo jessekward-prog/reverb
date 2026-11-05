@@ -246,7 +246,7 @@ export default function ReportView({
   const [mode, setMode] = useState(() => {
     try { return localStorage.getItem('reverb.reportMode') || 'grid'; } catch { return 'grid'; }
   });
-  const [focusLabel, setFocusLabel] = useState(null);
+  const [focusIndex, setFocusIndex] = useState(null);
   function pickMode(m) {
     setMode(m);
     try { localStorage.setItem('reverb.reportMode', m); } catch { /* private mode */ }
@@ -493,8 +493,8 @@ export default function ReportView({
                 onLoadContext={t => loadContext(t)}
                 onDraftReply={t => onDraftReply?.(t)}
                 onUndo={t => undoDone(t)}
-                initialLabel={focusLabel}
-                onExit={() => setFocusLabel(null)}
+                initialIndex={focusIndex}
+                onExit={() => setFocusIndex(null)}
               />
             </div>
           )}
@@ -516,7 +516,7 @@ export default function ReportView({
                 onIgnore={(t, e) => dismiss(t.id, null, e)}
                 onAddToCal={(t, e) => addToCal(t, e)}
                 onDraftReply={t => onDraftReply?.(t)}
-                onFocus={c => { setFocusLabel(c.label); pickMode('deck'); }}
+                onFocus={(c, ci) => { setFocusIndex(ci); pickMode('deck'); }}
               />
             </div>
           )}
