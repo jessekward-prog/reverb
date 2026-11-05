@@ -1022,9 +1022,15 @@ async function collectGroundedItems() {
     items.push({ kind: w.kind || 'sms', from: w.identifier, snippet: w.snippet,
                  text: `Reply to ${w.identifier}`, reply: true, hintBucket: null });
   }
-  for (const j of jobs.items || [])
-    items.push({ kind: 'job', from: j.identifier, snippet: j.snippet, when: j.when,
-                 text: `${j.status} job — ${String(j.snippet || '').slice(0, 40)}`, hintBucket: 'work' });
+  for (const j of jobs.items || []) {
+    // Lead with the WORK, not the status: "pending job — yes plz" told the user
+    // nothing. The description is the only thing that says what the job is, so
+    // it becomes the card's title; status and client ride alongside as metadata.
+    const desc = String(j.snippet || '').replace(/\s+/g, ' ').trim();
+    const title = desc ? desc.slice(0, 120) : 'job with no description';
+    items.push({ kind: 'job', from: j.identifier, snippet: desc, when: j.when,
+                 status: j.status, overdue: j.overdue, text: title, hintBucket: 'work' });
+  }
   for (const e of bizEmail.items || [])
     items.push({ kind: 'bizemail', from: e.identifier, snippet: e.snippet, subject: e.subject,
                  text: `Business email: ${e.subject}`, reply: true, hintBucket: 'work' });

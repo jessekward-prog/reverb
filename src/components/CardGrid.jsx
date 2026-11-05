@@ -54,7 +54,7 @@ export default function CardGrid({
                     onToggle={() => onToggle?.(t)}
                     style={expanded ? { gridColumn: '1 / -1', borderColor: SHELF.borderHi } : undefined}
                     actions={[
-                      { label: expanded ? 'close' : 'thread', onPress: () => onToggle?.(t) },
+                      { label: expanded ? 'close' : (isText ? 'thread' : 'details'), onPress: () => onToggle?.(t) },
                       ...(t.reply ? [{ label: 'reply', onPress: () => onDraftReply?.(t) }] : []),
                       ...(isText ? [{ label: calState[t.id] === 'adding' ? 'adding…' : 'add to cal',
                                       onPress: e => onAddToCal?.(t, e) }] : []),

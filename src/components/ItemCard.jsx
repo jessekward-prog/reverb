@@ -51,7 +51,11 @@ export default function ItemCard({
 }) {
   const k = KINDS[t.kind] || KINDS.email;
   const open = daysOpen(t.firstSeenAt);
-  const body = t.snippet && t.snippet !== t.text ? t.snippet : null;
+  // Only show the snippet when it actually adds something: it used to repeat
+  // the title almost verbatim on every job card.
+  const norm = v => String(v || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const dup = norm(t.snippet) && (norm(t.text).includes(norm(t.snippet)) || norm(t.snippet).includes(norm(t.text)));
+  const body = t.snippet && !dup ? t.snippet : null;
 
   return (
     <div style={{
@@ -65,6 +69,10 @@ export default function ItemCard({
                       letterSpacing: '.1em', textTransform: 'uppercase' }}>
           <span style={{ color: SHELF.text3, border: `1px solid ${SHELF.border}`,
                          borderRadius: 4, padding: '2px 6px' }}>{k.label}</span>
+          {t.status && (
+            <span style={{ color: SHELF.text2, border: `1px solid ${SHELF.border}`,
+                           borderRadius: 4, padding: '2px 6px' }}>{String(t.status).replace(/_/g, ' ')}</span>
+          )}
           <span style={{ flex: 1 }} />
           {open >= 1 && (
             <span style={{ color: open >= 2 ? SHELF.accent : SHELF.text3,
@@ -86,13 +94,24 @@ export default function ItemCard({
           }}>{t.text}</div>
         </div>
 
-        <div style={{ fontSize: 10.5, color: SHELF.text3, textTransform: 'none',
+        <div style={{ fontSize: 10.5, textTransform: 'none',
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {t.from}{t.when ? ` · ${t.when}` : ''}
+          <span style={{ color: SHELF.text3 }}>{t.from}</span>
+          {t.when && <span style={{ color: SHELF.text3 }}> · </span>}
+          {t.when && (
+            <span style={{ color: t.overdue ? '#e07070' : SHELF.text3,
+                           fontWeight: t.overdue ? 700 : 400 }}>{t.when}</span>
+          )}
         </div>
 
         {expanded
-          ? <Bubbles entry={entry} snippet={t.snippet} />
+          ? (entry
+              ? <Bubbles entry={entry} snippet={t.snippet} />
+              // No thread to read (a job, a calendar entry): show the whole
+              // description instead, since the title above is clamped.
+              : <div style={{ fontSize: 11.5, lineHeight: 1.55, color: SHELF.text1,
+                              textTransform: 'none', textWrap: 'pretty',
+                              whiteSpace: 'pre-wrap' }}>{t.snippet || t.text}</div>)
           : body && (
               <div style={{ fontSize: 11.5, lineHeight: 1.5, color: SHELF.text2,
                             textTransform: 'none', textWrap: 'pretty',

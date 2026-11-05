@@ -418,6 +418,34 @@ export async function getRecentNotifications({ source, limit = 30 } = {}) {
   return { text, items };
 }
 
+// A job's date is the single most useful thing on its card, and a raw
+// "2026-06-30 01:50:00" says nothing a person can act on. Give the day in
+// words, and say plainly when it is already in the past - a "pending" job
+// scheduled months ago is either done or dead, and must not read as upcoming.
+const DAY_MS = 86400000;
+const localYmd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+export function isOverdue(date) {
+  if (!date) return false;
+  return String(date).slice(0, 10) < localYmd(new Date());
+}
+
+export function scheduleLabel(date, time) {
+  if (!date) return 'unscheduled';
+  const day = String(date).slice(0, 10);
+  const today = localYmd(new Date());
+  const hhmm = time ? ` ${String(time).slice(0, 5)}` : '';
+  const d = new Date(`${day}T00:00:00`);
+  const pretty = d.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' });
+  if (day === today) return `today${hhmm}`;
+  if (day === localYmd(new Date(Date.now() + DAY_MS))) return `tomorrow${hhmm}`;
+  if (day < today) {
+    const days = Math.round((new Date(`${today}T00:00:00`) - d) / DAY_MS);
+    return `overdue ${days}d — was ${pretty}`;
+  }
+  return `${pretty}${hhmm}`;
+}
+
 export async function getSwitchcraftJobs() {
   let r;
   try {
@@ -428,8 +456,11 @@ export async function getSwitchcraftJobs() {
   if (!jobs.length) return { text: 'No open jobs found.', items: [] };
   const items = jobs.map(j => ({
     identifier: j.client_name || 'unknown client', displayName: j.client_name || 'unknown client',
-    snippet: j.description || '', status: j.status,
-    when: j.scheduled_date ? `${j.scheduled_date.slice(0, 10)}${j.scheduled_time ? ' ' + j.scheduled_time : ''}` : 'unscheduled',
+    snippet: j.description || '', status: j.status, jobType: j.job_type, id: j.id,
+    scheduledDate: j.scheduled_date ? j.scheduled_date.slice(0, 10) : null,
+    scheduledTime: j.scheduled_time ? j.scheduled_time.slice(0, 5) : null,
+    when: scheduleLabel(j.scheduled_date, j.scheduled_time),
+    overdue: isOverdue(j.scheduled_date),
   }));
   const text = items.map(j => `[${j.status}] ${j.when} — ${j.snippet} (${j.identifier})`).join('\n');
   return { text, items };

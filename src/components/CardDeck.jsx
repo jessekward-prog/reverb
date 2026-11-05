@@ -244,7 +244,7 @@ export default function CardDeck({
                         cal={cal} onToggle={toggle} bodyMax={6}
                         style={{ borderColor: SHELF.borderHi }}
                         actions={[
-                          { label: expanded ? 'close' : 'thread', onPress: toggle },
+                          { label: expanded ? 'close' : (isText ? 'thread' : 'details'), onPress: toggle },
                           ...(top.reply ? [{ label: 'reply', onPress: () => onDraftReply?.(top) }] : []),
                           ...(isText ? [{ label: cal === 'adding' ? 'adding…' : 'add to cal',
                                           onPress: e => onAddToCal?.(top, e) }] : []),
