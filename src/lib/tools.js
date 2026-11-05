@@ -425,6 +425,13 @@ export async function getRecentNotifications({ source, limit = 30 } = {}) {
 const DAY_MS = 86400000;
 const localYmd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
+// The booking form numbers each line, so nearly every description opens with
+// "1. ". When there is no "2.", that prefix is noise in the card title.
+export function cleanDescription(d) {
+  const t = String(d || '').trim();
+  return /\b2[.)]/.test(t) ? t : t.replace(/^\s*1[.)]\s*/, '');
+}
+
 export function isOverdue(date) {
   if (!date) return false;
   return String(date).slice(0, 10) < localYmd(new Date());
@@ -456,7 +463,7 @@ export async function getSwitchcraftJobs() {
   if (!jobs.length) return { text: 'No open jobs found.', items: [] };
   const items = jobs.map(j => ({
     identifier: j.client_name || 'unknown client', displayName: j.client_name || 'unknown client',
-    snippet: j.description || '', status: j.status, jobType: j.job_type, id: j.id,
+    snippet: cleanDescription(j.description), status: j.status, jobType: j.job_type, id: j.id,
     scheduledDate: j.scheduled_date ? j.scheduled_date.slice(0, 10) : null,
     scheduledTime: j.scheduled_time ? j.scheduled_time.slice(0, 5) : null,
     when: scheduleLabel(j.scheduled_date, j.scheduled_time),

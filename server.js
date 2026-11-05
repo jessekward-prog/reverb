@@ -1029,7 +1029,7 @@ async function collectGroundedItems() {
     const desc = String(j.snippet || '').replace(/\s+/g, ' ').trim();
     const title = desc ? desc.slice(0, 120) : 'job with no description';
     items.push({ kind: 'job', from: j.identifier, snippet: desc, when: j.when,
-                 status: j.status, overdue: j.overdue, text: title, hintBucket: 'work' });
+                 status: j.status, overdue: j.overdue, jobId: j.id, text: title, hintBucket: 'work' });
   }
   for (const e of bizEmail.items || [])
     items.push({ kind: 'bizemail', from: e.identifier, snippet: e.snippet, subject: e.subject,

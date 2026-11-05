@@ -44,6 +44,36 @@ export function Bubbles({ entry, snippet }) {
   );
 }
 
+
+// Everything known about a non-message item. Short, and honest about gaps:
+// if the source record is thin, this shows that rather than padding it.
+function Facts({ t, showDescription }) {
+  const rows = [
+    ['client', t.from],
+    ['status', t.status && String(t.status).replace(/_/g, ' ')],
+    ['when', t.when],
+    ['job', t.jobId && `#${t.jobId}`],
+  ].filter(([, v]) => v);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      {showDescription && t.snippet && (
+        <div style={{ fontSize: 11.5, lineHeight: 1.55, color: SHELF.text1,
+                      textTransform: 'none', textWrap: 'pretty', whiteSpace: 'pre-wrap' }}>
+          {t.snippet}
+        </div>
+      )}
+      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 10px', fontSize: 10.5 }}>
+        {rows.map(([k, v]) => (
+          <React.Fragment key={k}>
+            <div style={{ color: SHELF.text3, textTransform: 'uppercase', letterSpacing: '.08em' }}>{k}</div>
+            <div style={{ color: t.overdue && k === 'when' ? '#e07070' : SHELF.text1, textTransform: 'none' }}>{v}</div>
+          </React.Fragment>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // actions: [{ label, onPress, strong? }] - rendered as ShelfStation's quiet
 // text row along the card's foot.
 export default function ItemCard({
@@ -94,6 +124,8 @@ export default function ItemCard({
           }}>{t.text}</div>
         </div>
 
+        {/* The facts grid below supersedes this one-liner when it is showing. */}
+        {!(expanded && !entry) && (
         <div style={{ fontSize: 10.5, textTransform: 'none',
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           <span style={{ color: SHELF.text3 }}>{t.from}</span>
@@ -103,15 +135,15 @@ export default function ItemCard({
                            fontWeight: t.overdue ? 700 : 400 }}>{t.when}</span>
           )}
         </div>
+        )}
 
         {expanded
           ? (entry
               ? <Bubbles entry={entry} snippet={t.snippet} />
-              // No thread to read (a job, a calendar entry): show the whole
-              // description instead, since the title above is clamped.
-              : <div style={{ fontSize: 11.5, lineHeight: 1.55, color: SHELF.text1,
-                              textTransform: 'none', textWrap: 'pretty',
-                              whiteSpace: 'pre-wrap' }}>{t.snippet || t.text}</div>)
+              // No thread to read (a job, a calendar entry). Echoing the title
+              // back was useless, so show the facts the record actually has -
+              // plus the description only when it says more than the title.
+              : <Facts t={t} showDescription={!dup} />)
           : body && (
               <div style={{ fontSize: 11.5, lineHeight: 1.5, color: SHELF.text2,
                             textTransform: 'none', textWrap: 'pretty',
