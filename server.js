@@ -1080,8 +1080,9 @@ async function briefConversations(items) {
   if (!convo.length) return items;
 
   let threads = [];
-  try { threads = await fetchThreads(20); } catch { return items; }
-  if (!threads.length) return items;
+  try { threads = await fetchThreads(20); }
+  catch (e) { console.error('briefs: bridge unreachable —', e.message); return items; }
+  if (!threads.length) { console.error('briefs: bridge returned no threads'); return items; }
 
   const digits = v => String(v || '').replace(/\D/g, '');
   const findThread = from => {
@@ -1097,7 +1098,10 @@ async function briefConversations(items) {
     const th = findThread(t.from);
     if (th && (th.messages || []).length > 1) pairs.push({ item: t, thread: th });
   }
-  if (!pairs.length) return items;
+  if (!pairs.length) {
+    console.error(`briefs: none of ${convo.length} conversations matched a thread`);
+    return items;
+  }
 
   const listing = pairs.map((p, i) => {
     const lines = (p.thread.messages || []).slice(-14)
@@ -1126,16 +1130,20 @@ CONVERSATIONS:
 ${listing}`;
 
   let raw = '';
-  try { raw = await askModel(prompt, 2200); } catch { return items; }
+  try { raw = await askModel(prompt, 2200); }
+  catch (e) { console.error('briefs: model call failed —', e.message); return items; }
+  if (!raw.trim()) { console.error('briefs: model returned empty content'); return items; }
 
+  let written = 0;
   for (const line of String(raw).split('\n')) {
     const m = line.match(/^\s*(\d+)\s*::\s*(.+)$/);
     if (!m) continue;
     const p = pairs[Number(m[1])];
     if (!p) continue;
     const text = m[2].trim();
-    if (text.length > 20) p.item.brief = text.slice(0, 600);
+    if (text.length > 20) { p.item.brief = text.slice(0, 600); written++; }
   }
+  console.log(`briefs: ${written} written for ${pairs.length} matched threads (${convo.length} conversations)`);
   return items;
 }
 
