@@ -293,6 +293,23 @@ export async function getWaitingReplies({ limit = 25 } = {}) {
   return { text, items };
 }
 
+// Recent conversations from the bridge index, and the calendar. Shared so the
+// commitments ledger and this tool read the same two sources, one fetcher each.
+export async function fetchThreads(limit = 20) {
+  const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?limit=${limit}`, {
+    headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+  });
+  if (!r.ok) throw new Error(`browser-bridge status ${r.status}`);
+  return (await r.json()).threads || [];
+}
+
+export async function fetchEvents() {
+  try {
+    const r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/events`);
+    return r.ok ? await r.json() : [];
+  } catch { return []; }
+}
+
 export async function getUnbookedJobs({ days_back = 14 } = {}) {
   // Whole recent conversations from the bridge index, both directions. The old
   // path read /api/waiting, which only returns threads where the OTHER person
@@ -302,20 +319,12 @@ export async function getUnbookedJobs({ days_back = 14 } = {}) {
   // The index carries the full back-and-forth, so no notify-cmd enrichment.
   let threads = [];
   try {
-    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?limit=20`, {
-      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
-    });
-    if (!r.ok) return { text: `Could not reach browser-bridge (status ${r.status})`, items: [] };
-    threads = (await r.json()).threads || [];
+    threads = await fetchThreads(20);
   } catch (err) { return { text: `Could not reach browser-bridge: ${err.message}`, items: [] }; }
 
   if (!threads.length) return { text: 'No recent conversations to check against the calendar.', items: [] };
 
-  let events = [];
-  try {
-    const r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/events`);
-    if (r.ok) events = await r.json();
-  } catch { /* calendar block says it is missing, below */ }
+  const events = await fetchEvents();
 
   const from = new Date(Date.now() - days_back * 86400000).toISOString().slice(0, 10);
   const to = new Date(Date.now() + 60 * 86400000).toISOString().slice(0, 10);

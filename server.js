@@ -8,7 +8,9 @@ import {
   TEXTS_TOOL, SEARCH_TEXTS_TOOL, searchTexts, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL,
   WAITING_TOOL, getWaitingReplies, UNBOOKED_JOBS_TOOL, getUnbookedJobs,
   getRecentTexts, getRecentTextsBrief, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
+  fetchThreads, fetchEvents,
 } from './src/lib/tools.js';
+import { parseExtraction, reconcileStatus, projectCommitments, ymd } from './src/lib/commitments.js';
 import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules } from './src/lib/contacts.js';
 
 const { Pool } = pg;
@@ -98,6 +100,28 @@ async function initDb() {
       pattern    TEXT NOT NULL,
       action     TEXT NOT NULL CHECK (action IN ('priority','ignore')),
       created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    -- Work agreed in a message, as structured fact. Not a second copy of the
+    -- threads: a row is a few fields plus the one line it came from, and it is
+    -- re-derived from the bridge index on every report, so the table stays
+    -- small and can never drift away from what was actually said.
+    --   status  unbooked      - that day is empty, so it really isn't in the calendar
+    --           booked        - an event that day clearly refers to this
+    --           needs_confirm - no resolvable day, or can't tell it apart from
+    --                           something else already on that day -> ask, don't assert
+    --           superseded    - no longer agreed in the thread (talked away)
+    CREATE TABLE IF NOT EXISTS commitments (
+      id            TEXT PRIMARY KEY,
+      who           TEXT NOT NULL,
+      what          TEXT NOT NULL,
+      quote         TEXT NOT NULL,
+      when_text     TEXT,
+      when_date     DATE,
+      when_time     TEXT,
+      status        TEXT NOT NULL,
+      source_thread TEXT,
+      first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
 }
@@ -371,7 +395,7 @@ async function proxyChat(req, res) {
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getWaitingReplies(args)).text });
       } else if (tc.function.name === 'get_unbooked_jobs') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Cross-checking messages against the calendar…' })}\n\n`);
-        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getUnbookedJobs(args)).text });
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await unbookedForChat(args) });
       } else if (tc.function.name === 'get_recent_texts') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking texts…' })}\n\n`);
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getRecentTexts(args)).text });
@@ -1168,6 +1192,119 @@ Resolve relative dates ("Friday", "Tuesday next week", "tomorrow") against today
   } catch (e) { res.writeHead(502); res.end(JSON.stringify({ error: e.message })); }
 }
 
+// ── Commitments ledger ────────────────────────────────────
+// The model only decides WHETHER work was agreed and copies the thread
+// verbatim; the day is resolved deterministically in commitments.js, and the
+// calendar decides "booked". Line output, not JSON — gemma is unreliable at
+// strict JSON (see Agentic-LM-Pipeline-Pattern).
+function commitmentPrompt(threads, today, weekday) {
+  const convos = threads.map(t => {
+    const lines = (t.messages || []).slice(-12)
+      .map(m => `  ${m.outbound ? 'me' : 'them'}: ${String(m.text || '').replace(/\s+/g, ' ').slice(0, 200)}`)
+      .join('\n');
+    return `— ${t.name} —\n${lines}`;
+  }).join('\n\n');
+
+  return `Today is ${weekday} ${today}. Below are recent text conversations. "me" is Jesse, an electrician; "them" is the customer.
+
+Find every point where WORK or an APPOINTMENT was actually agreed, requested or scheduled. Output ONE LINE per commitment, exactly four fields separated by " :: ", and nothing else:
+
+WHO :: WHAT :: WHEN :: QUOTE
+
+WHO   - the conversation heading, copied exactly as it appears after the dash
+WHAT  - the work itself, a few words (e.g. "ceiling fan installation")
+WHEN  - the timing words COPIED VERBATIM from the thread ("Thursday", "tomorrow", "next week", "9am"). Leave empty if no timing was stated.
+QUOTE - the one message line where the work was agreed or asked for, COPIED VERBATIM
+
+Copy WHEN and QUOTE exactly as they appear - anything you reword or invent is discarded. Do not work out dates yourself. If a job was later called off in the thread, leave it out. Ignore chit-chat, thanks, deliveries and parcel notices. If you are unsure something is work, leave it out. No numbering, no headings, no commentary.
+
+CONVERSATIONS:
+${convos}`;
+}
+
+// Re-derive the ledger from the threads. A projection, not an accumulator:
+// anything still open that is no longer agreed in its thread is superseded, so
+// a job that was talked away drops itself instead of becoming a phantom.
+async function refreshCommitments() {
+  let threads;
+  try { threads = await fetchThreads(20); }
+  catch (err) { console.error('commitments: bridge unreachable —', err.message); return { ok: false, reason: err.message }; }
+  if (!threads.length) return { ok: false, reason: 'no threads' };
+
+  const now = new Date();
+  // ymd, not toISOString: weekday below is local, so before 11am in AEDT a UTC
+  // date would make the prompt contradict itself ("Today is Thursday 2026-11-04").
+  const today = ymd(now);
+  const weekday = now.toLocaleDateString('en-AU', { weekday: 'long' });
+
+  const raw = await askModel(commitmentPrompt(threads, today, weekday), 1600);
+  const extracted = parseExtraction(raw, threads, now);
+  const events = await fetchEvents();
+
+  for (const c of extracted) {
+    const status = reconcileStatus(c, events);
+    await pool.query(
+      `INSERT INTO commitments (id, who, what, quote, when_text, when_date, when_time, status, source_thread)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+       ON CONFLICT (id) DO UPDATE SET
+         what=EXCLUDED.what, when_text=EXCLUDED.when_text, when_date=EXCLUDED.when_date,
+         when_time=EXCLUDED.when_time, status=EXCLUDED.status, last_seen_at=NOW()`,
+      [c.id, c.who, c.what, c.quote, c.whenText || null, c.date, c.time, status, c.threadName],
+    );
+  }
+
+  // Only supersede within the threads actually scanned — a thread that has
+  // simply dropped out of the index's recent window must not cancel its jobs.
+  const names = threads.map(t => t.name);
+  const { rows: open } = await pool.query(
+    `SELECT id FROM commitments WHERE status <> 'superseded' AND source_thread = ANY($1)`, [names],
+  );
+  const { supersede } = projectCommitments(open.map(r => r.id), extracted);
+  if (supersede.length) {
+    await pool.query(`UPDATE commitments SET status='superseded', last_seen_at=NOW() WHERE id = ANY($1)`, [supersede]);
+  }
+  return { ok: true, found: extracted.length, superseded: supersede.length, scanned: threads.length };
+}
+
+const openCommitments = async () => (await pool.query(
+  `SELECT who, what, quote, when_text, when_date, when_time, status, first_seen_at
+     FROM commitments WHERE status IN ('unbooked','needs_confirm','booked')
+     ORDER BY when_date NULLS LAST, first_seen_at`,
+)).rows;
+
+async function handleCommitments(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const rows = await openCommitments();
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    commitments: rows.map(r => ({
+      who: r.who, what: r.what, quote: r.quote,
+      when: r.when_date ? `${ymd(r.when_date)}${r.when_time ? ' ' + r.when_time : ''}` : (r.when_text || null),
+      whenText: r.when_text, status: r.status, firstSeenAt: r.first_seen_at,
+    })),
+    unbooked: rows.filter(r => r.status === 'unbooked').length,
+  }));
+}
+
+// What the chat reads. Prefers the ledger (already extracted, dates resolved,
+// reconciled) and falls back to reading the threads live when it is still empty.
+async function unbookedForChat(args) {
+  const rows = await openCommitments();
+  if (!rows.length) return (await getUnbookedJobs(args)).text;
+  const line = r => {
+    const when = r.when_date
+      ? `${ymd(r.when_date)}${r.when_time ? ' at ' + r.when_time : ''}${r.when_text ? ` ("${r.when_text}")` : ''}`
+      : (r.when_text ? `no clear date ("${r.when_text}")` : 'no date given');
+    return `- ${r.who} — ${r.what} — ${when} — ${r.status}\n    said: "${r.quote}"`;
+  };
+  const by = s => rows.filter(r => r.status === s).map(line).join('\n');
+  const parts = [];
+  if (rows.some(r => r.status === 'unbooked')) parts.push(`AGREED BUT NOT IN THE CALENDAR:\n${by('unbooked')}`);
+  if (rows.some(r => r.status === 'needs_confirm')) parts.push(`NEEDS CONFIRMING (no clear day, or something else is already on that day):\n${by('needs_confirm')}`);
+  if (rows.some(r => r.status === 'booked')) parts.push(`ALREADY IN THE CALENDAR:\n${by('booked')}`);
+  return `Work agreed in messages, checked against the calendar. Every line below was quoted verbatim from a real conversation — report them as they are and do not invent any others.\n\n${parts.join('\n\n')}`;
+}
+
 async function handleReportGenerate(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
 
@@ -1195,6 +1332,13 @@ async function handleReportGenerate(req, res) {
     work: await buildCategorizedResponse(work.summary, work.categories, scannedAt),
     life: await buildCategorizedResponse(life.summary, life.categories, scannedAt),
   }));
+
+  // Refresh the ledger after answering: the report doesn't depend on it, and
+  // this keeps the generate latency unchanged while staying serial on LM Studio
+  // (the report's own calls are finished by now).
+  refreshCommitments()
+    .then(r => console.log('commitments:', JSON.stringify(r)))
+    .catch(e => console.error('commitments refresh failed:', e.message));
 }
 
 // ── Texts ─────────────────────────────────────────────────
@@ -1294,6 +1438,13 @@ createServer(async (req, res) => {
     if (req.method === 'GET'  && u === '/api/link-preview') return await handleLinkPreview(req, res);
     if (req.method === 'POST' && u === '/api/pull')            return await handlePull(req, res);
     if (req.method === 'POST' && u === '/api/report/generate') return await handleReportGenerate(req, res);
+    if (req.method === 'GET'  && u === '/api/commitments')     return await handleCommitments(req, res);
+    if (req.method === 'POST' && u === '/api/commitments/refresh') {
+      if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+      const r = await refreshCommitments();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(r));
+    }
     if (req.method === 'GET'  && u === '/api/work') return await handleWork(req, res);
     if (req.method === 'GET'  && u === '/api/life') return await handleLife(req, res);
     if (req.method === 'GET'  && u === '/api/tasks') return await handleTasks(req, res);
