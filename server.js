@@ -1027,9 +1027,17 @@ async function collectGroundedItems() {
     // nothing. The description is the only thing that says what the job is, so
     // it becomes the card's title; status and client ride alongside as metadata.
     const desc = String(j.snippet || '').replace(/\s+/g, ' ').trim();
-    const title = desc ? desc.slice(0, 120) : 'job with no description';
+    // The checklist is the real breakdown of the work; the description is the
+    // lumped version of the same thing. Prefer what's still outstanding.
+    const todo = (j.tasks || []).filter(t => !t.done).map(t => String(t.text || '').trim()).filter(Boolean);
+    const title = (todo.length ? todo.join(' · ') : desc) || 'job with no description';
     items.push({ kind: 'job', from: j.identifier, snippet: desc, when: j.when,
-                 status: j.status, overdue: j.overdue, jobId: j.id, text: title, hintBucket: 'work' });
+                 status: j.status, overdue: j.overdue, jobId: j.id,
+                 address: j.address, phone: j.phone, business: j.business,
+                 preferredDays: j.preferredDays, timeline: j.timeline,
+                 tasks: j.tasks, noteCount: j.noteCount, photoCount: j.photoCount,
+                 lastNote: j.lastNote, raised: j.raised,
+                 text: title.slice(0, 140), hintBucket: 'work' });
   }
   for (const e of bizEmail.items || [])
     items.push({ kind: 'bizemail', from: e.identifier, snippet: e.snippet, subject: e.subject,

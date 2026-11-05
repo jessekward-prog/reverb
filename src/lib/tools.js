@@ -468,7 +468,29 @@ export async function getSwitchcraftJobs() {
     scheduledTime: j.scheduled_time ? j.scheduled_time.slice(0, 5) : null,
     when: scheduleLabel(j.scheduled_date, j.scheduled_time),
     overdue: isOverdue(j.scheduled_date),
+    // Context the feed now carries: where it is, who to ring, what the work
+    // actually consists of, and where the information came from.
+    address: j.address || null,
+    phone: j.contact_number || null,
+    business: j.business_name || null,
+    timeline: j.timeline || null,
+    preferredDays: j.preferred_days || null,
+    tasks: Array.isArray(j.tasks) ? j.tasks.filter(t => t && t.text) : [],
+    noteCount: j.note_count || 0,
+    photoCount: j.photo_count || 0,
+    lastNote: j.last_note && j.last_note.message ? j.last_note : null,
+    raised: j.created_at || null,
   }));
-  const text = items.map(j => `[${j.status}] ${j.when} — ${j.snippet} (${j.identifier})`).join('\n');
+  const text = items.map(j => {
+    const todo = j.tasks.filter(t => !t.done).map(t => t.text);
+    return [
+      `[${j.status}] ${j.when} — ${j.identifier}${j.business ? ` (${j.business})` : ''}`,
+      j.address ? `  at ${j.address}` : null,
+      j.phone ? `  ph ${j.phone}` : null,
+      j.preferredDays ? `  client prefers ${j.preferredDays}` : null,
+      todo.length ? `  outstanding: ${todo.join('; ')}` : `  ${j.snippet}`,
+      j.lastNote ? `  last note (${j.lastNote.author}): ${String(j.lastNote.message).replace(/\s+/g, ' ').slice(0, 140)}` : null,
+    ].filter(Boolean).join('\n');
+  }).join('\n\n');
   return { text, items };
 }

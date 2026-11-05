@@ -48,20 +48,58 @@ export function Bubbles({ entry, snippet }) {
 // Everything known about a non-message item. Short, and honest about gaps:
 // if the source record is thin, this shows that rather than padding it.
 function Facts({ t, showDescription }) {
+  const todo = (t.tasks || []).filter(x => x && x.text);
   const rows = [
-    ['client', t.from],
+    ['client', t.business ? `${t.from} (${t.business})` : t.from],
     ['status', t.status && String(t.status).replace(/_/g, ' ')],
     ['when', t.when],
+    ['prefers', t.preferredDays || t.timeline],
+    ['raised', t.raised ? new Date(t.raised).toLocaleDateString('en-AU', { day: 'numeric', month: 'short', year: 'numeric' }) : null],
     ['job', t.jobId && `#${t.jobId}`],
   ].filter(([, v]) => v);
+
+  const link = { color: SHELF.accent, textDecoration: 'none', borderBottom: `1px solid ${SHELF.border}` };
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {showDescription && t.snippet && (
         <div style={{ fontSize: 11.5, lineHeight: 1.55, color: SHELF.text1,
                       textTransform: 'none', textWrap: 'pretty', whiteSpace: 'pre-wrap' }}>
           {t.snippet}
         </div>
       )}
+
+      {/* The checklist is what the job actually consists of. */}
+      {todo.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {todo.map((x, i) => (
+            <div key={i} style={{ display: 'flex', gap: 8, fontSize: 11.5, lineHeight: 1.45,
+                                  textTransform: 'none', textWrap: 'pretty',
+                                  color: x.done ? SHELF.text3 : SHELF.text1 }}>
+              <span style={{ flex: 'none', color: x.done ? SHELF.text3 : SHELF.accent }}>{x.done ? '✓' : '○'}</span>
+              <span style={{ textDecoration: x.done ? 'line-through' : 'none' }}>{x.text}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Address and number are the two things worth tapping on a phone. */}
+      {(t.address || t.phone) && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', fontSize: 11.5, textTransform: 'none' }}>
+          {t.address && (
+            <a href={`https://maps.google.com/?q=${encodeURIComponent(t.address)}`}
+               target="_blank" rel="noopener noreferrer"
+               onClick={e => e.stopPropagation()}
+               style={{ ...link, padding: '6px 0', minHeight: 32 }}>{t.address}</a>
+          )}
+          {t.phone && (
+            <a href={`tel:${String(t.phone).replace(/\s+/g, '')}`}
+               onClick={e => e.stopPropagation()}
+               style={{ ...link, padding: '6px 0', minHeight: 32 }}>{t.phone}</a>
+          )}
+        </div>
+      )}
+
       <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 10px', fontSize: 10.5 }}>
         {rows.map(([k, v]) => (
           <React.Fragment key={k}>
@@ -70,6 +108,24 @@ function Facts({ t, showDescription }) {
           </React.Fragment>
         ))}
       </div>
+
+      {/* Where the job's information came from. */}
+      {(t.noteCount > 0 || t.photoCount > 0) && (
+        <div style={{ borderTop: `1px solid ${SHELF.border}`, paddingTop: 8,
+                      display: 'flex', flexDirection: 'column', gap: 5 }}>
+          <div style={{ fontSize: 9.5, letterSpacing: '.1em', textTransform: 'uppercase', color: SHELF.text3 }}>
+            {t.noteCount || 0} note{t.noteCount === 1 ? '' : 's'}
+            {t.photoCount ? ` · ${t.photoCount} photo${t.photoCount === 1 ? '' : 's'}` : ''}
+          </div>
+          {t.lastNote && (
+            <div style={{ fontSize: 11.5, lineHeight: 1.5, color: SHELF.text2,
+                          textTransform: 'none', textWrap: 'pretty' }}>
+              <span style={{ color: SHELF.text3 }}>{t.lastNote.author === 'admin' ? 'you' : 'client'}: </span>
+              {String(t.lastNote.message).slice(0, 240)}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
