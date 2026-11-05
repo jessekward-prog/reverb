@@ -478,6 +478,10 @@ export async function getSwitchcraftJobs() {
     tasks: Array.isArray(j.tasks) ? j.tasks.filter(t => t && t.text) : [],
     noteCount: j.note_count || 0,
     photoCount: j.photo_count || 0,
+    // Ids only; the card pulls each image through /api/job-photo/:id when opened.
+    photos: Array.isArray(j.photos)
+      ? j.photos.filter(p => p && Number.isInteger(p.id)).map(p => ({ id: p.id, name: p.original_name || '' }))
+      : [],
     lastNote: j.last_note && j.last_note.message ? j.last_note : null,
     raised: j.created_at || null,
   }));
