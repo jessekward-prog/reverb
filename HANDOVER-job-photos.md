@@ -7,8 +7,8 @@ photos from switch-craft-booking, so it's clear what the job actually is.
 
 | Repo | Branch | State |
 |---|---|---|
-| `reverb` | `ccr-5589bfce-rsak6n` | Done, pushed (commit `20e1d4c`). Not merged. |
-| `switch-craft-booking` | none yet | **Not done.** Patch below; the earlier session had no push access. |
+| `reverb` | `ccr-d7d247ac-iqbf8q` (also `ccr-5589bfce-rsak6n`) | Done, pushed (commit `20e1d4c`). Not merged. |
+| `switch-craft-booking` | `ccr-d7d247ac-iqbf8q` | Done, pushed. Not merged. |
 
 Until the booking app change is deployed, Reverb behaves as before: it shows
 the "N photos" count and no thumbnails. The Reverb change handles a missing
@@ -34,8 +34,8 @@ the "N photos" count and no thumbnails. The Reverb change handles a missing
 
 ## Remaining work
 
-1. **switch-craft-booking:** apply this patch to `server.js`
-   (`GET /api/reverb/jobs`), commit, push, and deploy:
+1. ~~**switch-craft-booking:** apply this patch~~ Done and pushed on branch
+   `ccr-d7d247ac-iqbf8q`; still needs merging and deploying. The patch, for reference:
 
    ```diff
    @@ -763,6 +763,11 @@ app.get('/api/reverb/jobs', async (req, res) => {
@@ -52,7 +52,7 @@ the "N photos" count and no thumbnails. The Reverb change handles a missing
 
    `p.data IS NOT NULL` skips old rows from before photos were stored in
    Postgres, which `/api/photos/:id` would 404 on anyway.
-2. **Merge/deploy reverb** branch `ccr-5589bfce-rsak6n`.
+2. **Merge/deploy** both repos' `ccr-d7d247ac-iqbf8q` branches.
 3. **Verify end to end:** regenerate the To-do report, then open job #28
    (Patrick Monaghan / Murphys, 3/164 Ryrie Street, 4 photos). Thumbnails
    should load, and tapping one should open it full screen.
