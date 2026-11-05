@@ -1008,8 +1008,10 @@ async function collectGroundedItems() {
     const r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/events`);
     if (r.ok) {
       const all = await r.json();
-      const today = new Date().toISOString().slice(0, 10);
-      const end = new Date(Date.now() + 2 * 86400000).toISOString().slice(0, 10);
+      // ymd, not toISOString: in AEDT a UTC date reads as yesterday before 11am,
+      // which would pull in yesterday's events and drop day+2 from the window.
+      const today = ymd(new Date());
+      const end = ymd(new Date(Date.now() + 2 * 86400000));
       events = all.filter(e => e.date >= today && e.date <= end);
     }
   } catch {}
@@ -1148,8 +1150,11 @@ async function handleItemToCal(req, res) {
       .map(m => `${m.outbound ? 'me' : 'them'}: ${m.text}`).join('\n');
     if (!convo) { res.writeHead(200); res.end(JSON.stringify({ error: 'no conversation found to read' })); return; }
 
-    // 2. extract a structured event, grounded in the thread
-    const today = new Date().toISOString().slice(0, 10);
+    // 2. extract a structured event, grounded in the thread.
+    // ymd, not toISOString: this date is what "Friday" gets resolved against
+    // before an event is written into the real calendar, so a UTC date would
+    // book the job on the wrong day for anything done before 11am in AEDT.
+    const today = ymd(new Date());
     const prompt = `Today is ${today}. This is a text conversation with ${from}:
 
 ${convo}
