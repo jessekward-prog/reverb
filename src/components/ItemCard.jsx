@@ -141,7 +141,7 @@ export default function ItemCard({
   // the title almost verbatim on every job card.
   const norm = v => String(v || '').toLowerCase().replace(/\s+/g, ' ').trim();
   const dup = norm(t.snippet) && (norm(t.text).includes(norm(t.snippet)) || norm(t.snippet).includes(norm(t.text)));
-  const body = t.snippet && !dup ? t.snippet : null;
+  const body = t.snippet && !dup && !t.brief ? t.snippet : null;
 
   return (
     <div style={{
@@ -179,6 +179,18 @@ export default function ItemCard({
             }),
           }}>{t.text}</div>
         </div>
+
+        {/* The assistant's read on the conversation: where it actually stands,
+            which is what the one-line snippet never told you. */}
+        {t.brief && (
+          <div style={{ display: 'flex', gap: 8, fontSize: 11.5, lineHeight: 1.55,
+                        textTransform: 'none', textWrap: 'pretty', color: SHELF.text1 }}>
+            <span style={{ color: tint, flex: 'none' }}>▸</span>
+            <span style={expanded ? undefined : {
+              display: '-webkit-box', WebkitLineClamp: 4, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+            }}>{t.brief}</span>
+          </div>
+        )}
 
         {/* The facts grid below supersedes this one-liner when it is showing. */}
         {!(expanded && !entry) && (

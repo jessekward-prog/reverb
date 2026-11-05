@@ -1049,7 +1049,77 @@ async function collectGroundedItems() {
     items.push({ kind: 'cal', from: ev.text,
                  snippet: `${ev.date}${ev.time ? ' ' + ev.time : ''}${ev.location ? ' @ ' + ev.location : ''}`,
                  when: `${ev.date}${ev.time ? ' ' + ev.time : ''}`, text: ev.text, hintBucket: 'life' });
-  return annotateGrounded(items);
+  return briefConversations(await annotateGrounded(items));
+}
+
+// A one-line snippet ("Yes Tuesday next week is good for us") carries none of
+// the story - what the work is, what was proposed, what is still missing. This
+// reads each conversation back and writes a short brief in plain English, so a
+// card says where things actually stand instead of quoting the last message.
+// One call covering every conversation on the report; grounded in the messages
+// only, and silently skipped if the bridge or the model is unavailable.
+async function briefConversations(items) {
+  const convo = items.filter(t => t.kind === 'sms' || t.kind === 'meta');
+  if (!convo.length) return items;
+
+  let threads = [];
+  try { threads = await fetchThreads(20); } catch { return items; }
+  if (!threads.length) return items;
+
+  const digits = v => String(v || '').replace(/\D/g, '');
+  const findThread = from => {
+    const f = String(from || '').toLowerCase().trim();
+    const d = digits(from);
+    return threads.find(t => String(t.name || '').toLowerCase().trim() === f)
+        || threads.find(t => d.length >= 9 && digits(t.name).includes(d.slice(-9)))
+        || threads.find(t => f.length > 2 && String(t.name || '').toLowerCase().includes(f));
+  };
+
+  const pairs = [];
+  for (const t of convo) {
+    const th = findThread(t.from);
+    if (th && (th.messages || []).length > 1) pairs.push({ item: t, thread: th });
+  }
+  if (!pairs.length) return items;
+
+  const listing = pairs.map((p, i) => {
+    const lines = (p.thread.messages || []).slice(-14)
+      .map(m => `    ${m.outbound ? 'you' : 'them'}: ${String(m.text || '').replace(/\s+/g, ' ').slice(0, 200)}`)
+      .join('\n');
+    return `${i}. ${p.thread.name}\n${lines}`;
+  }).join('\n\n');
+
+  const now = new Date();
+  const prompt = `Today is ${now.toLocaleDateString('en-AU', { weekday: 'long' })} ${ymd(now)}. Below are text conversations between Jesse, an electrician ("you"), and other people.
+
+For EACH numbered conversation write ONE line, exactly:
+<number> :: <brief>
+
+The brief is 2-4 short sentences written TO Jesse as "you", in plain spoken English, like an assistant who has just read the thread back for him. Cover, only where the messages actually show it:
+- what this has been about, and roughly how long it has been going on
+- what was most recently proposed or agreed
+- what is still missing (a time, a date, a price, a confirmation)
+- the single next thing worth doing
+
+Tone to match: "You and this client have been going back and forth for a couple of weeks about installing a new oven. You asked about Tuesday next week, they agreed but haven't given you a time. Worth pinning that down, then it can go on the calendar."
+
+Ground every word in the messages shown. Never state a job, name, date, price or promise that is not in the thread. Where something has not been said, say it is not clear rather than guessing. No greeting, no preamble, no markdown, no numbering beyond the required "<number> :: ".
+
+CONVERSATIONS:
+${listing}`;
+
+  let raw = '';
+  try { raw = await askModel(prompt, 2200); } catch { return items; }
+
+  for (const line of String(raw).split('\n')) {
+    const m = line.match(/^\s*(\d+)\s*::\s*(.+)$/);
+    if (!m) continue;
+    const p = pairs[Number(m[1])];
+    if (!p) continue;
+    const text = m[2].trim();
+    if (text.length > 20) p.item.brief = text.slice(0, 600);
+  }
+  return items;
 }
 
 // The deterministic rule layer — the part you can trust, because no model
