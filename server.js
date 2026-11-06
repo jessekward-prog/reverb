@@ -1016,13 +1016,17 @@ async function collectGroundedItems() {
   // so pulling .items would label every recent text a "job". It stays a chat
   // tool you can ask explicitly. Waiting replies already surface the job-
   // agreement texts, and switch-craft covers actual bookings.
-  const [waiting, jobs, email, bizEmail, messenger, whatsapp] = await Promise.all([
+  const [waiting, jobs, email, bizEmail, personal] = await Promise.all([
     getWaitingReplies({ limit: 25 }).catch(() => ({ items: [] })),
     getSwitchcraftJobs().catch(() => ({ items: [] })),
     getRecentEmails({ limit: 10 }).catch(() => ({ items: [] })),
     getRecentBusinessEmails({ limit: 10 }).catch(() => ({ items: [] })),
-    workChannel('messenger').catch(() => []),
-    workChannel('whatsapp').catch(() => []),
+    // Sequential, not parallel: the bridge drives a single browser, so two
+    // concurrent tab reads contend and one silently comes back empty.
+    (async () => ({
+      messenger: await workChannel('messenger').catch(e => { console.error('messenger:', e.message); return []; }),
+      whatsapp:  await workChannel('whatsapp').catch(e => { console.error('whatsapp:', e.message); return []; }),
+    }))(),
   ]);
 
   let events = [];
@@ -1063,11 +1067,11 @@ async function collectGroundedItems() {
                  photos: j.photos, lastNote: j.lastNote, raised: j.raised,
                  text: title.slice(0, 140), hintBucket: 'work' });
   }
-  for (const m of messenger || [])
+  for (const m of personal.messenger || [])
     items.push({ kind: 'messenger', from: m.name, snippet: m.snippet, when: m.when,
                  text: `Reply to ${m.name}`, reply: true, hintBucket: 'work' });
 
-  for (const m of whatsapp || [])
+  for (const m of personal.whatsapp || [])
     items.push({ kind: 'whatsapp', from: m.name, snippet: m.snippet, when: m.when,
                  text: `Reply to ${m.name}`, reply: true, hintBucket: 'work' });
 
@@ -1472,7 +1476,7 @@ async function workChannel(channel) {
   let rows = [];
   try { ({ rows } = await fetchChannel(channel, 40)); }
   catch (e) { console.error(`${channel}: bridge —`, e.message); return []; }
-  if (!rows.length) return [];
+  if (!rows.length) { console.log(`${channel}: bridge returned no conversations`); return []; }
 
   // Drop system notices, then anything duplicated by name+last line.
   const seen = new Set();
