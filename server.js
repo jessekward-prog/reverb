@@ -1475,7 +1475,9 @@ async function workChannel(channel) {
 
 Say which are about his ELECTRICAL WORK: a quote or estimate, a job or callout, booking a visit, materials or parts, a site or address, an invoice or payment for work, or a tradesman arranging work with him.
 
-Everything else is private and must be left out: family, friends, relationships, kids, social plans, group chats, marketplace, memes, and anything you are unsure about.
+Everything else is private and must be left out: family, friends, relationships, kids, social plans, social or family group chats, marketplace, promotions, automated notices, and anything you are unsure about.
+
+A group chat counts as work if it is about jobs, sites, trades or the business - judge it on what is being said, not on it being a group.
 
 Answer with ONLY the numbers of the work conversations, comma separated, for example: 0, 4, 9
 If none are about work, answer: none
