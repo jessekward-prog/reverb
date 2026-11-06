@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence, useMotionValue, useTransform, useReducedMotion } from 'framer-motion';
 import ItemCard, { SHELF } from './ItemCard.jsx';
+import { C, FS, FONT } from '../lib/design.js';
 
 // Focus mode: one pile, one card at a time. Swipe right = done, swipe left =
 // skip (back of the deck). Ignore and add-to-cal stay deliberate buttons - a
@@ -126,7 +127,7 @@ export default function CardDeck({
     if (!categories.length) return null;
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <div style={{ fontSize: 9.5, letterSpacing: '.1em', textTransform: 'uppercase',
+        <div style={{ fontSize: FS.label, letterSpacing: '.1em', textTransform: 'uppercase',
                       color: SHELF.text3 }}>pick a pile</div>
         {categories.map((c, ci) => (
           <motion.button
@@ -140,10 +141,10 @@ export default function CardDeck({
             <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
               <span style={{ width: 8, height: 8, borderRadius: '50%', background: tintOf(ci), flex: 'none' }} />
               <div style={{ flex: 1, fontWeight: 700, color: SHELF.accent, textTransform: 'none' }}>{c.label}</div>
-              <div style={{ color: SHELF.text3, fontSize: 11 }}>{String(c.items.length).padStart(2, '0')}</div>
+              <div style={{ color: SHELF.text3, fontSize: FS.meta }}>{String(c.items.length).padStart(2, '0')}</div>
             </div>
             {c.synopsis && (
-              <div style={{ fontSize: 11.5, lineHeight: 1.55, color: SHELF.text2,
+              <div style={{ fontSize: FS.body, fontFamily: FONT.sans, lineHeight: 1.6, color: SHELF.text2,
                             textTransform: 'none', textWrap: 'pretty', paddingLeft: 17 }}>
                 {c.synopsis}
               </div>
@@ -160,7 +161,7 @@ export default function CardDeck({
   const ghost = {
     appearance: 'none', border: `1px solid ${SHELF.border}`, borderRadius: 6,
     background: SHELF.surface, color: SHELF.text1, fontFamily: 'inherit',
-    fontSize: 10, letterSpacing: '.08em', textTransform: 'uppercase',
+    fontSize: FS.label, letterSpacing: '.08em', textTransform: 'uppercase',
     padding: '12px 10px', minHeight: 44, cursor: 'pointer', flex: 1,
   };
 
@@ -175,7 +176,7 @@ export default function CardDeck({
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {category.label}
         </div>
-        <div style={{ color: SHELF.text3, fontSize: 11, flex: 'none' }}>
+        <div style={{ color: SHELF.text3, fontSize: FS.meta, flex: 'none' }}>
           {queue.length ? `${seat} of ${total}` : `${total} of ${total}`}
         </div>
       </div>
@@ -197,13 +198,13 @@ export default function CardDeck({
           {/* Intent badges live here, NOT on the card - anchored to the space the
               card vacates, so they stay on screen instead of sliding off with it. */}
           <motion.div style={{ opacity: doneGlow, position: 'absolute', top: '50%', left: 14, zIndex: 2,
-                               y: '-50%', color: SHELF.accent, fontSize: 11, letterSpacing: '.12em',
+                               y: '-50%', color: SHELF.accent, fontSize: FS.meta, letterSpacing: '.12em',
                                fontWeight: 700, border: `1px solid ${SHELF.accent}`, borderRadius: 6,
                                background: '#000', padding: '7px 10px', pointerEvents: 'none' }}>
             DONE ✓
           </motion.div>
           <motion.div style={{ opacity: skipGlow, position: 'absolute', top: '50%', right: 14, zIndex: 2,
-                               y: '-50%', color: SHELF.text1, fontSize: 11, letterSpacing: '.12em',
+                               y: '-50%', color: SHELF.text1, fontSize: FS.meta, letterSpacing: '.12em',
                                fontWeight: 700, border: `1px solid ${SHELF.borderHi}`, borderRadius: 6,
                                background: '#000', padding: '7px 10px', pointerEvents: 'none' }}>
             ↻ SKIP
@@ -261,7 +262,7 @@ export default function CardDeck({
                       background: SHELF.surface, padding: '30px 18px', textAlign: 'center',
                       display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={{ color: SHELF.accent, fontWeight: 700, textTransform: 'none' }}>pile cleared</div>
-          <div style={{ fontSize: 11.5, color: SHELF.text2, textTransform: 'none' }}>
+          <div style={{ fontSize: FS.body, color: SHELF.text2, textTransform: 'none' }}>
             {category.label} — nothing left to deal with.
           </div>
           <button type="button" onClick={leave} style={{ ...ghost, flex: 'none', alignSelf: 'center' }}>
@@ -290,7 +291,7 @@ export default function CardDeck({
             style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '11px 13px',
                      border: `1px solid ${SHELF.borderHi}`, borderRadius: SHELF.radius,
                      background: SHELF.surface }}>
-            <div style={{ flex: 1, fontSize: 11, color: SHELF.text2, textTransform: 'none' }}>marked done</div>
+            <div style={{ flex: 1, fontSize: FS.meta, color: SHELF.text2, textTransform: 'none' }}>marked done</div>
             <button type="button" onClick={undo} style={{
               ...ghost, flex: 'none', minHeight: 34, padding: '8px 12px', color: SHELF.accent,
             }}>undo</button>

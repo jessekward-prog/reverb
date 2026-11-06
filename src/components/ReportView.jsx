@@ -5,6 +5,7 @@ import { authHeaders } from '../api.js';
 import { KINDS } from '../lib/kinds.js';
 import CardDeck from './CardDeck.jsx';
 import CardGrid from './CardGrid.jsx';
+import ActionBand from './ActionBand.jsx';
 
 const CONTENT_MAX = 700; // matches Chat/Sweep so the nav pill lands in the same spot
 
@@ -12,6 +13,12 @@ const CSS = BACKDROP_CSS + `
 @keyframes rv-blink { 0%,49%{opacity:1} 50%,100%{opacity:0} }
 @keyframes rv-rise  { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
 .report-scroll::-webkit-scrollbar { width:0 }
+/* Reduced motion means gentler, not zero: keep the fade that explains an item
+   arriving, drop the movement. */
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: .2s !important; }
+  @keyframes rv-rise { from { opacity:0 } to { opacity:1 } }
+}
 `;
 
 // Rotate through a small palette for category headers since labels are
@@ -231,6 +238,7 @@ export default function ReportView({
   const [phase, setPhase] = useState('loading'); // 'loading' | 'ready'
   const [summary, setSummary] = useState('');
   const [categories, setCategories] = useState([]);
+  const [actions, setActions] = useState([]);
   const [scannedAt, setScannedAt] = useState(null);
   const [outstanding, setOutstanding] = useState(0);
   const [context, setContext] = useState({});   // itemId -> {loading, messages} full thread
@@ -266,6 +274,7 @@ export default function ReportView({
       .then(data => {
         setSummary(data.summary || '');
         setCategories(data.categories || []);
+        setActions(Array.isArray(data.actions) ? data.actions : []);
         setScannedAt(data.scannedAt || null);
         setOutstanding(data.outstanding || 0);
         setPhase('ready');
@@ -434,6 +443,9 @@ export default function ReportView({
               <div style={{ fontSize: 10 }}>{emptyHint}</div>
             </div>
           )}
+
+          {/* Above everything: the things that should not wait. */}
+          <ActionBand actions={actions} />
 
           {summary && (
             <div style={{ marginBottom: 18, padding: '13px 16px', border: `1px solid ${HAIR}`,

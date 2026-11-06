@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { KINDS } from '../lib/kinds.js';
+import { C, FS, FONT, SP } from '../lib/design.js';
 import { getStoredAuth, authHeaders } from '../api.js';
 
 // ShelfStation's card, in Reverb. Palette is shelf-cmd's `theme-cmd` (the one
@@ -8,24 +9,25 @@ import { getStoredAuth, authHeaders } from '../api.js';
 // text - not shelf-cmd's amber default. One card component shared by the grid
 // and the deck, so the two views can never drift apart.
 export const SHELF = {
-  surface:  '#111111',
-  surface2: '#161616',
-  border:   '#2b2b2b',
-  borderHi: '#3d3d3d',
-  accent:   '#ffffff',
-  text1:    '#b0b0b0',
-  text2:    '#8a8a8a',
-  text3:    '#6a6a6a',
-  radius:   8,
+  surface:  C.surface,
+  surface2: C.surface2,
+  border:   C.border,
+  borderHi: C.borderHi,
+  accent:   C.text1,
+  text1:    C.text1,
+  text2:    C.text2,
+  text3:    C.text3,
+  radius:   C.radius,
+  amber:    C.amber,
 };
 
 const daysOpen = iso => (iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86400000) : 0);
 
 export function Bubbles({ entry, snippet }) {
   if (!entry) return null;
-  if (entry.loading) return <div style={{ fontSize: 11, color: SHELF.text3 }}>reading the thread…</div>;
+  if (entry.loading) return <div style={{ fontSize: FS.meta, color: SHELF.text3 }}>reading the thread…</div>;
   if (!entry.messages.length) {
-    return <div style={{ fontSize: 11.5, color: SHELF.text2, textTransform: 'none' }}>{snippet}</div>;
+    return <div style={{ fontSize: FS.body, color: SHELF.text2, textTransform: 'none' }}>{snippet}</div>;
   }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 260,
@@ -33,7 +35,7 @@ export function Bubbles({ entry, snippet }) {
       {entry.messages.slice(-30).map((m, i) => (
         <div key={i} style={{ display: 'flex', justifyContent: m.outbound ? 'flex-end' : 'flex-start' }}>
           <div style={{
-            maxWidth: '82%', padding: '7px 10px', fontSize: 11.5, lineHeight: 1.45,
+            maxWidth: '82%', padding: '7px 10px', fontSize: FS.body, fontFamily: FONT.sans, lineHeight: 1.5,
             textTransform: 'none', textWrap: 'pretty', wordBreak: 'break-word',
             borderRadius: m.outbound ? '9px 9px 2px 9px' : '9px 9px 9px 2px',
             border: `1px solid ${m.outbound ? SHELF.borderHi : SHELF.border}`,
@@ -64,7 +66,7 @@ function JobPhoto({ id, name, onOpen }) {
   const box = { width: 76, height: 76, flex: 'none', borderRadius: 6,
                 border: `1px solid ${SHELF.border}`, background: SHELF.surface2 };
   if (failed) return <div style={{ ...box, display: 'grid', placeItems: 'center',
-                                   fontSize: 9.5, color: SHELF.text3 }}>no image</div>;
+                                   fontSize: FS.label, color: SHELF.text3 }}>no image</div>;
   if (!src) return <div style={box} />;
   return (
     <button type="button" title={name || 'photo'}
@@ -114,7 +116,7 @@ function Facts({ t, showDescription }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {showDescription && t.snippet && (
-        <div style={{ fontSize: 11.5, lineHeight: 1.55, color: SHELF.text1,
+        <div style={{ fontSize: FS.body, fontFamily: FONT.sans, lineHeight: 1.6, color: SHELF.text1,
                       textTransform: 'none', textWrap: 'pretty', whiteSpace: 'pre-wrap' }}>
           {t.snippet}
         </div>
@@ -124,7 +126,7 @@ function Facts({ t, showDescription }) {
       {todo.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {todo.map((x, i) => (
-            <div key={i} style={{ display: 'flex', gap: 8, fontSize: 11.5, lineHeight: 1.45,
+            <div key={i} style={{ display: 'flex', gap: 8, fontSize: FS.body, fontFamily: FONT.sans, lineHeight: 1.5,
                                   textTransform: 'none', textWrap: 'pretty',
                                   color: x.done ? SHELF.text3 : SHELF.text1 }}>
               <span style={{ flex: 'none', color: x.done ? SHELF.text3 : SHELF.accent }}>{x.done ? '✓' : '○'}</span>
@@ -136,7 +138,7 @@ function Facts({ t, showDescription }) {
 
       {/* Address and number are the two things worth tapping on a phone. */}
       {(t.address || t.phone) && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', fontSize: 11.5, textTransform: 'none' }}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 14px', fontSize: FS.body, textTransform: 'none' }}>
           {t.address && (
             <a href={`https://maps.google.com/?q=${encodeURIComponent(t.address)}`}
                target="_blank" rel="noopener noreferrer"
@@ -151,7 +153,7 @@ function Facts({ t, showDescription }) {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 10px', fontSize: 10.5 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 10px', fontSize: FS.meta }}>
         {rows.map(([k, v]) => (
           <React.Fragment key={k}>
             <div style={{ color: SHELF.text3, textTransform: 'uppercase', letterSpacing: '.08em' }}>{k}</div>
@@ -164,13 +166,13 @@ function Facts({ t, showDescription }) {
       {(t.noteCount > 0 || t.photoCount > 0) && (
         <div style={{ borderTop: `1px solid ${SHELF.border}`, paddingTop: 8,
                       display: 'flex', flexDirection: 'column', gap: 5 }}>
-          <div style={{ fontSize: 9.5, letterSpacing: '.1em', textTransform: 'uppercase', color: SHELF.text3 }}>
+          <div style={{ fontSize: FS.label, letterSpacing: '.1em', textTransform: 'uppercase', color: SHELF.text3 }}>
             {t.noteCount || 0} note{t.noteCount === 1 ? '' : 's'}
             {t.photoCount ? ` · ${t.photoCount} photo${t.photoCount === 1 ? '' : 's'}` : ''}
           </div>
           <JobPhotos photos={t.photos} />
           {t.lastNote && (
-            <div style={{ fontSize: 11.5, lineHeight: 1.5, color: SHELF.text2,
+            <div style={{ fontSize: FS.body, lineHeight: 1.5, color: SHELF.text2,
                           textTransform: 'none', textWrap: 'pretty' }}>
               <span style={{ color: SHELF.text3 }}>{t.lastNote.author === 'admin' ? 'you' : 'client'}: </span>
               {String(t.lastNote.message).slice(0, 240)}
@@ -203,7 +205,7 @@ export default function ItemCard({
     }}>
       <div style={{ padding: '13px 14px', display: 'flex', flexDirection: 'column', gap: 8, flex: 1 }}>
         {/* channel + how long it has been sitting */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 9.5,
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: FS.label,
                       letterSpacing: '.1em', textTransform: 'uppercase' }}>
           <span style={{ color: SHELF.text3, border: `1px solid ${SHELF.border}`,
                          borderRadius: 4, padding: '2px 6px' }}>{k.label}</span>
@@ -223,7 +225,7 @@ export default function ItemCard({
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: tint,
                          flex: 'none', marginTop: 5 }} />
           <div style={{
-            flex: 1, fontSize: 13, lineHeight: 1.5, color: SHELF.accent, fontWeight: 700,
+            flex: 1, fontSize: FS.title, fontFamily: FONT.sans, lineHeight: 1.4, color: SHELF.accent, fontWeight: 600, letterSpacing: '0',
             textTransform: 'none', textWrap: 'pretty', minWidth: 0,
             ...(expanded ? {} : {
               display: '-webkit-box', WebkitLineClamp: bodyMax, WebkitBoxOrient: 'vertical',
@@ -235,7 +237,7 @@ export default function ItemCard({
         {/* The assistant's read on the conversation: where it actually stands,
             which is what the one-line snippet never told you. */}
         {t.brief && (
-          <div style={{ display: 'flex', gap: 8, fontSize: 11.5, lineHeight: 1.55,
+          <div style={{ display: 'flex', gap: 8, fontSize: FS.body, fontFamily: FONT.sans, lineHeight: 1.6,
                         textTransform: 'none', textWrap: 'pretty', color: SHELF.text1 }}>
             <span style={{ color: tint, flex: 'none' }}>▸</span>
             <span style={expanded ? undefined : {
@@ -246,7 +248,7 @@ export default function ItemCard({
 
         {/* The facts grid below supersedes this one-liner when it is showing. */}
         {!(expanded && !entry) && (
-        <div style={{ fontSize: 10.5, textTransform: 'none',
+        <div style={{ fontSize: FS.meta, textTransform: 'none',
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           <span style={{ color: SHELF.text3 }}>{t.from}</span>
           {t.when && <span style={{ color: SHELF.text3 }}> · </span>}
@@ -265,30 +267,31 @@ export default function ItemCard({
               // plus the description only when it says more than the title.
               : <Facts t={t} showDescription={!dup} />)
           : body && (
-              <div style={{ fontSize: 11.5, lineHeight: 1.5, color: SHELF.text2,
+              <div style={{ fontSize: FS.body, lineHeight: 1.5, color: SHELF.text2,
                             textTransform: 'none', textWrap: 'pretty',
                             display: '-webkit-box', WebkitLineClamp: 2,
                             WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{body}</div>
             )}
 
         {cal && cal !== 'adding' && cal !== 'done' && (
-          <div style={{ fontSize: 10.5, color: '#e07070', textTransform: 'none' }}>⚠ {cal}</div>
+          <div style={{ fontSize: FS.meta, color: '#e07070', textTransform: 'none' }}>⚠ {cal}</div>
         )}
         {cal === 'done' && (
-          <div style={{ fontSize: 10.5, color: SHELF.accent, textTransform: 'none' }}>
+          <div style={{ fontSize: FS.meta, color: SHELF.accent, textTransform: 'none' }}>
             ✓ opened in calendar — hit save there
           </div>
         )}
       </div>
 
       {actions.length > 0 && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '9px 14px',
+        <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px 16px',
+                      padding: `${SP[2]}px ${SP[4]}px`,
                       borderTop: `1px solid ${SHELF.border}`, background: SHELF.surface2 }}>
           {actions.map(a => (
             <button key={a.label} type="button" onClick={a.onPress} style={{
               appearance: 'none', border: 0, margin: 0, padding: '4px 0', background: 'none',
-              fontFamily: 'inherit', fontSize: 10.5, letterSpacing: '.04em',
-              textTransform: 'none', cursor: 'pointer', minHeight: 32,
+              fontFamily: 'inherit', fontSize: FS.meta, letterSpacing: '.04em',
+              textTransform: 'none', cursor: 'pointer', minHeight: 36, whiteSpace: 'nowrap',
               color: a.strong ? SHELF.accent : SHELF.text2,
               fontWeight: a.strong ? 700 : 400,
             }}>{a.label}</button>

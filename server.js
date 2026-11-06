@@ -829,7 +829,7 @@ async function handleTasks(req, res) {
     : 'nothing on the list right now.';
 
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ summary, categories, scannedAt, outstanding: chase }));
+  res.end(JSON.stringify({ actions: await nextActions().catch(() => []), summary, categories, scannedAt, outstanding: chase }));
 }
 
 // ── Generate pipeline: classify -> work report -> life report ───────────
@@ -1422,6 +1422,82 @@ async function unbookedForChat(args) {
   if (rows.some(r => r.status === 'needs_confirm')) parts.push(`NEEDS CONFIRMING (no clear day, or something else is already on that day):\n${by('needs_confirm')}`);
   if (rows.some(r => r.status === 'booked')) parts.push(`ALREADY IN THE CALENDAR:\n${by('booked')}`);
   return `Work agreed in messages, checked against the calendar. Every line below was quoted verbatim from a real conversation — report them as they are and do not invent any others.\n\n${parts.join('\n\n')}`;
+}
+
+// ── Next actions: the pressure band ───────────────────────
+// Every row here is a state transition the data already shows, not a model
+// judgment - a thing agreed but not booked, a job whose day has passed, a job
+// still open with nothing booked next. Amber in this app means "act on this
+// now", so this is the only place it is earned.
+const ONGOING = new Set(['on_my_way', 'in_progress']);
+const stamp = (date, time, addH = 0) => {
+  const [h, m] = (time || '09:00').split(':').map(Number);
+  const d = new Date(`${date}T00:00:00`);
+  d.setHours(h + addH, m || 0, 0, 0);
+  return `${ymd(d).replace(/-/g, '')}T${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}00`;
+};
+const calendarUrl = (title, date, time, details) => {
+  if (!date) return null;
+  return 'https://calendar.google.com/calendar/u/0/r/eventedit'
+    + `?text=${encodeURIComponent(title)}`
+    + `&dates=${stamp(date, time)}/${stamp(date, time, 2)}`
+    + (details ? `&details=${encodeURIComponent(details)}` : '');
+};
+
+async function nextActions() {
+  const today = ymd(new Date());
+  const out = [];
+
+  // Agreed in a message, absent from the calendar.
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, who, what, quote, when_date, when_time FROM commitments
+        WHERE status = 'unbooked' ORDER BY when_date NULLS LAST, first_seen_at LIMIT 5`);
+    for (const r of rows) {
+      const when = r.when_date ? ymd(r.when_date) : null;
+      out.push({
+        id: `book-${r.id}`, kind: 'book',
+        urgency: when && when <= today ? 4 : 2,
+        title: `Get ${r.who} in the calendar`,
+        detail: `${r.what}${when ? ` — agreed for ${when}` : ', no day pinned down yet'}.`,
+        quote: r.quote,
+        href: calendarUrl(`${r.what} — ${r.who}`, when, r.when_time, r.quote),
+        cta: when ? 'add to calendar' : null,
+      });
+    }
+  } catch (e) { console.error('actions: commitments —', e.message); }
+
+  // Jobs whose scheduled day has already passed, and jobs left open.
+  let jobs = [];
+  try { jobs = (await getSwitchcraftJobs()).items || []; }
+  catch (e) { console.error('actions: jobs —', e.message); }
+
+  for (const j of jobs) {
+    const past = j.scheduledDate && j.scheduledDate < today;
+    const ongoing = ONGOING.has(j.status);
+    const href = `${process.env.SWITCHCRAFT_BASE_URL}/admin/jobs/${j.id}`;
+    if (past && !ongoing) {
+      out.push({
+        id: `invoice-${j.id}`, kind: 'invoice', urgency: 5,
+        title: `Invoice ${j.identifier}`,
+        detail: `${j.when}. If it is finished, invoice it — if it is not, mark it ongoing.`,
+        href, cta: 'open the job',
+      });
+    } else if (ongoing && (past || !j.scheduledDate)) {
+      out.push({
+        id: `next-${j.id}`, kind: 'next-visit', urgency: 6,
+        title: `Book the next visit with ${j.identifier}`,
+        detail: past
+          ? `Still marked ${String(j.status).replace(/_/g, ' ')} and ${j.when}. Lock the next visit in before it stalls.`
+          : `Marked ${String(j.status).replace(/_/g, ' ')} with nothing booked next. Lock the next visit in before it stalls.`,
+        href, cta: 'open the job',
+      });
+    }
+  }
+
+  out.sort((a, b) => b.urgency - a.urgency);
+  // Four is a list you act on; ten is a second to-do list.
+  return out.slice(0, 4);
 }
 
 async function handleReportGenerate(req, res) {
