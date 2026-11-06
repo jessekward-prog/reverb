@@ -1462,11 +1462,29 @@ async function unbookedForChat(args) {
 // electrical business; only those become items, and only those are ever
 // written to the database. An unreadable or unparseable answer means nothing
 // is surfaced, which is the safe direction to fail in.
+// Membership and system notices are not conversations. A card reading "Reply
+// to a work group chat / You created group" is noise even though the
+// group genuinely is work - there is nothing in it to act on. Dropped in code
+// before the model sees them, which also keeps the classifier cheap.
+const SYSTEM_NOTICE = /^(you (were added|created group|joined|added|left|deleted)|.{0,40}\b(added you|joined using|left the group)\b|.{0,30}changed the (subject|group|icon|description)|messages and calls are end-to-end|you received a one-time passcode|missed (voice|video) call|this message was deleted)/i;
+
 async function workChannel(channel) {
   let rows = [];
   try { ({ rows } = await fetchChannel(channel, 40)); }
   catch (e) { console.error(`${channel}: bridge —`, e.message); return []; }
   if (!rows.length) return [];
+
+  // Drop system notices, then anything duplicated by name+last line.
+  const seen = new Set();
+  rows = rows.filter(r => {
+    const snip = String(r.snippet || '').trim();
+    if (!snip || SYSTEM_NOTICE.test(snip)) return false;
+    const key = `${r.name}|${snip}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  if (!rows.length) { console.log(`${channel}: nothing but system notices`); return []; }
 
   const listing = rows.map((r, i) =>
     `${i}. ${r.name} :: ${String(r.snippet || '').replace(/\s+/g, ' ').slice(0, 160)}`).join('\n');
