@@ -1473,6 +1473,7 @@ async function unbookedForChat(args) {
 const SYSTEM_NOTICE = /^(you (were added|created group|joined|added|left|deleted)|.{0,40}\b(added you|joined using|left the group)\b|.{0,30}changed the (subject|group|icon|description)|messages and calls are end-to-end|you received a one-time passcode|missed (voice|video) call|this message was deleted)/i;
 
 async function workChannel(channel) {
+  console.log(`${channel}: reading…`);
   let rows = [];
   try { ({ rows } = await fetchChannel(channel, 40)); }
   catch (e) { console.error(`${channel}: bridge —`, e.message); return []; }
