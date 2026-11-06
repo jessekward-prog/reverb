@@ -1136,11 +1136,16 @@ ${listing}`;
 
   let written = 0;
   for (const line of String(raw).split('\n')) {
-    const m = line.match(/^\s*(\d+)\s*::\s*(.+)$/);
+    // The model answers "0. Some Name :: ..." - it numbers with a full stop
+    // and repeats the thread name before the separator, even when told not to.
+    // Take the leading index, then everything after the first "::".
+    const m = line.match(/^\s*(\d+)\s*[.)]?\s*(.*)$/);
     if (!m) continue;
+    const sep = m[2].indexOf('::');
+    if (sep === -1) continue;
     const p = pairs[Number(m[1])];
     if (!p) continue;
-    const text = m[2].trim();
+    const text = m[2].slice(sep + 2).trim();
     if (text.length > 20) { p.item.brief = text.slice(0, 600); written++; }
   }
   console.log(`briefs: ${written} written for ${pairs.length} matched threads (${convo.length} conversations)`);
