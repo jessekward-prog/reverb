@@ -95,6 +95,8 @@ async function initDb() {
       last_seen_at     TIMESTAMPTZ,
       UNIQUE (kind, identifier)
     );
+    ALTER TABLE contacts ADD COLUMN IF NOT EXISTS address TEXT;
+    ALTER TABLE contacts ADD COLUMN IF NOT EXISTS address_source TEXT;
     CREATE TABLE IF NOT EXISTS rules (
       id         SERIAL PRIMARY KEY,
       pattern    TEXT NOT NULL,
@@ -1039,6 +1041,8 @@ async function collectGroundedItems() {
     items.push({ kind: w.kind || 'sms', from: w.identifier, snippet: w.snippet,
                  text: `Reply to ${w.identifier}`, reply: true, hintBucket: null });
   }
+  await learnFromJobs(jobs.items || []).catch(e => console.error('directory:', e.message));
+
   for (const j of jobs.items || []) {
     // Lead with the WORK, not the status: "pending job — yes plz" told the user
     // nothing. The description is the only thing that says what the job is, so
@@ -1092,6 +1096,8 @@ async function briefConversations(items) {
         || threads.find(t => d.length >= 9 && digits(t.name).includes(d.slice(-9)))
         || threads.find(t => f.length > 2 && String(t.name || '').toLowerCase().includes(f));
   };
+
+  await learnFromThreads(threads).catch(e => console.error('directory:', e.message));
 
   const pairs = [];
   for (const t of convo) {
@@ -1295,9 +1301,24 @@ Resolve relative dates ("Friday", "Tuesday next week", "tomorrow") against today
       const day = `${y}${pad(mo)}${pad(d)}`; // all-day
       start = day; end = day;
     }
-    const title = ev.title || text || `Job for ${from}`;
-    const details = `Agreed over text with ${from}. Added via Reverb.`;
-    const calUrl = `https://calendar.google.com/calendar/u/0/r/eventedit?text=${encodeURIComponent(title)}&dates=${start}/${end}&details=${encodeURIComponent(details)}`;
+    // Name and address from the directory, so the event says who and where
+    // instead of a bare number with an empty location field. Anything the
+    // thread itself mentions is learned here too, for next time.
+    const known = await lookupContact(from).catch(() => null);
+    const inThread = extractAddress(convo);
+    if (inThread && !known?.address) {
+      await rememberContact({ phone: from, address: inThread, source: 'chat' }).catch(() => {});
+    }
+    const place = known?.address || inThread || ev.location || null;
+    const who = known?.display_name || from;
+
+    const title = ev.title || text || `Job for ${who}`;
+    const details = `Agreed over text with ${who}. Added via Reverb.`;
+    const calUrl = 'https://calendar.google.com/calendar/u/0/r/eventedit'
+      + `?text=${encodeURIComponent(title)}`
+      + `&dates=${start}/${end}`
+      + (place ? `&location=${encodeURIComponent(place)}` : '')
+      + `&details=${encodeURIComponent(details)}`;
 
     // 4. open it in the logged-in calendar tab
     await fetch(`${process.env.BRIDGE_BASE_URL}/api/navigate`, {
@@ -1424,6 +1445,77 @@ async function unbookedForChat(args) {
   return `Work agreed in messages, checked against the calendar. Every line below was quoted verbatim from a real conversation — report them as they are and do not invent any others.\n\n${parts.join('\n\n')}`;
 }
 
+// ── Contact directory ─────────────────────────────────────
+// A number on its own tells Jesse nothing and puts nothing in the calendar's
+// location field. Switch Craft already holds client_name + address +
+// contact_number for every client, so phone -> name + address is a lookup, not
+// a guess. Anything learned is written back to `contacts` so the next calendar
+// entry doesn't have to work it out again.
+//
+// Precedence: an address from Switch Craft is authoritative and is never
+// overwritten by one guessed from a chat message.
+
+// Deliberately tight: a street number, up to four name words, a street type,
+// and optionally suburb/state/postcode. Loose patterns turn "12 Oberon Drive"
+// in a sentence into a false positive on every number that passes by.
+
+async function rememberContact({ phone, name, address, source }) {
+  const id = normalizeIdentifier('sms', phone);
+  if (!id) return;
+  await pool.query(
+    `INSERT INTO contacts (kind, identifier, display_name, address, address_source, last_seen_at)
+     VALUES ('sms', $1, $2, $3, $4, NOW())
+     ON CONFLICT (kind, identifier) DO UPDATE SET
+       display_name = COALESCE(EXCLUDED.display_name, contacts.display_name),
+       -- switch-craft wins; a chat guess only fills a gap
+       address = CASE WHEN EXCLUDED.address_source = 'switch-craft' THEN COALESCE(EXCLUDED.address, contacts.address)
+                      WHEN contacts.address IS NULL THEN EXCLUDED.address
+                      ELSE contacts.address END,
+       address_source = CASE WHEN EXCLUDED.address_source = 'switch-craft' THEN 'switch-craft'
+                             WHEN contacts.address IS NULL THEN EXCLUDED.address_source
+                             ELSE contacts.address_source END`,
+    [id, name || null, address || null, source || null],
+  );
+}
+
+// Matched on the last 9 digits, which identifies an AU mobile however either
+// side formats it.
+async function lookupContact(who) {
+  const key = phoneLast9(who);
+  if (!key) {
+    const { rows } = await pool.query(
+      `SELECT display_name, address FROM contacts WHERE kind='sms' AND lower(display_name)=lower($1) LIMIT 1`, [String(who || '')]);
+    return rows[0] || null;
+  }
+  const { rows } = await pool.query(
+    `SELECT display_name, address FROM contacts
+      WHERE kind='sms' AND right(regexp_replace(identifier, '\\D', '', 'g'), 9) = $1 LIMIT 1`, [key]);
+  return rows[0] || null;
+}
+
+async function learnFromJobs(jobs = []) {
+  for (const j of jobs) {
+    if (!j.phone) continue;
+    await rememberContact({ phone: j.phone, name: j.identifier, address: j.address, source: 'switch-craft' })
+      .catch(e => console.error('directory: job —', e.message));
+  }
+}
+
+// Fallback: someone texting an address is often the only record of it.
+async function learnFromThreads(threads = []) {
+  for (const t of threads) {
+    const key = phoneLast9(t.name);
+    if (!key) continue;
+    for (const m of (t.messages || [])) {
+      const addr = extractAddress(m.text);
+      if (!addr) continue;
+      await rememberContact({ phone: t.name, address: addr, source: 'chat' })
+        .catch(e => console.error('directory: thread —', e.message));
+      break;
+    }
+  }
+}
+
 // ── Next actions: the pressure band ───────────────────────
 // Every row here is a state transition the data already shows, not a model
 // judgment - a thing agreed but not booked, a job whose day has passed, a job
@@ -1436,11 +1528,12 @@ const stamp = (date, time, addH = 0) => {
   d.setHours(h + addH, m || 0, 0, 0);
   return `${ymd(d).replace(/-/g, '')}T${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}00`;
 };
-const calendarUrl = (title, date, time, details) => {
+const calendarUrl = (title, date, time, details, location) => {
   if (!date) return null;
   return 'https://calendar.google.com/calendar/u/0/r/eventedit'
     + `?text=${encodeURIComponent(title)}`
     + `&dates=${stamp(date, time)}/${stamp(date, time, 2)}`
+    + (location ? `&location=${encodeURIComponent(location)}` : '')
     + (details ? `&details=${encodeURIComponent(details)}` : '');
 };
 
@@ -1455,13 +1548,16 @@ async function nextActions() {
         WHERE status = 'unbooked' ORDER BY when_date NULLS LAST, first_seen_at LIMIT 5`);
     for (const r of rows) {
       const when = r.when_date ? ymd(r.when_date) : null;
+      const known = await lookupContact(r.who).catch(() => null);
+      const who = known?.display_name || r.who;
       out.push({
         id: `book-${r.id}`, kind: 'book',
         urgency: when && when <= today ? 4 : 2,
-        title: `Get ${r.who} in the calendar`,
-        detail: `${r.what}${when ? ` — agreed for ${when}` : ', no day pinned down yet'}.`,
+        title: `Get ${who} in the calendar`,
+        detail: `${r.what}${when ? ` — agreed for ${when}` : ', no day pinned down yet'}`
+              + `${known?.address ? ` at ${known.address}` : ''}.`,
         quote: r.quote,
-        href: calendarUrl(`${r.what} — ${r.who}`, when, r.when_time, r.quote),
+        href: calendarUrl(`${r.what} — ${who}`, when, r.when_time, r.quote, known?.address),
         cta: when ? 'add to calendar' : null,
       });
     }

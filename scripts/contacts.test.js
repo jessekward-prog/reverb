@@ -30,3 +30,20 @@ assert.strictEqual(matchRules('anything at all', [{ pattern: '   ', action: 'ign
 assert.strictEqual(matchRules('anything at all', []), null);
 
 console.log('contacts.test.js: all assertions passed');
+
+// ── address extraction ──────────────────────────────────────
+// Feeds the calendar's location field and the saved contact address.
+// Synthetic addresses only: this repo is public.
+import { extractAddress, phoneLast9 } from '../src/lib/contacts.js';
+
+assert.strictEqual(extractAddress('do the rest of the electrical at 12 Sample Drive next week'), '12 Sample Drive');
+assert.strictEqual(extractAddress('address is 3/27 Example Street, Belmont VIC 3216'), '3/27 Example Street, Belmont VIC 3216');
+assert.strictEqual(extractAddress('meet at 5 Short Rd, Lara'), '5 Short Rd, Lara');
+// A loose pattern would turn any of these into an address.
+assert.strictEqual(extractAddress('that will be 450 dollars all up'), null);
+assert.strictEqual(extractAddress('ill be there at 9am on the 14th'), null);
+assert.strictEqual(extractAddress('call me on 0400 111 222'), null);
+
+// Matched on the last 9 digits, so any AU formatting resolves to one contact.
+assert.strictEqual(phoneLast9('+61 400 111 222'), phoneLast9('0400 111 222'));
+assert.strictEqual(phoneLast9('321'), null);

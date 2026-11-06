@@ -79,3 +79,29 @@ export function matchRules(text, rules) {
   if (rules.some(r => r.action === 'priority' && hit(r.pattern))) return 'priority';
   return null;
 }
+
+// ── Address + phone helpers ─────────────────────────────────
+// A number on its own puts nothing in a calendar's location field. These let
+// Reverb learn where someone lives once and reuse it.
+export const phoneLast9 = v => {
+  const d = String(v || '').replace(/\D/g, '');
+  return d.length >= 9 ? d.slice(-9) : null;
+};
+
+// Deliberately tight: a street number, one to four name words, a street type,
+// then optional suburb/state/postcode. A loose pattern turns any number in a
+// sentence into an address.
+const STREET = 'st|street|rd|road|ave|avenue|dr|drive|ct|court|cres|crescent|pde|parade|pl|place|way|lane|ln|tce|terrace|blvd|hwy|highway';
+const ADDRESS_RE = new RegExp(
+  `\\b\\d{1,5}[a-z]?(?:\\/\\d{1,5})?\\s+(?:[a-z][a-z'\\-]*\\s+){1,4}(?:${STREET})\\b` +
+  // A suburb only counts after a comma: without that, "12 Sample Drive next
+  // week" swallowed "next week" as the suburb.
+  `(?:,\\s*[a-z][a-z'\\-]*(?:\\s+[a-z][a-z'\\-]*){0,2})?` +
+  `(?:,?\\s+(?:vic|nsw|qld|sa|wa|tas|nt|act))?(?:,?\\s+\\d{4})?`, 'i');
+
+export function extractAddress(text) {
+  const m = String(text || '').match(ADDRESS_RE);
+  if (!m) return null;
+  const hit = m[0].replace(/\s+/g, ' ').trim().replace(/[.,;]$/, '');
+  return hit.length >= 10 && hit.length <= 120 ? hit : null;
+}
