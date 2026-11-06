@@ -8,7 +8,7 @@ import {
   TEXTS_TOOL, SEARCH_TEXTS_TOOL, searchTexts, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL,
   WAITING_TOOL, getWaitingReplies, UNBOOKED_JOBS_TOOL, getUnbookedJobs,
   getRecentTexts, getRecentTextsBrief, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
-  fetchThreads, fetchEvents, fetchMessenger,
+  fetchThreads, fetchEvents, fetchChannel,
 } from './src/lib/tools.js';
 import { parseExtraction, reconcileStatus, projectCommitments, ymd } from './src/lib/commitments.js';
 import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules,
@@ -676,7 +676,7 @@ async function handleContactSignal(req, res) {
 async function handleContacts(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
   const { rows } = await pool.query(
-    'SELECT id, kind, identifier, display_name, tier, seen_count, replied_count, dismissed_count, last_seen_at FROM contacts ORDER BY seen_count DESC, last_seen_at DESC LIMIT 200'
+    'SELECT id, kind, identifier, display_name, tier, address, address_source, seen_count, replied_count, dismissed_count, last_seen_at FROM contacts ORDER BY seen_count DESC, last_seen_at DESC LIMIT 200'
   );
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(rows));
@@ -1016,12 +1016,13 @@ async function collectGroundedItems() {
   // so pulling .items would label every recent text a "job". It stays a chat
   // tool you can ask explicitly. Waiting replies already surface the job-
   // agreement texts, and switch-craft covers actual bookings.
-  const [waiting, jobs, email, bizEmail, messenger] = await Promise.all([
+  const [waiting, jobs, email, bizEmail, messenger, whatsapp] = await Promise.all([
     getWaitingReplies({ limit: 25 }).catch(() => ({ items: [] })),
     getSwitchcraftJobs().catch(() => ({ items: [] })),
     getRecentEmails({ limit: 10 }).catch(() => ({ items: [] })),
     getRecentBusinessEmails({ limit: 10 }).catch(() => ({ items: [] })),
-    workMessenger().catch(() => []),
+    workChannel('messenger').catch(() => []),
+    workChannel('whatsapp').catch(() => []),
   ]);
 
   let events = [];
@@ -1064,6 +1065,10 @@ async function collectGroundedItems() {
   }
   for (const m of messenger || [])
     items.push({ kind: 'messenger', from: m.name, snippet: m.snippet, when: m.when,
+                 text: `Reply to ${m.name}`, reply: true, hintBucket: 'work' });
+
+  for (const m of whatsapp || [])
+    items.push({ kind: 'whatsapp', from: m.name, snippet: m.snippet, when: m.when,
                  text: `Reply to ${m.name}`, reply: true, hintBucket: 'work' });
 
   for (const e of bizEmail.items || [])
@@ -1457,16 +1462,16 @@ async function unbookedForChat(args) {
 // electrical business; only those become items, and only those are ever
 // written to the database. An unreadable or unparseable answer means nothing
 // is surfaced, which is the safe direction to fail in.
-async function workMessenger() {
+async function workChannel(channel) {
   let rows = [];
-  try { ({ rows } = await fetchMessenger(40)); }
-  catch (e) { console.error('messenger: bridge —', e.message); return []; }
+  try { ({ rows } = await fetchChannel(channel, 40)); }
+  catch (e) { console.error(`${channel}: bridge —`, e.message); return []; }
   if (!rows.length) return [];
 
   const listing = rows.map((r, i) =>
     `${i}. ${r.name} :: ${String(r.snippet || '').replace(/\s+/g, ' ').slice(0, 160)}`).join('\n');
 
-  const prompt = `Jesse is an electrician. Below are the latest lines from his personal Messenger conversations.
+  const prompt = `Jesse is an electrician. Below are the latest lines from his personal ${channel === 'whatsapp' ? 'WhatsApp' : 'Messenger'} conversations.
 
 Say which are about his ELECTRICAL WORK: a quote or estimate, a job or callout, booking a visit, materials or parts, a site or address, an invoice or payment for work, or a tradesman arranging work with him.
 
@@ -1479,12 +1484,12 @@ ${listing}`;
 
   let raw = '';
   try { raw = await askModel(prompt, 400); }
-  catch (e) { console.error('messenger: model —', e.message); return []; }
+  catch (e) { console.error(`${channel}: model —`, e.message); return []; }
 
   const picked = new Set((raw.match(/\d+/g) || []).map(Number));
   if (/\bnone\b/i.test(raw) && !picked.size) return [];
   const work = rows.filter((_, i) => picked.has(i));
-  console.log(`messenger: ${work.length} of ${rows.length} conversations read as work`);
+  console.log(`${channel}: ${work.length} of ${rows.length} conversations read as work`);
   return work;
 }
 

@@ -314,13 +314,13 @@ export async function fetchEvents() {
 // conversations that are actually about Jesse's electrical work are allowed
 // through to the report, and the filtering happens in server.js before
 // anything is stored.
-export async function fetchMessenger(limit = 40) {
-  const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/messenger?limit=${limit}`, {
+export async function fetchChannel(channel, limit = 40) {
+  const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/${channel}?limit=${limit}`, {
     headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
   });
   if (!r.ok) throw new Error(`browser-bridge status ${r.status}`);
   const j = await r.json();
-  return { rows: j.messenger || [], health: (j.health || {}).messenger };
+  return { rows: j[channel] || [], health: (j.health || {})[channel] };
 }
 
 export async function getUnbookedJobs({ days_back = 14 } = {}) {
