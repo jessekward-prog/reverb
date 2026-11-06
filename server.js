@@ -11,7 +11,8 @@ import {
   fetchThreads, fetchEvents, fetchMessenger,
 } from './src/lib/tools.js';
 import { parseExtraction, reconcileStatus, projectCommitments, ymd } from './src/lib/commitments.js';
-import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules } from './src/lib/contacts.js';
+import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules,
+         extractAddress, phoneLast9 } from './src/lib/contacts.js';
 
 const { Pool } = pg;
 
