@@ -310,6 +310,19 @@ export async function fetchEvents() {
   } catch { return []; }
 }
 
+// Personal Messenger. Everything in here is private by default - only the
+// conversations that are actually about Jesse's electrical work are allowed
+// through to the report, and the filtering happens in server.js before
+// anything is stored.
+export async function fetchMessenger(limit = 40) {
+  const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/messenger?limit=${limit}`, {
+    headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+  });
+  if (!r.ok) throw new Error(`browser-bridge status ${r.status}`);
+  const j = await r.json();
+  return { rows: j.messenger || [], health: (j.health || {}).messenger };
+}
+
 export async function getUnbookedJobs({ days_back = 14 } = {}) {
   // Whole recent conversations from the bridge index, both directions. The old
   // path read /api/waiting, which only returns threads where the OTHER person

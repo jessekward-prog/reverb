@@ -8,7 +8,7 @@ import {
   TEXTS_TOOL, SEARCH_TEXTS_TOOL, searchTexts, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL,
   WAITING_TOOL, getWaitingReplies, UNBOOKED_JOBS_TOOL, getUnbookedJobs,
   getRecentTexts, getRecentTextsBrief, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
-  fetchThreads, fetchEvents,
+  fetchThreads, fetchEvents, fetchMessenger,
 } from './src/lib/tools.js';
 import { parseExtraction, reconcileStatus, projectCommitments, ymd } from './src/lib/commitments.js';
 import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules } from './src/lib/contacts.js';
@@ -1015,11 +1015,12 @@ async function collectGroundedItems() {
   // so pulling .items would label every recent text a "job". It stays a chat
   // tool you can ask explicitly. Waiting replies already surface the job-
   // agreement texts, and switch-craft covers actual bookings.
-  const [waiting, jobs, email, bizEmail] = await Promise.all([
+  const [waiting, jobs, email, bizEmail, messenger] = await Promise.all([
     getWaitingReplies({ limit: 25 }).catch(() => ({ items: [] })),
     getSwitchcraftJobs().catch(() => ({ items: [] })),
     getRecentEmails({ limit: 10 }).catch(() => ({ items: [] })),
     getRecentBusinessEmails({ limit: 10 }).catch(() => ({ items: [] })),
+    workMessenger().catch(() => []),
   ]);
 
   let events = [];
@@ -1060,6 +1061,10 @@ async function collectGroundedItems() {
                  photos: j.photos, lastNote: j.lastNote, raised: j.raised,
                  text: title.slice(0, 140), hintBucket: 'work' });
   }
+  for (const m of messenger || [])
+    items.push({ kind: 'messenger', from: m.name, snippet: m.snippet, when: m.when,
+                 text: `Reply to ${m.name}`, reply: true, hintBucket: 'work' });
+
   for (const e of bizEmail.items || [])
     items.push({ kind: 'bizemail', from: e.identifier, snippet: e.snippet, subject: e.subject,
                  text: `Business email: ${e.subject}`, reply: true, hintBucket: 'work' });
@@ -1443,6 +1448,43 @@ async function unbookedForChat(args) {
   if (rows.some(r => r.status === 'needs_confirm')) parts.push(`NEEDS CONFIRMING (no clear day, or something else is already on that day):\n${by('needs_confirm')}`);
   if (rows.some(r => r.status === 'booked')) parts.push(`ALREADY IN THE CALENDAR:\n${by('booked')}`);
   return `Work agreed in messages, checked against the calendar. Every line below was quoted verbatim from a real conversation — report them as they are and do not invent any others.\n\n${parts.join('\n\n')}`;
+}
+
+// ── Messenger, filtered to work ───────────────────────────
+// Personal Messenger carries family and private conversations, so the default
+// is to let NOTHING through. A model marks which conversations are about the
+// electrical business; only those become items, and only those are ever
+// written to the database. An unreadable or unparseable answer means nothing
+// is surfaced, which is the safe direction to fail in.
+async function workMessenger() {
+  let rows = [];
+  try { ({ rows } = await fetchMessenger(40)); }
+  catch (e) { console.error('messenger: bridge —', e.message); return []; }
+  if (!rows.length) return [];
+
+  const listing = rows.map((r, i) =>
+    `${i}. ${r.name} :: ${String(r.snippet || '').replace(/\s+/g, ' ').slice(0, 160)}`).join('\n');
+
+  const prompt = `Jesse is an electrician. Below are the latest lines from his personal Messenger conversations.
+
+Say which are about his ELECTRICAL WORK: a quote or estimate, a job or callout, booking a visit, materials or parts, a site or address, an invoice or payment for work, or a tradesman arranging work with him.
+
+Everything else is private and must be left out: family, friends, relationships, kids, social plans, group chats, marketplace, memes, and anything you are unsure about.
+
+Answer with ONLY the numbers of the work conversations, comma separated, for example: 0, 4, 9
+If none are about work, answer: none
+
+${listing}`;
+
+  let raw = '';
+  try { raw = await askModel(prompt, 400); }
+  catch (e) { console.error('messenger: model —', e.message); return []; }
+
+  const picked = new Set((raw.match(/\d+/g) || []).map(Number));
+  if (/\bnone\b/i.test(raw) && !picked.size) return [];
+  const work = rows.filter((_, i) => picked.has(i));
+  console.log(`messenger: ${work.length} of ${rows.length} conversations read as work`);
+  return work;
 }
 
 // ── Contact directory ─────────────────────────────────────
