@@ -24,9 +24,9 @@ assert.strictEqual(withTime.time, '09:00');
 assert.strictEqual(resolveWhen('friday 2:30pm', REF).time, '14:30');
 
 // ── resolveWhen: the false positives that must stay unresolved ──
-// A street number is not a time ("the rest of the electrical at 12 Oberon Drive").
-assert.strictEqual(resolveWhen('at 12 Oberon Drive', REF).date, null);
-assert.strictEqual(resolveWhen('at 12 Oberon Drive', REF).time, null);
+// A street number is not a time ("the rest of the electrical at 12 Sample Drive").
+assert.strictEqual(resolveWhen('at 12 Sample Drive', REF).date, null);
+assert.strictEqual(resolveWhen('at 12 Sample Drive', REF).time, null);
 // A greeting is not a time.
 assert.strictEqual(resolveWhen('Good morning', REF).date, null);
 // Informal timing has no day in it — must not invent one.

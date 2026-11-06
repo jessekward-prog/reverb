@@ -1456,7 +1456,7 @@ async function unbookedForChat(args) {
 // overwritten by one guessed from a chat message.
 
 // Deliberately tight: a street number, up to four name words, a street type,
-// and optionally suburb/state/postcode. Loose patterns turn "12 Oberon Drive"
+// and optionally suburb/state/postcode. Loose patterns turn "12 Sample Drive"
 // in a sentence into a false positive on every number that passes by.
 
 async function rememberContact({ phone, name, address, source }) {

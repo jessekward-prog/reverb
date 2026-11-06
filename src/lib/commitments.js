@@ -3,7 +3,7 @@
 //
 // Why not an LLM-resolved date, and why not a general NL date parser:
 //  - The model confabulates dates (and gemma is weak at strict JSON anyway).
-//  - A greedy parser invents them from ordinary text: "electrical at 12 Oberon
+//  - A greedy parser invents them from ordinary text: "electrical at 12 Sample
 //    Drive" parses as 12 o'clock, "Good morning." parses as a time, and a past
 //    "Monday 2nd" gets pushed into next week.
 // So the model only decides WHETHER a commitment exists and quotes the thread
