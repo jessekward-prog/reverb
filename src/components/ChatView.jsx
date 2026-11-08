@@ -313,7 +313,7 @@ export default function ChatView({ auth, onLockout, onOpenTasks, onOpenSweep, on
               continue;
             }
             if (parsed.type === 'draft') {
-              setDraft({ to: parsed.to, name: parsed.name, message: parsed.message });
+              setDraft({ to: parsed.to, name: parsed.name, message: parsed.message, channel: parsed.channel || 'sms' });
               setDraftState('');
               continue;
             }
@@ -458,7 +458,7 @@ export default function ChatView({ auth, onLockout, onOpenTasks, onOpenSweep, on
             display: 'flex', flexDirection: 'column', gap: 8,
           }}>
             <div style={{ fontSize: 12, letterSpacing: '.1em', textTransform: 'uppercase', color: '#f0a63c' }}>
-              text ready to send — not sent yet
+              {draft.channel || 'sms'} ready to send — not sent yet
             </div>
             <div style={{ fontSize: 13, color: '#ededed' }}>
               to {draft.name || draft.to}{draft.name && draft.to ? ` · ${draft.to}` : ''}
@@ -481,7 +481,7 @@ export default function ChatView({ auth, onLockout, onOpenTasks, onOpenSweep, on
                     const r = await fetch('/api/text/send', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
-                      body: JSON.stringify({ to: draft.to, name: draft.name, message: draft.message }),
+                      body: JSON.stringify({ to: draft.to, name: draft.name, message: draft.message, channel: draft.channel }),
                     });
                     const d = await r.json();
                     setDraftState(d.error ? `could not send — ${d.error}` : 'sent');

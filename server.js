@@ -396,12 +396,13 @@ async function proxyChat(req, res) {
       if (tc.function.name === 'draft_text') {
         const who = await resolveRecipient(args.to);
         const body = String(args.message || '').trim();
+        const channel = ['sms', 'whatsapp', 'messenger'].includes(args.channel) ? args.channel : 'sms';
         // The UI renders this as a card with a send button. Nothing is sent here.
-        res.write(`data: ${JSON.stringify({ type: 'draft', to: who.number, name: who.name, message: body })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'draft', to: who.number, name: who.name, message: body, channel })}\n\n`);
         toolMessages.push({
           role: 'tool', tool_call_id: tc.id,
-          content: who.number
-            ? `A draft to ${who.name || who.number} is now in front of the user with a send button. It has NOT been sent. Tell them it is ready and let them press send; do not claim you sent it.`
+          content: (who.number || channel !== 'sms')
+            ? `A ${channel} draft to ${who.name || who.number} is now in front of the user with a send button. It has NOT been sent. Tell them it is ready and let them press send; do not claim you sent it.`
             : `No phone number is on file for "${args.to}", so nothing can be drafted to them. Tell the user that and ask for the number.`,
         });
       } else if (tc.function.name === 'get_waiting_replies') {
@@ -954,7 +955,7 @@ async function persistSummary(table, result) {
 // The user's browser can't reach the bridge (host LAN, behind the firewall);
 // this container can, so Reverb proxies the frame feed and input back. Auth is
 // Reverb's PIN — the bridge token stays server-side.
-const BROWSER_SOURCES = ['messages', 'email', 'bizemail', 'meta', 'calendar'];
+const BROWSER_SOURCES = ['messages', 'whatsapp', 'messenger', 'email', 'bizemail', 'meta', 'calendar'];
 const SOURCE_ALIAS = { messages: 'sms' }; // UI label -> bridge source key
 
 async function handleBrowserFrame(req, res) {
@@ -1557,7 +1558,8 @@ async function resolveRecipient(to) {
 // only ever called by the send button in the chat - the model cannot reach it.
 async function handleTextSend(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
-  const { to, name, message } = JSON.parse(await readBody(req));
+  const { to, name, message, channel: ch } = JSON.parse(await readBody(req));
+  const channel = ['sms', 'whatsapp', 'messenger'].includes(ch) ? ch : 'sms';
   const number = String(to || '').replace(/[^\d+]/g, '');
   const text = String(message || '').trim();
   const who = String(name || '').trim();
@@ -1570,24 +1572,24 @@ async function handleTextSend(req, res) {
   // bridge. It needs no webhook, and the message lands in the real thread so
   // the conversation stays in one place.
   try {
-    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/send-sms`, {
+    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/send`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
-      body: JSON.stringify({ contact: who || number, text, send: true }),
+      body: JSON.stringify({ channel, contact: who || number, text, send: true }),
       signal: AbortSignal.timeout(120000),
     });
     const d = await r.json();
     if (d.sent) {
-      console.log(`text sent via messages web to ${d.thread}`);
-      res.writeHead(200); res.end(JSON.stringify({ ok: true, via: 'messages web', thread: d.thread })); return;
+      console.log(`sent via ${channel} to ${d.thread}`);
+      res.writeHead(200); res.end(JSON.stringify({ ok: true, via: channel, thread: d.thread })); return;
     }
-    console.error('messages web send did not go through:', d.error || JSON.stringify(d));
+    console.error(`${channel} send did not go through:`, d.error || JSON.stringify(d));
   } catch (e) {
-    console.error('messages web send failed:', e.message);
+    console.error(`${channel} send failed:`, e.message);
   }
 
   // Fallback: the MacroDroid webhook switch-craft uses. Needs a real number.
-  if (!process.env.MACRODROID_WEBHOOK_URL || !number || !phoneLast9(number)) {
+  if (channel !== 'sms' || !process.env.MACRODROID_WEBHOOK_URL || !number || !phoneLast9(number)) {
     res.writeHead(200);
     res.end(JSON.stringify({ error: 'could not send through Messages, and no webhook fallback is configured' }));
     return;

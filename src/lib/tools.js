@@ -106,6 +106,8 @@ export const DRAFT_TEXT_TOOL = {
       properties: {
         to:      { type: 'string', description: "Who it is for: a name as it appears in their messages, or a phone number." },
         message: { type: 'string', description: "The full message to send, written as the user would write it. No placeholders." },
+        channel: { type: 'string', enum: ['sms', 'whatsapp', 'messenger'],
+                   description: "Which medium the conversation is on. Match it to where the item came from - an sms item is 'sms', a whatsapp item 'whatsapp', a messenger item 'messenger'. Defaults to sms." },
       },
       required: ['to', 'message'],
     },

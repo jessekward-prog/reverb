@@ -10,7 +10,9 @@ const CSS = BACKDROP_CSS + `.bv-scroll::-webkit-scrollbar{width:0}`;
 // view you can click and type into. Labels are the UI's; the server maps them to
 // the bridge's source keys.
 const SOURCES = [
-  { key: 'messages', label: 'messages' },
+  { key: 'messages',  label: 'messages' },
+  { key: 'whatsapp',  label: 'whatsapp' },
+  { key: 'messenger', label: 'messenger' },
   { key: 'email',    label: 'email' },
   { key: 'bizemail', label: 'sce email' },
   { key: 'calendar', label: 'calendar' },
