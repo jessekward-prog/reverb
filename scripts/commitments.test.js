@@ -106,3 +106,12 @@ import { ymd } from '../src/lib/commitments.js';
 assert.strictEqual(ymd(new Date(2026, 10, 5, 0, 0, 0)), '2026-11-05');
 assert.strictEqual(ymd(new Date(2026, 0, 1, 0, 0, 0)), '2026-01-01');
 assert.strictEqual(ymd(null), '');
+
+// The model sometimes puts the speaker label in WHO instead of the heading
+// ("me :: fix the lights :: next week :: <quote>"), which made every row
+// unmatchable. The quote is verbatim, so it identifies the thread on its own.
+const speakerLabelled = parseExtraction(
+  'me :: ceiling fans :: Thursday :: Can we book this in for Thursday?', [thread], REF);
+assert.strictEqual(speakerLabelled.length, 1);
+assert.strictEqual(speakerLabelled[0].who, '0400 111 222');
+assert.strictEqual(speakerLabelled[0].date, '2026-11-05');

@@ -130,7 +130,12 @@ export function parseExtraction(raw, threads, ref = new Date()) {
     const quote = rest.join('::').trim().replace(/^["“']|["”']$/g, '');
     if (!who || !what || !quote) continue;
 
-    const thread = findThread(threads, who);
+    // The model sometimes writes the speaker label ("me" / "them") into WHO
+    // instead of the conversation heading, which made every row unmatchable.
+    // The quote is verbatim, so fall back to whichever thread actually
+    // contains it - and trust that over a WHO we cannot resolve.
+    let thread = /^(me|them|you|it)$/i.test(who) ? null : findThread(threads, who);
+    if (!thread) thread = threads.find(t => groundedInThread(t, quote, whenText)) || null;
     if (!thread || !groundedInThread(thread, quote, whenText)) continue;
 
     const { date, time, reason } = resolveWhen(whenText, ref);
