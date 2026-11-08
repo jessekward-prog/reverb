@@ -120,31 +120,57 @@ const findThread = (threads, who) => {
 export function parseExtraction(raw, threads, ref = new Date()) {
   const out = [];
   const seen = new Set();
+
   for (const line of String(raw || '').split('\n')) {
-    const parts = line.split('::').map(s => s.trim());
-    if (parts.length < 4) continue;
-    // The model often copies the heading back with its surrounding dashes
-    // ("— a saved contact name —"), since that is literally how it appears.
-    const who = parts[0].replace(/^[—–-]+\s*/, '').replace(/\s*[—–-]+$/, '').trim();
-    const [, what, whenText, ...rest] = parts;
-    const quote = rest.join('::').trim().replace(/^["“']|["”']$/g, '');
-    if (!who || !what || !quote) continue;
+    if (!line.includes('::')) continue;
 
-    // The model sometimes writes the speaker label ("me" / "them") into WHO
-    // instead of the conversation heading, which made every row unmatchable.
-    // The quote is verbatim, so fall back to whichever thread actually
-    // contains it - and trust that over a WHO we cannot resolve.
-    let thread = /^(me|them|you|it)$/i.test(who) ? null : findThread(threads, who);
-    if (!thread) thread = threads.find(t => groundedInThread(t, quote, whenText)) || null;
-    if (!thread || !groundedInThread(thread, quote, whenText)) continue;
+    // Field ORDER is not stable between runs. The same prompt has produced
+    // "WHO :: WHAT :: WHEN :: QUOTE", "me :: what :: when :: quote" and
+    // "me: quote :: what :: when". So fields are identified by what they ARE,
+    // using the guards we already trust: the quote is the one that appears
+    // verbatim in a thread, the timing is the one that resolves to a date.
+    const fields = line.split('::')
+      .map(f => f.trim()
+                 .replace(/^\d+\s*[.)]\s*/, '')          // leading index
+                 .replace(/^(me|them|you|it)\s*:\s*/i, '') // speaker label
+                 .replace(/^[—–-]+\s*|\s*[—–-]+$/g, '')
+                 .replace(/^["“']|["”']$/g, '')
+                 .trim())
+      .filter(Boolean);
+    if (fields.length < 2) continue;
 
-    const { date, time, reason } = resolveWhen(whenText, ref);
+    // 1. the quote: grounded verbatim in exactly the thread it came from
+    let thread = null, quote = null, qi = -1;
+    for (let i = 0; i < fields.length; i++) {
+      const hit = threads.find(t => groundedInThread(t, fields[i], ''));
+      if (hit) { thread = hit; quote = fields[i]; qi = i; break; }
+    }
+    if (!thread) continue;   // nothing verbatim -> invention, drop it
+
+    // 2. the timing: whichever remaining field actually reads as one
+    const rest = fields.filter((_, i) => i !== qi);
+    let whenText = '', when = { date: null, time: null, reason: 'empty' };
+    for (const f of rest) {
+      if (f.length > 40) continue;                   // a sentence, not a date
+      const r = resolveWhen(f, ref);
+      if (r.date || r.reason === 'vague' || r.reason === 'day-of-month conflict') {
+        whenText = f; when = r; break;
+      }
+    }
+
+    // 3. what is left, longest first, is the description of the work
+    // Drop the timing and any field that is just the thread's own name, so a
+    // present WHO is not mistaken for the description of the work.
+    const what = rest
+      .filter(f => f !== whenText && norm(f) !== norm(thread.name))
+      .sort((a, b) => b.length - a.length)[0] || quote.slice(0, 80);
+
     const id = commitmentId(thread.name, quote);
     if (seen.has(id)) continue;
     seen.add(id);
     out.push({
       id, who: thread.name, what, whenText, quote,
-      date, time, vague: !date, reason,
+      date: when.date, time: when.time, vague: !when.date, reason: when.reason,
       threadName: thread.name,
     });
   }

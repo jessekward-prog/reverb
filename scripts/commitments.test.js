@@ -115,3 +115,23 @@ const speakerLabelled = parseExtraction(
 assert.strictEqual(speakerLabelled.length, 1);
 assert.strictEqual(speakerLabelled[0].who, '0400 111 222');
 assert.strictEqual(speakerLabelled[0].date, '2026-11-05');
+
+// ── field order is not stable between runs ──────────────────
+// The same prompt has produced all of these. Fields are identified by what
+// they are (quote = verbatim in a thread, timing = resolves to a date), not
+// by position, so every shape has to land on the same commitment.
+const shapes = [
+  '0400 111 222 :: ceiling fans :: Thursday :: Can we book this in for Thursday?',
+  'me :: ceiling fans :: Thursday :: Can we book this in for Thursday?',
+  'me: Can we book this in for Thursday? :: ceiling fans :: Thursday',
+  '0. 0400 111 222 :: ceiling fans :: Thursday :: Can we book this in for Thursday?',
+];
+for (const line of shapes) {
+  const got = parseExtraction(line, [thread], REF);
+  assert.strictEqual(got.length, 1, `shape failed to parse: ${line}`);
+  assert.strictEqual(got[0].date, '2026-11-05');
+  assert.strictEqual(got[0].who, '0400 111 222');
+  assert.strictEqual(got[0].what, 'ceiling fans', `WHO leaked into what: ${line}`);
+}
+// Still refuses a quote that appears in no thread, whatever the order.
+assert.strictEqual(parseExtraction('me :: made up :: Friday :: not in any thread', [thread], REF).length, 0);
