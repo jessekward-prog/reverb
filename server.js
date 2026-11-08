@@ -1393,7 +1393,11 @@ async function refreshCommitments() {
   const weekday = now.toLocaleDateString('en-AU', { weekday: 'long' });
 
   const raw = await askModel(commitmentPrompt(threads, today, weekday), 1600);
+  const offered = String(raw || '').split('\n').filter(l => l.includes('::')).length;
   const extracted = parseExtraction(raw, threads, now);
+  if (!extracted.length) {
+    console.error(`commitments: 0 kept from ${offered} offered line(s); raw starts: ${JSON.stringify(String(raw).slice(0, 160))}`);
+  }
   const events = await fetchEvents();
 
   for (const c of extracted) {
@@ -1500,7 +1504,9 @@ Say which are about his ELECTRICAL WORK: a quote or estimate, a job or callout, 
 
 Everything else is private and must be left out: family, friends, relationships, kids, social plans, social or family group chats, marketplace, promotions, automated notices, and anything you are unsure about.
 
-A group chat counts as work if it is about jobs, sites, trades or the business - judge it on what is being said, not on it being a group.
+A group chat counts as work ONLY if it is about paid electrical work for a client - a job, a site, a quote, materials, scheduling. A household, family, neighbourhood or friends group is private even when it mentions a light, a switch or something broken at home. If the conversation would not appear on an invoice, leave it out.
+
+When in doubt, leave it out: a missed work conversation costs little, a surfaced private one is a real problem.
 
 Answer with ONLY the numbers of the work conversations, comma separated, for example: 0, 4, 9
 If none are about work, answer: none
