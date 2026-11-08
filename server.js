@@ -1557,23 +1557,48 @@ async function resolveRecipient(to) {
 // only ever called by the send button in the chat - the model cannot reach it.
 async function handleTextSend(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
-  const { to, message } = JSON.parse(await readBody(req));
+  const { to, name, message } = JSON.parse(await readBody(req));
   const number = String(to || '').replace(/[^\d+]/g, '');
   const text = String(message || '').trim();
+  const who = String(name || '').trim();
 
-  if (!number || !phoneLast9(number) || !text) {
-    res.writeHead(400); res.end(JSON.stringify({ error: 'a number and a message are both required' })); return;
+  if ((!number && !who) || !text) {
+    res.writeHead(400); res.end(JSON.stringify({ error: 'a recipient and a message are both required' })); return;
   }
-  if (!process.env.MACRODROID_WEBHOOK_URL) {
-    res.writeHead(200); res.end(JSON.stringify({ error: 'MACRODROID_WEBHOOK_URL is not set, so nothing can be sent' })); return;
+
+  // Preferred path: type it into the logged-in Messages session through the
+  // bridge. It needs no webhook, and the message lands in the real thread so
+  // the conversation stays in one place.
+  try {
+    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/send-sms`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+      body: JSON.stringify({ contact: who || number, text, send: true }),
+      signal: AbortSignal.timeout(120000),
+    });
+    const d = await r.json();
+    if (d.sent) {
+      console.log(`text sent via messages web to ${d.thread}`);
+      res.writeHead(200); res.end(JSON.stringify({ ok: true, via: 'messages web', thread: d.thread })); return;
+    }
+    console.error('messages web send did not go through:', d.error || JSON.stringify(d));
+  } catch (e) {
+    console.error('messages web send failed:', e.message);
+  }
+
+  // Fallback: the MacroDroid webhook switch-craft uses. Needs a real number.
+  if (!process.env.MACRODROID_WEBHOOK_URL || !number || !phoneLast9(number)) {
+    res.writeHead(200);
+    res.end(JSON.stringify({ error: 'could not send through Messages, and no webhook fallback is configured' }));
+    return;
   }
   try {
     const r = await fetch(`${process.env.MACRODROID_WEBHOOK_URL}?phone=${encodeURIComponent(number)}&message=${encodeURIComponent(text)}`,
                           { signal: AbortSignal.timeout(15000) });
-    console.log(`text send -> ${number.slice(-4).padStart(number.length, '*')} (${text.length} chars): ${r.status}`);
-    res.writeHead(200); res.end(JSON.stringify({ ok: r.ok, status: r.status }));
+    console.log(`text sent via webhook (${text.length} chars): ${r.status}`);
+    res.writeHead(200); res.end(JSON.stringify({ ok: r.ok, via: 'webhook' }));
   } catch (e) {
-    console.error('text send failed:', e.message);
+    console.error('webhook send failed:', e.message);
     res.writeHead(200); res.end(JSON.stringify({ error: e.message }));
   }
 }

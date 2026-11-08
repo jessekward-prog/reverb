@@ -481,7 +481,7 @@ export default function ChatView({ auth, onLockout, onOpenTasks, onOpenSweep, on
                     const r = await fetch('/api/text/send', {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
-                      body: JSON.stringify({ to: draft.to, message: draft.message }),
+                      body: JSON.stringify({ to: draft.to, name: draft.name, message: draft.message }),
                     });
                     const d = await r.json();
                     setDraftState(d.error ? `could not send — ${d.error}` : 'sent');
