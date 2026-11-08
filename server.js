@@ -6,7 +6,7 @@ import { createHmac, createHash } from 'crypto';
 import pg from 'pg';
 import {
   TEXTS_TOOL, SEARCH_TEXTS_TOOL, searchTexts, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL,
-  WAITING_TOOL, getWaitingReplies, UNBOOKED_JOBS_TOOL, getUnbookedJobs,
+  WAITING_TOOL, getWaitingReplies, UNBOOKED_JOBS_TOOL, getUnbookedJobs, DRAFT_TEXT_TOOL,
   getRecentTexts, getRecentTextsBrief, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
   fetchThreads, fetchEvents, fetchChannel,
 } from './src/lib/tools.js';
@@ -361,7 +361,7 @@ async function proxyModels(req, res) {
   }
 }
 
-const TOOLS = [WAITING_TOOL, UNBOOKED_JOBS_TOOL, TEXTS_TOOL, SEARCH_TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
+const TOOLS = [DRAFT_TEXT_TOOL, WAITING_TOOL, UNBOOKED_JOBS_TOOL, TEXTS_TOOL, SEARCH_TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
 
 async function proxyChat(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
@@ -393,7 +393,18 @@ async function proxyChat(req, res) {
     const toolMessages = [choice.message];
     for (const tc of choice.message.tool_calls) {
       const args = JSON.parse(tc.function.arguments || '{}');
-      if (tc.function.name === 'get_waiting_replies') {
+      if (tc.function.name === 'draft_text') {
+        const who = await resolveRecipient(args.to);
+        const body = String(args.message || '').trim();
+        // The UI renders this as a card with a send button. Nothing is sent here.
+        res.write(`data: ${JSON.stringify({ type: 'draft', to: who.number, name: who.name, message: body })}\n\n`);
+        toolMessages.push({
+          role: 'tool', tool_call_id: tc.id,
+          content: who.number
+            ? `A draft to ${who.name || who.number} is now in front of the user with a send button. It has NOT been sent. Tell them it is ready and let them press send; do not claim you sent it.`
+            : `No phone number is on file for "${args.to}", so nothing can be drafted to them. Tell the user that and ask for the number.`,
+        });
+      } else if (tc.function.name === 'get_waiting_replies') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking who is waiting…' })}\n\n`);
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getWaitingReplies(args)).text });
       } else if (tc.function.name === 'get_unbooked_jobs') {
@@ -1524,6 +1535,49 @@ ${listing}`;
   return work;
 }
 
+// Turn "reply to Michael" into a number the phone can actually text. Looks in
+// the learned contact directory first, then falls back to anything that is
+// already a plausible number.
+async function resolveRecipient(to) {
+  const raw = String(to || '').trim();
+  const digits = raw.replace(/[^\d+]/g, '');
+  const known = await lookupContact(raw).catch(() => null);
+  if (known?.display_name || phoneLast9(raw)) {
+    return {
+      name: known?.display_name || (phoneLast9(raw) ? raw : null),
+      number: phoneLast9(raw) ? digits : null,
+      address: known?.address || null,
+    };
+  }
+  // A name with no number on file: say so rather than guessing a recipient.
+  return { name: raw || null, number: null, address: known?.address || null };
+}
+
+// The only place a message actually leaves. Requires the owner token AND is
+// only ever called by the send button in the chat - the model cannot reach it.
+async function handleTextSend(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const { to, message } = JSON.parse(await readBody(req));
+  const number = String(to || '').replace(/[^\d+]/g, '');
+  const text = String(message || '').trim();
+
+  if (!number || !phoneLast9(number) || !text) {
+    res.writeHead(400); res.end(JSON.stringify({ error: 'a number and a message are both required' })); return;
+  }
+  if (!process.env.MACRODROID_WEBHOOK_URL) {
+    res.writeHead(200); res.end(JSON.stringify({ error: 'MACRODROID_WEBHOOK_URL is not set, so nothing can be sent' })); return;
+  }
+  try {
+    const r = await fetch(`${process.env.MACRODROID_WEBHOOK_URL}?phone=${encodeURIComponent(number)}&message=${encodeURIComponent(text)}`,
+                          { signal: AbortSignal.timeout(15000) });
+    console.log(`text send -> ${number.slice(-4).padStart(number.length, '*')} (${text.length} chars): ${r.status}`);
+    res.writeHead(200); res.end(JSON.stringify({ ok: r.ok, status: r.status }));
+  } catch (e) {
+    console.error('text send failed:', e.message);
+    res.writeHead(200); res.end(JSON.stringify({ error: e.message }));
+  }
+}
+
 // ── Contact directory ─────────────────────────────────────
 // A number on its own tells Jesse nothing and puts nothing in the calendar's
 // location field. Switch Craft already holds client_name + address +
@@ -1809,6 +1863,7 @@ createServer(async (req, res) => {
     if (req.method === 'POST' && u === '/api/pull')            return await handlePull(req, res);
     if (req.method === 'POST' && u === '/api/report/generate') return await handleReportGenerate(req, res);
     if (req.method === 'GET'  && u === '/api/commitments')     return await handleCommitments(req, res);
+    if (req.method === 'POST' && u === '/api/text/send')       return await handleTextSend(req, res);
     if (req.method === 'POST' && u === '/api/commitments/refresh') {
       if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
       const r = await refreshCommitments();

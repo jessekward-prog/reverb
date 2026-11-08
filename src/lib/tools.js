@@ -92,6 +92,26 @@ export const UNBOOKED_JOBS_TOOL = {
   },
 };
 
+// Drafting is NOT sending. This tool can only compose a message and resolve
+// who it is for; the text leaves the building only when the user presses send
+// in the chat. That is a structural guarantee, not an instruction the model
+// could skip.
+export const DRAFT_TEXT_TOOL = {
+  type: 'function',
+  function: {
+    name: 'draft_text',
+    description: "Compose a text message to someone for the user to review and send. Use this whenever the user asks you to reply to, text, message or get back to a person. It does NOT send: it puts a draft in front of the user with a send button. Give the person's name or number exactly as you know it; a known contact's number is looked up automatically.",
+    parameters: {
+      type: 'object',
+      properties: {
+        to:      { type: 'string', description: "Who it is for: a name as it appears in their messages, or a phone number." },
+        message: { type: 'string', description: "The full message to send, written as the user would write it. No placeholders." },
+      },
+      required: ['to', 'message'],
+    },
+  },
+};
+
 export const CALENDAR_TOOL = {
   type: 'function',
   function: {

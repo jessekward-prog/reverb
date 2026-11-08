@@ -79,6 +79,9 @@ export default function ChatView({ auth, onLockout, onOpenTasks, onOpenSweep, on
   const [systemPrompt, setSystemPrompt]   = useState(() => localStorage.getItem('lm_system') || DEFAULT_SYSTEM);
   const [inputText, setInputText]     = useState('');
   const [sendDisabled, setSendDisabled] = useState(false);
+  // A composed text waiting on an explicit press. Nothing leaves without it.
+  const [draft, setDraft] = useState(null); // {to, name, message} | null
+  const [draftState, setDraftState] = useState('');
   const [showHistory, setShowHistory]       = useState(false);
   const [showSettings, setShowSettings]     = useState(false);
   const [pwaPrompt, setPwaPrompt]           = useState(null);
@@ -309,6 +312,11 @@ export default function ChatView({ auth, onLockout, onOpenTasks, onOpenSweep, on
               setPending(prev => (prev && !prev.retry) ? { ...prev, status: parsed.message } : prev);
               continue;
             }
+            if (parsed.type === 'draft') {
+              setDraft({ to: parsed.to, name: parsed.name, message: parsed.message });
+              setDraftState('');
+              continue;
+            }
             const delta = parsed.choices?.[0]?.delta?.content;
             if (delta) receivedRef.current += delta;
           } catch {}
@@ -436,6 +444,53 @@ export default function ChatView({ auth, onLockout, onOpenTasks, onOpenSweep, on
                     : null
                 }
                 {pending.text && <span className="cursor-inline">▋</span>}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* A composed text, shown for approval. The model can only put it here;
+            pressing send is the only thing that actually sends it. */}
+        {draft && (
+          <div style={{
+            margin: '10px 0 4px', border: '1px solid #f0a63c', borderRadius: 10,
+            background: 'rgba(240,166,60,.13)', padding: '12px 13px',
+            display: 'flex', flexDirection: 'column', gap: 8,
+          }}>
+            <div style={{ fontSize: 12, letterSpacing: '.1em', textTransform: 'uppercase', color: '#f0a63c' }}>
+              text ready to send — not sent yet
+            </div>
+            <div style={{ fontSize: 13, color: '#ededed' }}>
+              to {draft.name || draft.to}{draft.name && draft.to ? ` · ${draft.to}` : ''}
+            </div>
+            <div style={{ fontSize: 15, lineHeight: 1.55, color: '#ededed', whiteSpace: 'pre-wrap',
+                          background: '#111', border: '1px solid #2e2e2e', borderRadius: 8, padding: '10px 12px' }}>
+              {draft.message}
+            </div>
+            {draftState && <div style={{ fontSize: 13, color: draftState === 'sent' ? '#f0a63c' : '#f08b8b' }}>{draftState}</div>}
+            {draftState !== 'sent' && (
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button type="button" onClick={() => { setDraft(null); setDraftState(''); }} style={{
+                  appearance: 'none', border: '1px solid #2e2e2e', borderRadius: 6, background: '#111',
+                  color: '#b4b4b4', fontFamily: 'inherit', fontSize: 14, padding: '10px 14px',
+                  minHeight: 44, cursor: 'pointer',
+                }}>discard</button>
+                <button type="button" disabled={draftState === 'sending'} onClick={async () => {
+                  setDraftState('sending');
+                  try {
+                    const r = await fetch('/api/text/send', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
+                      body: JSON.stringify({ to: draft.to, message: draft.message }),
+                    });
+                    const d = await r.json();
+                    setDraftState(d.error ? `could not send — ${d.error}` : 'sent');
+                  } catch (e) { setDraftState(`could not send — ${e.message}`); }
+                }} style={{
+                  appearance: 'none', border: '1px solid #f0a63c', borderRadius: 6, background: '#f0a63c',
+                  color: '#000', fontWeight: 700, fontFamily: 'inherit', fontSize: 14,
+                  padding: '10px 16px', minHeight: 44, cursor: 'pointer',
+                }}>{draftState === 'sending' ? 'sending…' : 'send it'}</button>
               </div>
             )}
           </div>
