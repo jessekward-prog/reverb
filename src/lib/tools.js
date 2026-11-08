@@ -404,36 +404,71 @@ export async function getUpcomingEvents({ days_ahead = 1 } = {}) {
   return upcoming.map(e => `${e.date}${e.time ? ' ' + e.time : ''}: ${e.text}${e.location ? ' @ ' + e.location : ''}`).join('\n');
 }
 
-export async function getRecentEmails({ unread_only = false, limit = 10 } = {}) {
-  const params = new URLSearchParams({ unreadOnly: String(unread_only), limit: String(limit) });
-  let r;
-  try {
-    r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/google/gmail/recent?${params}`, {
-      headers: { 'X-Service-Token': process.env.LIFECMD_SERVICE_TOKEN },
-    });
-  } catch (err) { return { text: `Could not reach Gmail via LIFE_CMD: ${err.message}`, items: [] }; }
-  if (!r.ok) return { text: `Could not reach Gmail via LIFE_CMD (status ${r.status})`, items: [] };
-  const emails = await r.json();
-  if (!emails.length) return { text: 'No matching emails found.', items: [] };
-  const items = emails.map(e => ({ identifier: e.from, displayName: e.from, subject: e.subject, snippet: e.snippet, hasAttachment: !!e.hasAttachment }));
-  const text = emails.map(e => `From: ${e.from}${e.hasAttachment ? ' [has attachment]' : ''}\nSubject: ${e.subject}\n${e.snippet}`).join('\n\n');
-  return { text, items };
+// Email comes from the logged-in Gmail tabs, not from an OAuth API. Reverb is
+// a second pair of eyes on the browser the user is already signed into, so a
+// token expiring somewhere else must never be able to blind it - which is
+// exactly what happened: LIFE_CMD's Google auth dropped and every email
+// question started failing.
+async function emailsFrom(channel, { unread_only = false, limit = 10 } = {}) {
+  let rows = [], health;
+  try { ({ rows, health } = await fetchChannel(channel, Math.min(limit * 3, 60))); }
+  catch (err) { return { text: `Could not reach the browser bridge: ${err.message}`, items: [], health: `unreachable — ${err.message}` }; }
+
+  if (unread_only) rows = rows.filter(r => r.unread);
+  rows = rows.slice(0, limit);
+  if (!rows.length) {
+    return { text: health && health !== 'ok' ? `No emails read — ${health}` : 'No matching emails found.', items: [], health };
+  }
+  const items = rows.map(e => ({
+    identifier: e.address || e.from, displayName: e.from,
+    subject: e.subject, snippet: e.snippet, unread: !!e.unread, when: e.when,
+  }));
+  const text = rows.map(e =>
+    `From: ${e.from}${e.unread ? ' [unread]' : ''}${e.when ? ` (${e.when})` : ''}\nSubject: ${e.subject}\n${e.snippet}`).join('\n\n');
+  return { text, items, health };
 }
 
-export async function getRecentBusinessEmails({ unread_only = false, limit = 10 } = {}) {
-  const params = new URLSearchParams({ unreadOnly: String(unread_only), limit: String(limit) });
-  let r;
-  try {
-    r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/google/gmail/recent/business?${params}`, {
-      headers: { 'X-Service-Token': process.env.LIFECMD_SERVICE_TOKEN },
-    });
-  } catch (err) { return { text: `Could not reach business Gmail via LIFE_CMD: ${err.message}`, items: [] }; }
-  if (!r.ok) return { text: `Could not reach business Gmail via LIFE_CMD (status ${r.status})`, items: [] };
-  const emails = await r.json();
-  if (!emails.length) return { text: 'No matching business emails found.', items: [] };
-  const items = emails.map(e => ({ identifier: e.from, displayName: e.from, subject: e.subject, snippet: e.snippet, hasAttachment: !!e.hasAttachment }));
-  const text = emails.map(e => `From: ${e.from}${e.hasAttachment ? ' [has attachment]' : ''}\nSubject: ${e.subject}\n${e.snippet}`).join('\n\n');
-  return { text, items };
+export const getRecentEmails = opts => emailsFrom('email', opts);
+export const getRecentBusinessEmails = opts => emailsFrom('bizemail', opts);
+
+// "Did I ever get ..." needs the whole mailbox, not the newest few. The bridge
+// types the query into Gmail's own search box and reads the results, so it
+// searches exactly what the user would see.
+export const SEARCH_EMAIL_TOOL = {
+  type: 'function',
+  function: {
+    name: 'search_email',
+    description: "Search the user's email for anything older than the last few messages: \"did I ever get a login from X\", \"find the invoice from Y\", \"what did Z send me about the quote\". Searches with Gmail's own query syntax across the personal inbox, the business one, or both.",
+    parameters: {
+      type: 'object',
+      properties: {
+        query:   { type: 'string', description: "What to look for, e.g. \"powertorque login\" or \"from:acme invoice\"." },
+        account: { type: 'string', enum: ['both', 'personal', 'business'], description: 'Which mailbox. Defaults to both.' },
+      },
+      required: ['query'],
+    },
+  },
+};
+
+export async function searchEmail({ query, account = 'both' } = {}) {
+  if (!query || !query.trim()) return { text: 'Give something to search for.', items: [] };
+  const channels = account === 'personal' ? ['email'] : account === 'business' ? ['bizemail'] : ['email', 'bizemail'];
+  const out = [];
+  for (const ch of channels) {
+    try {
+      const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/email-search?q=${encodeURIComponent(query)}&account=${ch}&limit=10`, {
+        headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+        signal: AbortSignal.timeout(120000),
+      });
+      if (!r.ok) continue;
+      const d = await r.json();
+      for (const e of (d.results || [])) out.push({ ...e, mailbox: ch === 'bizemail' ? 'business' : 'personal' });
+    } catch { /* one mailbox failing should not lose the other */ }
+  }
+  if (!out.length) return { text: `Nothing in the user's email matches "${query}".`, items: [] };
+  const text = out.map(e =>
+    `[${e.mailbox}] From: ${e.from}${e.when ? ` (${e.when})` : ''}\nSubject: ${e.subject}\n${e.snippet}`).join('\n\n');
+  return { text: `Email matching "${query}":\n\n${text}`, items: out };
 }
 
 export async function getRecentNotifications({ source, limit = 30 } = {}) {

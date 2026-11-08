@@ -7,6 +7,7 @@ import pg from 'pg';
 import {
   TEXTS_TOOL, SEARCH_TEXTS_TOOL, searchTexts, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL,
   WAITING_TOOL, getWaitingReplies, UNBOOKED_JOBS_TOOL, getUnbookedJobs, DRAFT_TEXT_TOOL,
+  SEARCH_EMAIL_TOOL, searchEmail,
   getRecentTexts, getRecentTextsBrief, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
   fetchThreads, fetchEvents, fetchChannel,
 } from './src/lib/tools.js';
@@ -361,7 +362,7 @@ async function proxyModels(req, res) {
   }
 }
 
-const TOOLS = [DRAFT_TEXT_TOOL, WAITING_TOOL, UNBOOKED_JOBS_TOOL, TEXTS_TOOL, SEARCH_TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
+const TOOLS = [DRAFT_TEXT_TOOL, SEARCH_EMAIL_TOOL, WAITING_TOOL, UNBOOKED_JOBS_TOOL, TEXTS_TOOL, SEARCH_TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
 
 async function proxyChat(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
@@ -420,6 +421,9 @@ async function proxyChat(req, res) {
       } else if (tc.function.name === 'get_upcoming_events') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking calendar…' })}\n\n`);
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await getUpcomingEvents(args) });
+      } else if (tc.function.name === 'search_email') {
+        res.write(`data: ${JSON.stringify({ type: 'status', message: `Searching email for “${args.query || ''}”…` })}\n\n`);
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await searchEmail(args)).text });
       } else if (tc.function.name === 'get_recent_emails') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking email…' })}\n\n`);
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getRecentEmails(args)).text });
@@ -1060,6 +1064,10 @@ async function collectGroundedItems() {
     items.push({ kind: w.kind || 'sms', from: w.identifier, snippet: w.snippet,
                  text: `Reply to ${w.identifier}`, reply: true, hintBucket: null });
   }
+  // record what each source said about itself, for the watchdog
+  noteHealth('personal email', email.health || 'ok');
+  noteHealth('business email', bizEmail.health || 'ok');
+
   await learnFromJobs(jobs.items || []).catch(e => console.error('directory:', e.message));
 
   for (const j of jobs.items || []) {
@@ -1676,6 +1684,15 @@ async function learnFromThreads(threads = []) {
   }
 }
 
+// What each browser source last reported. A signed-out tab or an expired
+// session is the one failure that silently blinds the whole app, so it is
+// surfaced as an action rather than left for the model to describe vaguely as
+// "a technical issue".
+const sourceHealth = {};
+function noteHealth(source, state) {
+  sourceHealth[source] = { state, at: Date.now() };
+}
+
 // ── Next actions: the pressure band ───────────────────────
 // Every row here is a state transition the data already shows, not a model
 // judgment - a thing agreed but not booked, a job whose day has passed, a job
@@ -1749,6 +1766,18 @@ async function nextActions() {
         href, cta: 'open the job',
       });
     }
+  }
+
+  // A dark source outranks everything: nothing else on this list can be
+  // trusted to be complete while one is down.
+  for (const [source, h] of Object.entries(sourceHealth)) {
+    if (!h || h.state === 'ok') continue;
+    out.push({
+      id: `source-${source}`, kind: 'source-down', urgency: 9,
+      title: `Reverb cannot read ${source}`,
+      detail: `${h.state}. Until that is fixed this list is incomplete — open the browser tab and sign in again.`,
+      cta: null,
+    });
   }
 
   out.sort((a, b) => b.urgency - a.urgency);
