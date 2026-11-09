@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { motion } from 'framer-motion';
 import { C, FS, FONT, SP } from '../lib/design.js';
 import { KINDS } from '../lib/kinds.js';
@@ -8,6 +8,11 @@ import ActionBand from './ActionBand.jsx';
 // middle so nothing is hidden behind a tab. The side panes are the full list
 // for each half of the day; the centre is what actually wants doing, drawn
 // from both and tagged so you can always see which world a row belongs to.
+//
+// Every centre row comes FROM a side row, and that link is drawn: a ComfyUI-
+// style wire runs out of the side pane and into the matching feed row, so the
+// middle reads as a patch of the two columns rather than a third list that
+// happens to contain the same words. Hovering either end lights the pair.
 //
 // On a phone three columns is a lie, so it collapses to one and the segmented
 // control picks which pane you are looking at.
@@ -24,12 +29,15 @@ function scopeOf(t) {
   return 'later';
 }
 
+const LIFE = '#8fa8c4';
+const wireColor = bucket => (bucket === 'work' ? C.amber : LIFE);
+
 function Tag({ bucket }) {
   const work = bucket === 'work';
   return (
     <span style={{
       fontFamily: FONT.mono, fontSize: FS.label, letterSpacing: '.08em', textTransform: 'uppercase',
-      color: work ? C.amber : '#8fa8c4', border: `1px solid ${work ? C.amber : '#8fa8c4'}`,
+      color: work ? C.amber : LIFE, border: `1px solid ${work ? C.amber : LIFE}`,
       borderRadius: 4, padding: '1px 5px', flex: 'none', opacity: .85,
     }}>{work ? 'work' : 'life'}</span>
   );
@@ -37,17 +45,24 @@ function Tag({ bucket }) {
 
 // One line in a pane. Deliberately not the full card: these columns are for
 // scanning, and the card view is a click away.
-function Row({ t, showTag, onOpen }) {
+function Row({ t, showTag, onOpen, register, lit, dimmed, onHover }) {
   const k = KINDS[t.kind] || KINDS.email;
   const open = daysOpen(t.firstSeenAt);
+  const accent = wireColor(t.bucket);
   return (
     <motion.button
       type="button" onClick={() => onOpen?.(t)} whileTap={{ scale: 0.99 }}
+      ref={register}
+      onMouseEnter={() => onHover?.(t.id)} onMouseLeave={() => onHover?.(null)}
+      onFocus={() => onHover?.(t.id)} onBlur={() => onHover?.(null)}
       style={{
         appearance: 'none', width: '100%', textAlign: 'left', cursor: 'pointer',
-        background: 'none', border: 0, borderBottom: `1px solid ${C.border}`,
+        background: lit ? C.surface2 : 'none', border: 0, borderBottom: `1px solid ${C.border}`,
+        boxShadow: lit ? `inset 2px 0 0 ${accent}` : 'none',
+        opacity: dimmed ? .45 : 1,
         padding: `${SP[3]}px ${SP[1]}px`, display: 'flex', flexDirection: 'column', gap: SP[1],
         fontFamily: 'inherit', minHeight: 44,
+        transition: 'opacity .14s, background .14s, box-shadow .14s',
       }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: SP[2] }}>
         <span style={{ width: 6, height: 6, borderRadius: '50%', flex: 'none',
@@ -68,9 +83,10 @@ function Row({ t, showTag, onOpen }) {
   );
 }
 
-function Pane({ title, accent, items, filters, filter, setFilter, showTag, onOpen, empty }) {
+function Pane({ title, accent, items, filters, filter, setFilter, showTag, onOpen,
+                empty, paneRef, scrollRef, onScroll, register, hover, onHover }) {
   return (
-    <section style={{
+    <section ref={paneRef} style={{
       border: `1px solid ${C.border}`, borderRadius: C.radius, background: C.surface,
       display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden',
     }}>
@@ -99,23 +115,62 @@ function Pane({ title, accent, items, filters, filter, setFilter, showTag, onOpe
         )}
       </header>
 
-      <div style={{ flex: 1, overflowY: 'auto', padding: `0 ${SP[3]}px ${SP[3]}px`, scrollbarWidth: 'none' }}>
+      <div ref={scrollRef} onScroll={onScroll}
+           style={{ flex: 1, overflowY: 'auto', padding: `0 ${SP[3]}px ${SP[3]}px`, scrollbarWidth: 'none' }}>
         {items.length === 0
           ? <div style={{ padding: `${SP[5]}px 0`, textAlign: 'center', fontFamily: FONT.sans,
                           fontSize: FS.body, color: C.text3 }}>{empty}</div>
-          : items.map(t => <Row key={t.id} t={t} showTag={showTag} onOpen={onOpen} />)}
+          : items.map(t => (
+              <Row key={t.id} t={t} showTag={showTag} onOpen={onOpen}
+                   register={register(t.id)} onHover={onHover}
+                   lit={hover === t.id} dimmed={hover != null && hover !== t.id} />
+            ))}
       </div>
     </section>
   );
 }
 
+// The wires. Drawn into an SVG that sits BEHIND the three panes, which are
+// opaque, so each curve is clipped to the gutter for free — no masking, no
+// per-pane clip paths, and nothing ever crosses a row of text. That's also why
+// the desktop gutter is 36px rather than the 12px everything else uses: a wire
+// needs room to read as a curve.
+function Wires({ wires, hover }) {
+  return (
+    <svg width="100%" height="100%" aria-hidden="true" style={{
+      position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none', overflow: 'visible',
+    }}>
+      {wires.map(w => {
+        const k = Math.max(18, Math.abs(w.x2 - w.x1) * 0.62);
+        const dir = w.x2 > w.x1 ? 1 : -1;
+        const d = `M ${w.x1} ${w.y1} C ${w.x1 + k * dir} ${w.y1}, ${w.x2 - k * dir} ${w.y2}, ${w.x2} ${w.y2}`;
+        const on = hover === w.id;
+        return (
+          <g key={w.id} opacity={hover == null ? (w.docked ? .22 : .5) : on ? 1 : .08}
+             style={{ transition: 'opacity .14s' }}>
+            <path d={d} fill="none" stroke={w.color} strokeWidth={on ? 2 : 1.25}
+                  strokeLinecap="round" strokeDasharray={w.docked ? '3 5' : undefined} />
+            <circle cx={w.x1} cy={w.y1} r={on ? 3.5 : 2.5}
+                    fill={w.docked ? 'none' : w.color}
+                    stroke={w.docked ? w.color : 'none'} strokeWidth={1.25} />
+            <circle cx={w.x2} cy={w.y2} r={on ? 3.5 : 2.5} fill={w.color} />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 const SCOPES = ['today', 'week', 'all'];
+const WIRE_MIN_WIDTH = 1000;   // matches the one-pane breakpoint below
 
 export default function TriPane({ categories = [], actions = [], scannedAt, onOpen }) {
   const [scope, setScope] = useState('all');
   const [workFilter, setWorkFilter] = useState('all');
   const [lifeFilter, setLifeFilter] = useState('all');
   const [pane, setPane] = useState('feed'); // phone only
+  const [hover, setHover] = useState(null);
+  const [wires, setWires] = useState([]);
 
   const all = useMemo(
     () => categories.flatMap(c => (c.items || []).map(t => ({ ...t, category: c.label }))),
@@ -138,12 +193,108 @@ export default function TriPane({ categories = [], actions = [], scannedAt, onOp
     (b.overdue ? 1 : 0) - (a.overdue ? 1 : 0) || daysOpen(b.firstSeenAt) - daysOpen(a.firstSeenAt)
   ), [inScope]);
 
+  // ── wire geometry ──────────────────────────────────────────────────────
+  // Positions are measured, never derived from row heights: a row wraps to two
+  // lines at one width and one at another, and a wire that lands two pixels off
+  // the row it points at looks broken.
+  const gridRef  = useRef(null);
+  const paneEl   = useRef({});                 // section elements, for the gutter edges
+  const scrollEl = useRef({});                 // scrollers, to know what's actually on screen
+  const rowEl    = useRef(new Map());          // "<pane>:<id>" -> row element
+
+  const register = useCallback((paneKey) => (id) => (el) => {
+    const key = `${paneKey}:${id}`;
+    if (el) rowEl.current.set(key, el); else rowEl.current.delete(key);
+  }, []);
+
+  const measure = useCallback(() => {
+    const grid = gridRef.current;
+    if (!grid || window.innerWidth < WIRE_MIN_WIDTH) { setWires([]); return; }
+    const gb = grid.getBoundingClientRect();
+    const feedBox = paneEl.current.feed?.getBoundingClientRect();
+    const feedView = scrollEl.current.feed?.getBoundingClientRect();
+    if (!feedBox || !feedView) { setWires([]); return; }
+
+    // The feed is what you work from, so the feed drives the wires: every row
+    // you can see in the middle gets one. When its source row is scrolled out
+    // of the side pane, the wire docks to that pane's edge and goes dashed —
+    // "it came from up there" — rather than vanishing, which made the whole
+    // thing look broken when only one pair happened to line up.
+    const midOf = el => { const r = el.getBoundingClientRect(); return r.top + r.height / 2; };
+    const inView = (mid, view) => mid > view.top + 4 && mid < view.bottom - 4;
+
+    const out = [];
+    for (const [mapKey, el] of rowEl.current) {
+      if (!mapKey.startsWith('feed:')) continue;
+      const id = mapKey.slice(5);
+      const mid2 = midOf(el);
+      if (!inView(mid2, feedView)) continue;
+
+      let side = null;
+      for (const key of ['work', 'life']) {
+        if (rowEl.current.has(`${key}:${id}`)) { side = key; break; }
+      }
+      if (!side) continue;                       // filtered out of its own pane
+      const box = paneEl.current[side]?.getBoundingClientRect();
+      const view = scrollEl.current[side]?.getBoundingClientRect();
+      if (!box || !view) continue;
+
+      const mid1 = midOf(rowEl.current.get(`${side}:${id}`));
+      const docked = !inView(mid1, view);
+      const left = side === 'work';
+      out.push({
+        id,
+        color: left ? C.amber : LIFE,
+        docked,
+        dock: docked ? (mid1 < view.top ? `${side}-top` : `${side}-bottom`) : null,
+        x1: (left ? box.right : box.left) - gb.left,
+        y1: Math.min(Math.max(mid1, view.top + 10), view.bottom - 10) - gb.top,
+        x2: (left ? feedBox.left : feedBox.right) - gb.left,
+        y2: mid2 - gb.top,
+      });
+    }
+
+    // Every docked wire lands on the same pixel, which knots them into one
+    // smear. Fan them inward from the edge in the order their feed rows appear,
+    // so the bundle reads as a bundle.
+    const groups = new Map();
+    for (const w of out) if (w.dock) (groups.get(w.dock) || groups.set(w.dock, []).get(w.dock)).push(w);
+    for (const [dock, ws] of groups) {
+      const down = dock.endsWith('top');       // docked above: fan downward
+      ws.sort((a, b) => a.y2 - b.y2);
+      ws.forEach((w, i) => { w.y1 += (down ? 1 : -1) * Math.min(i, 6) * 9; });
+    }
+    setWires(out);
+  }, []);
+
+  // Re-measure on anything that can move a row: layout, scroll, resize, data.
+  const frame = useRef(0);
+  const remeasure = useCallback(() => {
+    cancelAnimationFrame(frame.current);
+    frame.current = requestAnimationFrame(measure);
+  }, [measure]);
+
+  useLayoutEffect(() => { remeasure(); }, [remeasure, feed, work.length, life.length, workFilter, lifeFilter, scope, pane]);
+
+  useEffect(() => {
+    const ro = new ResizeObserver(remeasure);
+    if (gridRef.current) ro.observe(gridRef.current);
+    window.addEventListener('resize', remeasure);
+    return () => { ro.disconnect(); window.removeEventListener('resize', remeasure);
+                   cancelAnimationFrame(frame.current); };
+  }, [remeasure]);
+
   const panes = {
     work: <Pane title="switch" accent={C.amber} items={byFilter(work, workFilter)}
                 filters={catsOf(work)} filter={workFilter} setFilter={setWorkFilter}
-                onOpen={onOpen} empty="work is clear" />,
+                onOpen={onOpen} empty="work is clear"
+                paneRef={el => { paneEl.current.work = el; }}
+                scrollRef={el => { scrollEl.current.work = el; }}
+                onScroll={remeasure} register={register('work')}
+                hover={hover} onHover={setHover} />,
     feed: (
-      <section style={{ border: `1px solid ${C.borderHi}`, borderRadius: C.radius, background: C.surface,
+      <section ref={el => { paneEl.current.feed = el; }}
+               style={{ border: `1px solid ${C.borderHi}`, borderRadius: C.radius, background: C.surface,
                         display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}>
         <header style={{ padding: `${SP[3]}px`, borderBottom: `1px solid ${C.border}`,
                          display: 'flex', alignItems: 'center', gap: SP[2] }}>
@@ -161,18 +312,27 @@ export default function TriPane({ categories = [], actions = [], scannedAt, onOp
             }}>{sc}</button>
           ))}
         </header>
-        <div style={{ flex: 1, overflowY: 'auto', padding: `${SP[3]}px`, scrollbarWidth: 'none' }}>
+        <div ref={el => { scrollEl.current.feed = el; }} onScroll={remeasure}
+             style={{ flex: 1, overflowY: 'auto', padding: `${SP[3]}px`, scrollbarWidth: 'none' }}>
           <ActionBand actions={actions} />
           {feed.length === 0
             ? <div style={{ padding: `${SP[6]}px 0`, textAlign: 'center', fontFamily: FONT.sans,
                             fontSize: FS.body, color: C.text3 }}>nothing in this window</div>
-            : feed.map(t => <Row key={t.id} t={t} showTag onOpen={onOpen} />)}
+            : feed.map(t => (
+                <Row key={t.id} t={t} showTag onOpen={onOpen}
+                     register={register('feed')(t.id)} onHover={setHover}
+                     lit={hover === t.id} dimmed={hover != null && hover !== t.id} />
+              ))}
         </div>
       </section>
     ),
-    life: <Pane title="vita" accent="#8fa8c4" items={byFilter(life, lifeFilter)}
+    life: <Pane title="vita" accent={LIFE} items={byFilter(life, lifeFilter)}
                 filters={catsOf(life)} filter={lifeFilter} setFilter={setLifeFilter}
-                onOpen={onOpen} empty="nothing personal waiting" />,
+                onOpen={onOpen} empty="nothing personal waiting"
+                paneRef={el => { paneEl.current.life = el; }}
+                scrollRef={el => { scrollEl.current.life = el; }}
+                onScroll={remeasure} register={register('life')}
+                hover={hover} onHover={setHover} />,
   };
 
   return (
@@ -190,7 +350,9 @@ export default function TriPane({ categories = [], actions = [], scannedAt, onOp
         ))}
       </div>
 
-      <div className="vs-grid" data-active={pane} style={{ display: 'grid', gap: SP[3], minHeight: 0, flex: 1 }}>
+      <div ref={gridRef} className="vs-grid" data-active={pane}
+           style={{ position: 'relative', display: 'grid', minHeight: 0, flex: 1 }}>
+        <Wires wires={wires} hover={hover} />
         <div className="vs-col vs-work">{panes.work}</div>
         <div className="vs-col vs-feed">{panes.feed}</div>
         <div className="vs-col vs-life">{panes.life}</div>
@@ -202,13 +364,14 @@ export default function TriPane({ categories = [], actions = [], scannedAt, onOp
         </div>
       )}
       <style>{`
-        .vs-grid { grid-template-columns: minmax(0,1fr) minmax(0,1.3fr) minmax(0,1fr); }
-        .vs-col { display: flex; flex-direction: column; min-height: 0; }
+        .vs-grid { grid-template-columns: minmax(0,1fr) minmax(0,1.3fr) minmax(0,1fr); column-gap: 36px; }
+        .vs-col { display: flex; flex-direction: column; min-height: 0; position: relative; z-index: 1; }
         .vs-col > section { flex: 1; min-height: 0; }
-        /* Three columns is a lie on a phone: show one, chosen by the switcher. */
-        @media (max-width: 1000px) {
+        /* Three columns is a lie on a phone: show one, chosen by the switcher,
+           and there is nothing to wire together. */
+        @media (max-width: ${WIRE_MIN_WIDTH}px) {
           .vs-switcher { display: flex !important; }
-          .vs-grid { grid-template-columns: minmax(0,1fr); }
+          .vs-grid { grid-template-columns: minmax(0,1fr); column-gap: 0; }
           .vs-col { display: none; }
           .vs-grid[data-active="work"] .vs-work,
           .vs-grid[data-active="feed"] .vs-feed,
