@@ -2303,7 +2303,7 @@ async function nextActions() {
   try {
     const { rows } = await pool.query(
       `SELECT id, who, what, quote, detail, when_date, when_time, source_thread FROM commitments
-        WHERE status = 'unbooked' ORDER BY when_date NULLS LAST, first_seen_at LIMIT 5`);
+        WHERE status = 'unbooked' ORDER BY when_date NULLS LAST, first_seen_at LIMIT 8`);
     for (const r of rows) {
       const when = r.when_date ? ymd(r.when_date) : null;
       const known = await lookupContact(r.who).catch(() => null);
@@ -2550,25 +2550,28 @@ async function nextActions() {
   } catch (e) { console.error('actions: done —', e.message); }
 
   const NAG = new Set(['waiting-on-you', 'quote-owed', 'reply-owed']);
-  const nagging = out.some(a => NAG.has(a.kind));
-  const band = out.slice(0, nagging ? 6 : 4);
 
-  // Ranking by urgency alone buries whole categories. A day of client nags
-  // pushed every booking row off the band, and a busy work day buries the
-  // personal message he asked to be reminded about. Each of these keeps one
-  // slot, taken from the least urgent row not holding a slot of its own.
-  for (const kind of ['book', 'reply-owed']) {
-    if (band.some(a => a.kind === kind)) continue;
-    const want = out.find(a => a.kind === kind);
-    if (!want) continue;
-    for (let i = band.length - 1; i >= 0; i--) {
-      if (band[i].kind === 'book' || band[i].kind === 'reply-owed') continue;
-      band.splice(i, 1, want);
-      break;
-    }
+  // Bookings do not compete. Giving them one guaranteed slot was still the
+  // wrong shape: with several people having agreed a time, one showed and the
+  // rest stayed invisible. There are never many - the ledger serves a handful -
+  // and every one of them is a job he will otherwise not turn up to, so all of
+  // them are shown and the ranked rows fill whatever is left.
+  const bookings = out.filter(a => a.kind === 'book')
+                      .sort((a, b) => (a.at || 0) - (b.at || 0));   // soonest first
+  const rest = out.filter(a => a.kind !== 'book');
+  const nagging = rest.some(a => NAG.has(a.kind));
+  // Never shrink below two, so the band does not become bookings and nothing.
+  const room = Math.max(2, (nagging ? 6 : 4) - bookings.length);
+  const ranked = rest.slice(0, room);
+
+  // Work always out-urgencies a personal message, so a busy day buries the one
+  // he asked to be reminded about. It keeps a slot of its own.
+  if (ranked.length && !ranked.some(a => a.kind === 'reply-owed')) {
+    const want = rest.find(a => a.kind === 'reply-owed');
+    if (want) ranked.splice(ranked.length - 1, 1, want);
   }
-  band.sort((a, b) => b.urgency - a.urgency || (b.at || 0) - (a.at || 0));
-  return band;
+  ranked.sort((a, b) => b.urgency - a.urgency || (b.at || 0) - (a.at || 0));
+  return [...bookings, ...ranked];
 }
 
 // Group the collected items into the two reports and persist them. The model
