@@ -159,6 +159,10 @@ async function initDb() {
       first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
+    -- What the job actually is, in a sentence, read off the thread the
+    -- commitment came from. The extractor's WHAT is a few words copied out of
+    -- one line ("put them in"), which is not something you can turn up to.
+    ALTER TABLE commitments ADD COLUMN IF NOT EXISTS detail TEXT;
   `);
 }
 
@@ -1771,6 +1775,8 @@ async function refreshCommitments() {
     );
   }
 
+  await describeCommitments(threads);
+
   // Only supersede within the threads actually scanned — a thread that has
   // simply dropped out of the index's recent window must not cancel its jobs.
   const names = threads.map(t => t.name);
@@ -1782,6 +1788,40 @@ async function refreshCommitments() {
     await pool.query(`UPDATE commitments SET status='superseded', last_seen_at=NOW() WHERE id = ANY($1)`, [supersede]);
   }
   return { ok: true, found: extracted.length, superseded: supersede.length, scanned: threads.length };
+}
+
+// One sentence per commitment saying what the work is, written off the whole
+// conversation rather than the one line the extractor copied. Only for rows
+// that have none yet and are still unbooked, so this is a handful of calls on
+// the tick a new job appears and none at all on every other tick.
+async function describeCommitments(threads) {
+  const { rows } = await pool.query(
+    `SELECT id, who, what, quote, source_thread FROM commitments
+      WHERE detail IS NULL AND status = 'unbooked' ORDER BY first_seen_at DESC LIMIT 6`);
+  if (!rows.length) return 0;
+  const byName = new Map(threads.map(t => [t.name, t]));
+  let written = 0;
+  for (const r of rows) {
+    const t = byName.get(r.source_thread);
+    const convo = (t?.messages || []).slice(-14)
+      .map(m => `${m.outbound ? 'me' : 'them'}: ${String(m.text || '').replace(/\s+/g, ' ').slice(0, 300)}`)
+      .join('\n');
+    if (!convo) continue;
+    const prompt = `This is a text conversation between Jesse (an electrician, "me") and a customer ("them").
+
+${convo}
+
+In ONE sentence, say what the JOB is: the actual electrical work, where it is, and anything agreed about it. Write it the way you would write a line in a diary, so he knows what he is turning up to do. Do not mention the texting, do not greet, do not add advice. If the conversation never says what the work is, reply with exactly: UNCLEAR`;
+    let line = String(await askModel(prompt, 200) || '').replace(/\s+/g, ' ').trim().replace(/^["']|["']$/g, '');
+    if (!line || /^unclear\b/i.test(line)) line = '';
+    // Empty string, not NULL, when the thread never says what the work is -
+    // NULL is the "not looked at yet" state, and writing it back would ask
+    // the model the same unanswerable question on every tick forever.
+    await pool.query('UPDATE commitments SET detail=$1 WHERE id=$2', [line, r.id]);
+    if (line) written++;
+  }
+  if (written) console.log(`commitments: ${written} described`);
+  return written;
 }
 
 const openCommitments = async () => (await pool.query(
@@ -2243,7 +2283,7 @@ async function nextActions() {
   // Agreed in a message, absent from the calendar.
   try {
     const { rows } = await pool.query(
-      `SELECT id, who, what, quote, when_date, when_time FROM commitments
+      `SELECT id, who, what, quote, detail, when_date, when_time, source_thread FROM commitments
         WHERE status = 'unbooked' ORDER BY when_date NULLS LAST, first_seen_at LIMIT 5`);
     for (const r of rows) {
       const when = r.when_date ? ymd(r.when_date) : null;
@@ -2251,18 +2291,35 @@ async function nextActions() {
       const job = jobFor(r.who);
       const who = known?.display_name || job?.identifier || r.who;
       const said = String(r.what || '').trim();
-      // In order of how much it actually tells him about the job.
-      const work = (said && !THIN_WHAT.test(said) && said.length > 3) ? said
-                 : (job ? jobWork(job) : null)
+      // In order of how much it actually tells him about the job. detail is
+      // the sentence written off the whole thread and is almost always the
+      // best of them; the extractor's WHAT is a few words copied out of one
+      // line, which is how "put them in" ended up as the name of a job.
+      const work = String(r.detail || '').trim()
+                 || ((said && !THIN_WHAT.test(said) && said.length > 6) ? said : '')
+                 || (job ? jobWork(job) : '')
                  || String(r.quote || '').replace(/\s+/g, ' ').trim().slice(0, 160)
                  || 'work agreed over text';
       const place = known?.address || job?.address || null;
+      const phone = phoneLast9(r.who) ? r.who : (job?.phone || null);
       out.push({
         id: `book-${r.id}`, kind: 'book',
         urgency: when && when <= today ? 4 : 2,
-        title: `${work} — ${who}`,
-        detail: `${when ? `Agreed for ${when}` : 'No day pinned down yet'}`
-              + `${place ? `, at ${place}` : ''}. Not in the calendar.`,
+        // The row is a contact card: who, how to reach them, where, and what
+        // the job is. A title that was only the extracted phrase told him
+        // neither who it was nor what he would be doing.
+        person: {
+          name: who,
+          // Don't print the number twice when it is standing in for the name.
+          phone: phone && phone !== who ? phone : null,
+          address: place,
+          // A thread name that is not just a number is the name his phone has
+          // for them, which is better than anything else available here.
+          via: r.source_thread && r.source_thread !== r.who ? r.source_thread : null,
+        },
+        work,
+        title: who,
+        detail: `${when ? `Agreed for ${when}` : 'No day pinned down yet'}. Not in the calendar.`,
         quote: r.quote,
         // Structured, not a bare Google link: the button opens the booking
         // form so how long it will take and whether it needs parts get
@@ -2273,6 +2330,7 @@ async function nextActions() {
           date: when || today, time: r.when_time || '09:00',
           location: place || '', kind: 'sms', from: r.who,
         },
+        where: [phone && phone !== who ? phone : null, place].filter(Boolean).join(' · ') || null,
         href: calendarUrl(`${work} — ${who}`, when || today, r.when_time, r.quote, place),
         cta: when ? 'add to calendar' : 'pick a day in the calendar',
       });

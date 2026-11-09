@@ -75,10 +75,48 @@ export default function ActionBand({ actions = [], auth, onOpenBrowser }) {
               {LABEL[a.kind] || a.kind}
             </div>
 
+            {/* A commitment row is a contact card: who, how to reach them,
+                where, then the job. Leading with the extracted phrase gave a
+                row headed with a copied phrase and a bare number, which
+                answers neither
+                "who is this" nor "what am I turning up to do". */}
             <div style={{ fontFamily: FONT.sans, fontSize: FS.title, fontWeight: 600,
                           color: C.text1, lineHeight: 1.35, textTransform: 'none' }}>
               {a.title}
             </div>
+
+            {a.person && (a.person.phone || a.person.address || a.person.via) && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 1 }}>
+                {a.person.phone && (
+                  <div style={{ fontFamily: FONT.mono, fontSize: FS.ui, color: C.amber,
+                                textTransform: 'none', letterSpacing: '.02em' }}>
+                    {a.person.phone}
+                  </div>
+                )}
+                {a.person.address && (
+                  <div style={{ fontFamily: FONT.sans, fontSize: FS.meta, color: C.text2,
+                                textTransform: 'none', letterSpacing: 'normal' }}>{a.person.address}</div>
+                )}
+                {a.person.via && (
+                  <div style={{ fontFamily: FONT.sans, fontSize: FS.meta, color: C.text3,
+                                textTransform: 'none', letterSpacing: 'normal' }}>
+                    texting as “{a.person.via}”
+                  </div>
+                )}
+              </div>
+            )}
+
+            {a.person && a.work && (
+              <div style={{ marginTop: SP[1], paddingTop: SP[2], borderTop: `1px solid ${C.border}`,
+                            display: 'flex', flexDirection: 'column', gap: 3 }}>
+                <div style={{ fontFamily: FONT.mono, fontSize: FS.label, letterSpacing: '.08em',
+                              textTransform: 'uppercase', color: C.text3 }}>the job</div>
+                <div style={{ fontFamily: FONT.sans, fontSize: FS.body, lineHeight: 1.55,
+                              color: C.text1, textTransform: 'none', textWrap: 'pretty' }}>
+                  {a.work}
+                </div>
+              </div>
+            )}
 
             <div style={{ fontFamily: FONT.sans, fontSize: FS.body, lineHeight: 1.6,
                           color: C.text2, textTransform: 'none', textWrap: 'pretty' }}>
@@ -96,13 +134,13 @@ export default function ActionBand({ actions = [], auth, onOpenBrowser }) {
 
             {/* What the work actually is, straight off the job record - the
                 row is useless for preparing if it only names the client. */}
-            {a.work && (
+            {a.work && !a.person && (
               <div style={{ fontFamily: FONT.sans, fontSize: FS.body, lineHeight: 1.55,
                             color: C.text1, textTransform: 'none', textWrap: 'pretty' }}>
                 {a.work}
               </div>
             )}
-            {a.where && (
+            {a.where && !a.person && (
               <div style={{ fontFamily: FONT.mono, fontSize: FS.meta, color: C.text3,
                             textTransform: 'none', letterSpacing: 'normal' }}>
                 {a.where}
