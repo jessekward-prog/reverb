@@ -56,6 +56,36 @@ async function initDb() {
       content         TEXT NOT NULL,
       created_at      TIMESTAMPTZ DEFAULT NOW()
     );
+    -- Topics: the user's own tabs down the left rail. Kinder, daycare,
+    -- Peyton's school, receipts - subjects that must never be missed and that
+    -- do not belong to either the work or the life report. A topic is just a
+    -- few substrings; matching is done in code like every other rule, so a
+    -- topic always catches what it says it catches.
+    CREATE TABLE IF NOT EXISTS topics (
+      id         SERIAL PRIMARY KEY,
+      slug       TEXT UNIQUE NOT NULL,
+      label      TEXT NOT NULL,
+      patterns   TEXT NOT NULL,
+      summary    TEXT,
+      summary_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    -- One row per matching item, kept forever: this is the dated record you
+    -- scroll back through, so it is deliberately not rebuilt from the current
+    -- inbox (mail ages out of a 10-item pull in a day). item_id is the same
+    -- content hash the reports use, so the same email never files twice.
+    CREATE TABLE IF NOT EXISTS topic_entries (
+      id         SERIAL PRIMARY KEY,
+      topic_id   INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+      item_id    TEXT NOT NULL,
+      kind       TEXT,
+      from_label TEXT,
+      subject    TEXT,
+      snippet    TEXT,
+      seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      read_at    TIMESTAMPTZ,
+      UNIQUE (topic_id, item_id)
+    );
     CREATE TABLE IF NOT EXISTS swept_done (
       task_id    TEXT PRIMARY KEY,
       created_at TIMESTAMPTZ DEFAULT NOW()
@@ -1353,24 +1383,31 @@ ${listing}`;
 // the model does next. This is what moved the user's rules from the old dead
 // pull path onto the live report.
 async function annotateGrounded(items) {
-  const [{ rows: rules }, { rows: contactRows }] = await Promise.all([
+  const [{ rows: rules }, { rows: contactRows }, { rows: topics }] = await Promise.all([
     pool.query('SELECT pattern, action FROM rules'),
     pool.query('SELECT kind, identifier, tier, seen_count, replied_count, dismissed_count, last_seen_at FROM contacts'),
+    pool.query('SELECT id, slug, label, patterns FROM topics'),
   ]);
   const tierOf = new Map(contactRows.map(c => [`${c.kind}|${c.identifier}`, deriveTier(c)]));
   const out = [];
   for (const t of items) {
+    // A topic tab is a standing instruction: "always tell me about this".
+    // So it outranks every drop below it - a muted sender, an ignore rule,
+    // anything. Missing a kinder closure because the sender was muted months
+    // ago is exactly the failure these tabs exist to prevent.
+    const hits = topicHits(t, topics);
     const rule = matchRules(`${t.from || ''} ${t.subject || ''} ${t.snippet || ''} ${t.text || ''}`, rules);
-    if (rule === 'ignore') continue;
+    if (rule === 'ignore' && !hits.length) continue;
     const tier = tierOf.get(`${t.kind}|${normalizeIdentifier(t.kind, t.from)}`) || null;
     const money = hasMoneyFlag(`${t.subject || ''} ${t.snippet || ''}`);
     // See annotateAndFormat: a muted sender still gets through when the item
     // is about money, so muting the promos never costs you the invoice.
-    if (tier === 'muted' && !money) continue;
+    if (tier === 'muted' && !money && !hits.length) continue;
     out.push({
       ...t,
       tier: tier === 'vip' ? 'vip' : (t.tier || null),
-      rulePriority: rule === 'priority',
+      rulePriority: rule === 'priority' || hits.length > 0,
+      topics: hits.map(h => ({ slug: h.slug, label: h.label })),
       moneyFlag: money,
     });
   }
@@ -1995,6 +2032,156 @@ function noteHealth(source, state) {
   sourceHealth[source] = { state, at: Date.now() };
 }
 
+// ── Topics: the user's own tabs ───────────────────────────
+// Substring matching in code, never a model judgment - the whole reason these
+// tabs exist is that something about kinder or Peyton's school must never be
+// quietly dropped, and a model that "decides" relevance will eventually drop
+// one. A blank pattern is rejected at the API, and ignored here too: a topic
+// that matches everything is a topic that tells you nothing.
+const topicText = t => `${t.from || ''} ${t.displayName || ''} ${t.subject || ''} ${t.snippet || ''} ${t.text || ''}`.toLowerCase();
+const splitPatterns = raw => String(raw || '').split(',').map(p => p.trim()).filter(Boolean);
+function topicHits(t, topics) {
+  const hay = topicText(t);
+  return topics.filter(tp => splitPatterns(tp.patterns).some(p => hay.includes(p.toLowerCase())));
+}
+
+// Called once per auto tick with the raw pull. Files anything new and returns
+// which topics changed, so only those get a fresh write-up.
+async function fileTopics(items) {
+  const { rows: topics } = await pool.query('SELECT id, slug, label, patterns FROM topics');
+  if (!topics.length) return [];
+  const touched = new Set();
+  for (const t of items) {
+    const id = workItemId(t);
+    for (const tp of topicHits(t, topics)) {
+      const { rowCount } = await pool.query(
+        `INSERT INTO topic_entries (topic_id, item_id, kind, from_label, subject, snippet)
+         VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (topic_id, item_id) DO NOTHING`,
+        [tp.id, id, t.kind || null, t.displayName || t.from || null,
+         t.subject || null, String(t.text || t.snippet || '').slice(0, 600)]);
+      if (rowCount) touched.add(tp.id);
+    }
+  }
+  for (const id of touched) await writeTopicUpdate(id).catch(e => console.error('topic update:', e.message));
+  return [...touched];
+}
+
+// The standing update: what is going on in this topic right now, written off
+// the dated entries rather than off whatever happens to be in the inbox today.
+// Regenerated only when something new files, the same way the reports are.
+async function writeTopicUpdate(topicId) {
+  const [{ rows: [tp] }, { rows: entries }] = await Promise.all([
+    pool.query('SELECT label, patterns FROM topics WHERE id=$1', [topicId]),
+    pool.query(`SELECT kind, from_label, subject, snippet, seen_at FROM topic_entries
+                 WHERE topic_id=$1 ORDER BY seen_at DESC LIMIT 30`, [topicId]),
+  ]);
+  if (!tp || !entries.length) return;
+  const lines = entries.map(e =>
+    `${ymd(e.seen_at)} — ${e.from_label || e.kind}${e.subject ? ` — ${e.subject}` : ''}: `
+    + String(e.snippet || '').replace(/\s+/g, ' ').slice(0, 300)).join('\n');
+  const prompt = `These are the messages that have come in about "${tp.label}", newest first. Today is ${ymd(new Date())}.
+
+${lines}
+
+Write the user a short update on where this stands — 3 to 6 sentences, plain prose, no headings and no bullet points. Cover: what has happened lately, anything with a DATE or DEADLINE coming up, anything that is waiting on the user to do or pay something, and what is still unresolved. Quote dates, amounts and names exactly as they appear. If something important is missing or unclear, say so plainly rather than guessing. Do not pad it out and do not repeat the messages back line by line.`;
+  const summary = String(await askModel(prompt, 700) || '').trim();
+  if (summary) {
+    await pool.query('UPDATE topics SET summary=$1, summary_at=NOW() WHERE id=$2', [summary, topicId]);
+  }
+}
+
+// Fire-and-forget refile of the current pull. Guarded so two rapid edits
+// cannot stack two browser-driven pulls on top of each other.
+let backfilling = false;
+async function backfillTopics() {
+  if (backfilling) return;
+  backfilling = true;
+  try { await fileTopics(await collectRawItems()); }
+  catch (e) { console.error('topic backfill:', e.message); }
+  finally { backfilling = false; }
+}
+
+async function handleTopics(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  if (req.method === 'GET') {
+    const { rows } = await pool.query(
+      `SELECT t.id, t.slug, t.label, t.patterns, t.summary, t.summary_at,
+              COUNT(e.id) FILTER (WHERE e.read_at IS NULL) AS unread,
+              COUNT(e.id) AS total, MAX(e.seen_at) AS last_at
+         FROM topics t LEFT JOIN topic_entries e ON e.topic_id = t.id
+        GROUP BY t.id ORDER BY t.created_at`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(rows.map(r => ({ ...r, unread: Number(r.unread), total: Number(r.total) }))));
+    return;
+  }
+  if (req.method === 'POST') {
+    const { label, patterns } = JSON.parse(await readBody(req));
+    const list = splitPatterns(patterns);
+    if (!String(label || '').trim() || !list.length) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'a name and at least one keyword are required' }));
+      return;
+    }
+    const slug = String(label).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40)
+                 || `topic-${Date.now()}`;
+    try {
+      const { rows } = await pool.query(
+        'INSERT INTO topics (slug, label, patterns) VALUES ($1,$2,$3) RETURNING id, slug, label, patterns',
+        [slug, String(label).trim(), list.join(', ')]);
+      res.writeHead(201, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(rows[0]));
+      // Backfill from what is already on the list, so a new tab is not empty
+      // until the next thing arrives. AFTER the response, deliberately: this
+      // drives the browser bridge and takes tens of seconds, which is well
+      // inside the window where Cloudflare would give up on the request.
+      backfillTopics();
+    } catch (e) {
+      res.writeHead(409, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.code === '23505' ? 'there is already a tab with that name' : e.message }));
+    }
+  }
+}
+
+// One topic's dated report. Entries are grouped by the day they arrived, which
+// is what makes this readable as a record rather than a pile.
+async function handleTopic(req, res, slug) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const { rows: [tp] } = await pool.query(
+    'SELECT id, slug, label, patterns, summary, summary_at FROM topics WHERE slug=$1', [slug]);
+  if (!tp) { res.writeHead(404); res.end(JSON.stringify({ error: 'no such tab' })); return; }
+
+  if (req.method === 'DELETE') {
+    await pool.query('DELETE FROM topics WHERE id=$1', [tp.id]);
+    res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"ok":true}'); return;
+  }
+  if (req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    if (body.patterns !== undefined) {
+      const list = splitPatterns(body.patterns);
+      if (!list.length) { res.writeHead(400); res.end(JSON.stringify({ error: 'at least one keyword is required' })); return; }
+      await pool.query('UPDATE topics SET patterns=$1 WHERE id=$2', [list.join(', '), tp.id]);
+      backfillTopics();   // same reason as on create: too slow to hold a response open
+    }
+    if (body.read) await pool.query('UPDATE topic_entries SET read_at=NOW() WHERE topic_id=$1 AND read_at IS NULL', [tp.id]);
+    if (body.rewrite) await writeTopicUpdate(tp.id).catch(() => {});
+    const { rows: [fresh] } = await pool.query('SELECT summary, summary_at, patterns FROM topics WHERE id=$1', [tp.id]);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, ...fresh })); return;
+  }
+
+  const { rows: entries } = await pool.query(
+    `SELECT id, kind, from_label, subject, snippet, seen_at, read_at
+       FROM topic_entries WHERE topic_id=$1 ORDER BY seen_at DESC LIMIT 200`, [tp.id]);
+  const days = [];
+  for (const e of entries) {
+    const d = ymd(e.seen_at);
+    if (!days.length || days[days.length - 1].date !== d) days.push({ date: d, entries: [] });
+    days[days.length - 1].entries.push(e);
+  }
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ...tp, days, unread: entries.filter(e => !e.read_at).length }));
+}
+
 // ── Next actions: the pressure band ───────────────────────
 // Every row here is a state transition the data already shows, not a model
 // judgment - a thing agreed but not booked, a job whose day has passed, a job
@@ -2301,6 +2488,13 @@ async function autoTick() {
   ticking = true;
   try {
     const raw = await collectRawItems();
+    // Before the change gate, deliberately: an item can already be in a report
+    // that has not changed, and a topic that only files on a changed pull
+    // would miss it. Filing is a cheap INSERT ... ON CONFLICT DO NOTHING.
+    try {
+      const touched = await fileTopics(raw);
+      if (touched.length) console.log(`auto: ${touched.length} topic tab(s) updated`);
+    } catch (e) { console.error('auto topics:', e.message); }
     const hash = itemsHash(raw);
     if (hash === lastItemHash) {
       console.log(`auto: ${raw.length} items, unchanged`);
@@ -2365,6 +2559,9 @@ createServer(async (req, res) => {
     const tasksDoneMatch = u.match(/^\/api\/tasks\/([a-f0-9]+)\/done$/);
     if (tasksDoneMatch) return await handleTaskDone(req, res, tasksDoneMatch[1]);
     if (req.method === 'GET' && u === '/api/texts') return await handleTexts(req, res);
+    const topicMatch = u.match(/^\/api\/topics\/([a-z0-9-]+)$/);
+    if (u === '/api/topics') return await handleTopics(req, res);
+    if (topicMatch) return await handleTopic(req, res, topicMatch[1]);
     if (req.method === 'GET'  && u === '/api/contacts') return await handleContacts(req, res);
     if (req.method === 'POST' && u === '/api/contacts/signal') return await handleContactSignal(req, res);
     if (req.method === 'POST' && u === '/api/contacts/mute')   return await handleContactMute(req, res);

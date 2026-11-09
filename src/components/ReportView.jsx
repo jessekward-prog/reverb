@@ -5,6 +5,7 @@ import { authHeaders } from '../api.js';
 import CardDeck from './CardDeck.jsx';
 import CardGrid from './CardGrid.jsx';
 import ActionBand from './ActionBand.jsx';
+import TopicStrip from './TopicStrip.jsx';
 
 const CONTENT_MAX = 700; // matches Chat/Sweep so the nav pill lands in the same spot
 
@@ -233,6 +234,7 @@ function RulesDrawer({ open, auth, onClose }) {
 export default function ReportView({
   auth, onLockout, active, title, apiPath, emptyHint,
   onOpenChat, onOpenSweep, onOpenTasks, onOpenWork, onOpenLife, onOpenTexts, onOpenBrowser, onDraftReply,
+  topics, onView,
 }) {
   const [phase, setPhase] = useState('loading'); // 'loading' | 'ready'
   const [summary, setSummary] = useState('');
@@ -414,6 +416,8 @@ export default function ReportView({
               <div style={{ fontSize: 10 }}>{emptyHint}</div>
             </div>
           )}
+
+          <TopicStrip topics={topics} onView={onView} />
 
           {/* Above everything: the things that should not wait. */}
           <ActionBand actions={actions} auth={auth} onOpenBrowser={onOpenBrowser} />

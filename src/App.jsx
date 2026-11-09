@@ -9,6 +9,7 @@ import WorkView from './components/WorkView.jsx';
 import LifeView from './components/LifeView.jsx';
 import TextsView from './components/TextsView.jsx';
 import BrowserView from './components/BrowserView.jsx';
+import TopicView from './components/TopicView.jsx';
 import { getStoredAuth, saveAuth, clearStoredAuth, authHeaders } from './api.js';
 
 export default function App() {
@@ -21,6 +22,17 @@ export default function App() {
   const [view, setView]       = useState('home');
   const [draftPrompt, setDraftPrompt] = useState(null);
   const [outstanding, setOutstanding] = useState(0); // items chased 2+ days, for the rail badge
+  const [topics, setTopics] = useState([]);          // the user's own tabs, with unread counts
+
+  // The rail's own tabs. Refetched on every view change for the same reason
+  // the chase badge is: coming back from a tab should clear its badge.
+  const loadTopics = React.useCallback(() => {
+    if (!auth.token) return;
+    fetch('/api/topics', { headers: authHeaders(auth.token) })
+      .then(r => (r.ok ? r.json() : []))
+      .then(d => Array.isArray(d) && setTopics(d))
+      .catch(() => {});
+  }, [auth.token]);
 
   // Keep the rail's chase badge current: refetch the to-do list's chase count
   // on auth and whenever the view changes (so it updates after a sweep).
@@ -31,6 +43,8 @@ export default function App() {
       .then(d => d && setOutstanding(d.outstanding || 0))
       .catch(() => {});
   }, [stage, auth.token, view]);
+
+  useEffect(() => { if (stage === 'chat') loadTopics(); }, [stage, view, loadTopics]);
 
   useEffect(() => {
     const { token, role } = getStoredAuth();
@@ -88,6 +102,8 @@ export default function App() {
     onOpenLife:  () => setView('life'),
     onOpenTexts: () => setView('texts'),
     onOpenBrowser: () => setView('browser'),
+    onView: setView,
+    topics,
   };
 
   let content;
@@ -98,12 +114,16 @@ export default function App() {
   else if (view === 'life')    content = <LifeView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
   else if (view === 'texts')   content = <TextsView auth={auth} onLockout={handleLockout} {...nav} />;
   else if (view === 'browser') content = <BrowserView auth={auth} onLockout={handleLockout} {...nav} />;
+  else if (view.startsWith('topic:'))
+    content = <TopicView key={view} slug={view.slice(6)} auth={auth} onLockout={handleLockout}
+                         {...nav} onTopicsChanged={loadTopics} />;
   else content = <ChatView auth={auth} onLockout={handleLockout} {...nav}
                    draftPrompt={draftPrompt} onDraftConsumed={() => setDraftPrompt(null)} />;
 
   return (
     <div className="rv-app">
-      <NavRail active={view} onView={setView} onLockout={handleLockout} outstanding={outstanding} />
+      <NavRail active={view} onView={setView} onLockout={handleLockout} outstanding={outstanding}
+               topics={topics} auth={auth} onTopicsChanged={loadTopics} />
       <div className="rv-main">{content}</div>
     </div>
   );

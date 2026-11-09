@@ -28,6 +28,8 @@
   .rv-main { flex: 1; min-width: 0; height: 100dvh; }
   .nav-rail { display: flex; }
   .rv-head-nav { display: none !important; }
+  /* the rail carries the custom tabs at this width, so the strip goes away */
+  .topic-strip { display: none !important; }
 }
 
 /* Chat lays out as [conversation list][chat] on desktop; a plain block (chat

@@ -3,6 +3,7 @@ import { DitherField, CrtLayers, BACKDROP_CSS } from './CrtBackdrop.jsx';
 import { authHeaders } from '../api.js';
 import { C, FS, FONT, SP } from '../lib/design.js';
 import TriPane from './TriPane.jsx';
+import TopicStrip from './TopicStrip.jsx';
 
 // The whole day on one page. Nothing to press to make it current: it loads,
 // then refreshes itself quietly, because being asked to regenerate a list is
@@ -14,7 +15,8 @@ const PILL = [
 ];
 
 export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSweep,
-                                         onOpenTexts, onOpenBrowser, onDraftReply }) {
+                                         onOpenTexts, onOpenBrowser, onDraftReply,
+                                         topics, onView }) {
   const go = { chat: onOpenChat, sweep: onOpenSweep, texts: onOpenTexts, browser: onOpenBrowser };
   const [data, setData] = useState({ categories: [], actions: [], scannedAt: null });
   const [phase, setPhase] = useState('loading');
@@ -83,6 +85,11 @@ export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSwee
           ))}
         </nav>
       </header>
+
+      {/* Phone only - at desktop width the rail carries these. */}
+      <div style={{ position: 'relative', zIndex: 2, padding: `0 ${SP[4]}px` }}>
+        <TopicStrip topics={topics} onView={onView} />
+      </div>
 
       <main style={{ position: 'relative', zIndex: 2, flex: 1, minHeight: 0,
                      padding: `0 ${SP[4]}px calc(${SP[4]}px + env(safe-area-inset-bottom) * .5)`,
