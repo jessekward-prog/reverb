@@ -2433,8 +2433,12 @@ async function nextActions() {
   }
 
   out.sort((a, b) => b.urgency - a.urgency);
-  // Four is a list you act on; ten is a second to-do list.
-  return out.slice(0, 4);
+  // Four is a list you act on; ten is a second to-do list. The exception is a
+  // person left waiting: dropping one off the bottom is how it got missed in
+  // the first place, so the band stretches to six while any are open. They
+  // sort above everything else, so the extra slots are theirs.
+  const nagging = out.some(a => a.kind === 'waiting-on-you' || a.kind === 'quote-owed');
+  return out.slice(0, nagging ? 6 : 4);
 }
 
 // Group the collected items into the two reports and persist them. The model
