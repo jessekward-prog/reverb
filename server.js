@@ -1026,7 +1026,10 @@ async function handleJobPhoto(req, res, id) {
 // person awaiting a reply. Drop those here so they don't become report items.
 const AUTOMATED_SNIPPET = /\b(verification code|security code|is your\b.{0,20}\bcode|one.?time|do not (share|reply)|unsubscribe|password reset)\b/i;
 
-async function collectGroundedItems() {
+// Deterministic half: read every source and annotate from the rules and the
+// contact directory. No model call anywhere in here, which is what lets the
+// scheduler run it often and only pay for the model when something changed.
+async function collectRawItems() {
   // Unbooked jobs is deliberately NOT here: its .items are the raw messages it
   // inspects, not the jobs it finds (the finding is a model judgment on .text),
   // so pulling .items would label every recent text a "job". It stays a chat
@@ -1105,7 +1108,12 @@ async function collectGroundedItems() {
     items.push({ kind: 'cal', from: ev.text,
                  snippet: `${ev.date}${ev.time ? ' ' + ev.time : ''}${ev.location ? ' @ ' + ev.location : ''}`,
                  when: `${ev.date}${ev.time ? ' ' + ev.time : ''}`, text: ev.text, hintBucket: 'life' });
-  return briefConversations(await annotateGrounded(items));
+  return annotateGrounded(items);
+}
+
+// The full read: the facts, plus the model-written conversation briefs.
+async function collectGroundedItems() {
+  return briefConversations(await collectRawItems());
 }
 
 // A one-line snippet ("Yes Tuesday next week is good for us") carries none of
@@ -1785,10 +1793,9 @@ async function nextActions() {
   return out.slice(0, 4);
 }
 
-async function handleReportGenerate(req, res) {
-  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
-
-  const items = await collectGroundedItems();
+// Group the collected items into the two reports and persist them. The model
+// call lives in groupGrounded; everything else here is bookkeeping.
+async function buildReports(items) {
   // How long each item has already been on the list, so the per-category synopsis
   // can tell old from new ("some have been sitting a while and may be done").
   const { rows: seen } = await pool.query('SELECT task_id, first_seen_at FROM surfaced_items');
@@ -1805,6 +1812,23 @@ async function handleReportGenerate(req, res) {
   // so "first seen" means "first reported".
   await recordSurfaced('work', work.categories);
   await recordSurfaced('life', life.categories);
+  return { work, life };
+}
+
+async function handleReportGenerate(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+
+  generating = true;
+  let work, life;
+  try {
+    const items = await collectGroundedItems();
+    ({ work, life } = await buildReports(items));
+    // Tell the scheduler this content is already grouped, so its next tick
+    // doesn't immediately redo the work you just paid for by hand.
+    lastItemHash = itemsHash(items);
+  } finally {
+    generating = false;
+  }
 
   const scannedAt = new Date().toISOString();
   res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -1899,6 +1923,62 @@ async function handleLinkPreview(req, res) {
   }
 }
 
+// ── Auto-refresh ─────────────────────────────────
+// Being asked to press "generate" is the app making its problem yours, so the
+// server keeps itself current. Two tiers, because the two halves cost wildly
+// different amounts:
+//
+//   tier 1 (every AUTO_MS): read every source and hash what came back. All
+//           deterministic - browser reads and SQL, no model call.
+//   tier 2 (only when that hash changed): the model work - conversation
+//           briefs, grouping into reports, and the commitments ledger.
+//
+// So an idle day costs one browser sweep every ten minutes and nothing on the
+// GPU, while a new message is grouped and briefed within one tick of arriving.
+// Serial throughout: the bridge drives one browser and LM Studio is one GPU,
+// so a tick never overlaps itself or a manual generate.
+const AUTO_MS = Number(process.env.REVERB_AUTO_MS || 10 * 60 * 1000);
+let generating = false;   // a manual /api/report/generate is in flight
+let ticking = false;
+let lastItemHash = null;
+
+// Identity of the whole collection, not of its wording: workItemId is the same
+// content hash the done-list uses, so a re-read of unchanged sources hashes
+// identically and tier 2 is skipped.
+const itemsHash = items => djb2(items.map(workItemId).sort().join('|'));
+
+async function autoTick() {
+  if (ticking || generating) return;
+  ticking = true;
+  try {
+    const raw = await collectRawItems();
+    const hash = itemsHash(raw);
+    if (hash === lastItemHash) {
+      console.log(`auto: ${raw.length} items, unchanged`);
+      return;
+    }
+    const first = lastItemHash === null;
+    await buildReports(await briefConversations(raw));
+    lastItemHash = hash;
+    console.log(`auto: ${raw.length} items, ${first ? 'first run' : 'changed'} - reports rebuilt`);
+    const led = await refreshCommitments();
+    console.log('auto commitments:', JSON.stringify(led));
+  } catch (e) {
+    // Leave lastItemHash alone on failure so the next tick retries instead of
+    // treating a half-finished pass as the current state.
+    console.error('auto refresh failed:', e.message);
+  } finally {
+    ticking = false;
+  }
+}
+
+function startAutoRefresh() {
+  if (AUTO_MS <= 0) { console.log('auto refresh: off'); return; }
+  console.log(`auto refresh: every ${Math.round(AUTO_MS / 60000)}m`);
+  setTimeout(autoTick, 15_000).unref?.();   // let the browser bridge settle first
+  setInterval(autoTick, AUTO_MS);
+}
+
 // ── Router ────────────────────────────────────────────────
 createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -1957,4 +2037,5 @@ createServer(async (req, res) => {
 }).listen(PORT, async () => {
   await initDb();
   console.log(`reverb on :${PORT}`);
+  startAutoRefresh();
 });

@@ -12,8 +12,8 @@ export default defineConfig({
       injectRegister: false,
       includeAssets: ['icon-192.png', 'icon-512.png', 'apple-touch-icon.png', 'skull.png'],
       manifest: {
-        name: 'Reverb',
-        short_name: 'Reverb',
+        name: 'Vita Switch',
+        short_name: 'Vita Switch',
         description: 'Personal assistant for texts, calendar, and email, powered by LM Studio',
         theme_color: '#000000',
         background_color: '#000000',

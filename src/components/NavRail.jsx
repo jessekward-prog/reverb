@@ -6,13 +6,14 @@ import { INK, AMBER, EDGE, HAIR, RAISED, FILM } from './CrtBackdrop.jsx';
 // Hidden below 1024px by .nav-rail's `hidden lg:flex` (see style.css); the
 // per-view pill is hidden ABOVE 1024px, so exactly one is visible at any width.
 const ITEMS = [
+  { key: 'home',  label: 'vita switch', hint: 'everything at once' },
   { key: 'tasks', label: 'to-do', hint: 'the list' },
   { key: 'work',  label: 'work',  hint: 'business report' },
   { key: 'life',  label: 'life',  hint: 'personal report' },
   { key: 'sweep', label: 'sweep', hint: 'pull + generate' },
   { key: 'texts', label: 'texts', hint: 'message threads' },
   { key: 'browser', label: 'browser', hint: 'live logged-in tabs' },
-  { key: 'chat',  label: 'chat',  hint: 'ask reverb' },
+  { key: 'chat',  label: 'chat',  hint: 'ask vita or switch' },
 ];
 
 function Row({ item, active, onClick, outstanding }) {
@@ -35,7 +36,7 @@ function Row({ item, active, onClick, outstanding }) {
       <span style={{ flex: 1 }}>{item.label}</span>
       {/* the chase nudge rides on the championed to-do tab — the one list that
           pushes you to clear what's been sitting */}
-      {item.key === 'tasks' && outstanding > 0 && (
+      {(item.key === 'home' || item.key === 'tasks') && outstanding > 0 && (
         <span style={{
           flex: 'none', minWidth: 18, textAlign: 'center', fontSize: 10,
           color: AMBER, border: `1px solid ${AMBER}`, padding: '1px 5px', letterSpacing: 0,
@@ -56,8 +57,8 @@ export default function NavRail({ active, onView, onLockout, outstanding = 0 }) 
         padding: '20px 16px 16px', borderBottom: `1px solid ${HAIR}`,
         display: 'flex', flexDirection: 'column', gap: 3,
       }}>
-        <div style={{ color: AMBER, fontWeight: 700, letterSpacing: '.28em', fontSize: 13 }}>// REVERB</div>
-        <div style={{ color: 'rgba(232,232,228,.4)', fontSize: 10, letterSpacing: '.1em' }}>assistant</div>
+        <div style={{ color: AMBER, fontWeight: 700, letterSpacing: '.28em', fontSize: 13 }}>// VITA SWITCH</div>
+        <div style={{ color: 'rgba(232,232,228,.4)', fontSize: 10, letterSpacing: '.1em' }}>work + life</div>
       </div>
 
       <nav style={{ flex: 1, overflowY: 'auto', paddingTop: 6 }}>

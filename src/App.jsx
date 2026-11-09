@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import PinGate from './components/PinGate.jsx';
 import NavRail from './components/NavRail.jsx';
+import VitaSwitchView from './components/VitaSwitchView.jsx';
 import ChatView from './components/ChatView.jsx';
 import SweepView from './components/SweepView.jsx';
 import TasksView from './components/TasksView.jsx';
@@ -14,7 +15,10 @@ export default function App() {
   const [stage, setStage]     = useState('loading'); // 'loading' | 'pin' | 'chat'
   const [pinMode, setPinMode] = useState('enter');   // 'setup' | 'enter'
   const [auth, setAuth]       = useState({ token: null, role: null });
-  const [view, setView]       = useState('tasks');   // 'tasks' | 'chat' | 'sweep' | 'work' | 'life' | 'texts' | 'browser' — to-do is the landing tab
+  // 'home' | 'tasks' | 'chat' | 'sweep' | 'work' | 'life' | 'texts' | 'browser'
+  // home is the Vita Switch page: work, the feed and life all at once, which is
+  // what you land on. The single-report tabs stay for looking at one half.
+  const [view, setView]       = useState('home');
   const [draftPrompt, setDraftPrompt] = useState(null);
   const [outstanding, setOutstanding] = useState(0); // items chased 2+ days, for the rail badge
 
@@ -87,7 +91,8 @@ export default function App() {
   };
 
   let content;
-  if (view === 'sweep')        content = <SweepView auth={auth} onLockout={handleLockout} {...nav} />;
+  if (view === 'home')         content = <VitaSwitchView auth={auth} onLockout={handleLockout} {...nav} />;
+  else if (view === 'sweep')        content = <SweepView auth={auth} onLockout={handleLockout} {...nav} />;
   else if (view === 'tasks')   content = <TasksView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
   else if (view === 'work')    content = <WorkView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
   else if (view === 'life')    content = <LifeView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
