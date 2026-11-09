@@ -568,3 +568,59 @@ export async function getSwitchcraftJobs() {
   }).join('\n\n');
   return { text, items };
 }
+
+// The bot could read everything and send a text, but not put anything in the
+// calendar - so "I just got off the phone to Pat, book him in Thursday 9am"
+// dead-ended in advice. This writes the event, the same way the card's manual
+// form does: the pre-filled event opens in the logged-in calendar tab and the
+// user presses save there. No OAuth, no API key, no silent write.
+export const ADD_TO_CALENDAR_TOOL = {
+  type: 'function',
+  function: {
+    name: 'add_to_calendar',
+    description: "Put an appointment or job in the user's Google Calendar. Use it whenever they say to book, schedule, diarise or add something - including work agreed on a phone call, where there is no message to read. It opens the event pre-filled in their calendar for them to save; it does not write silently. Resolve relative days (\"Thursday\", \"tomorrow\") to a real date yourself before calling.",
+    parameters: {
+      type: 'object',
+      properties: {
+        title:        { type: 'string', description: 'What the event is, e.g. "Switchboard upgrade - Pat Monaghan".' },
+        date:         { type: 'string', description: 'The day, as YYYY-MM-DD.' },
+        time:         { type: 'string', description: '24h start time as HH:MM. Omit for an all-day entry.' },
+        durationMins: { type: 'integer', description: 'How long, in minutes. Defaults to 60.' },
+        location:     { type: 'string', description: 'Address, if there is one. A known client\'s address is filled in automatically.' },
+        contact:      { type: 'string', description: "Who it is with, if anyone - a name or number. Used to look up their address." },
+      },
+      required: ['title', 'date'],
+    },
+  },
+};
+
+export const TODO_TOOL = {
+  type: 'function',
+  function: {
+    name: 'get_todo_list',
+    description: "Read the user's actual to-do list - the ranked cards they are looking at in the app, work and life merged, with each item's id. Use this for \"what's on my list\", \"what should I do first\", \"what's been sitting too long\", and ALWAYS before marking anything done, since that needs the item's id from here. This is the same list the screen shows, so do not rebuild it from the raw sources.",
+    parameters: {
+      type: 'object',
+      properties: {
+        bucket: { type: 'string', enum: ['all', 'work', 'life'], description: 'Which half. Defaults to all.' },
+      },
+    },
+  },
+};
+
+export const MARK_DONE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'mark_item_done',
+    description: "Clear an item off the to-do list once it is handled. The id must come from get_todo_list - call that first and match the item by what it says, never guess an id. Only use it when the user says something is done or dealt with.",
+    parameters: {
+      type: 'object',
+      properties: {
+        id:   { type: 'string', description: 'The item id from get_todo_list.' },
+        kind: { type: 'string', description: "The item's kind from get_todo_list, e.g. sms or job." },
+        from: { type: 'string', description: "The item's from field from get_todo_list." },
+      },
+      required: ['id'],
+    },
+  },
+};

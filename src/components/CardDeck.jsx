@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence, useMotionValue, useTransform, useReducedMotion } from 'framer-motion';
 import ItemCard, { SHELF } from './ItemCard.jsx';
+import TaskPanel from './TaskPanel.jsx';
 import { C, FS, FONT } from '../lib/design.js';
 
 // Focus mode: one pile, one card at a time. Swipe right = done, swipe left =
@@ -24,8 +25,8 @@ const haptic = {
 };
 
 export default function CardDeck({
-  categories, tints, context, calState, initialIndex = null,
-  onDone, onIgnore, onAddToCal, onLoadContext, onDraftReply, onUndo, onExit,
+  categories, tints, auth, initialIndex = null,
+  onDone, onIgnore, onOpenBrowser, onOpenChat, onUndo, onExit,
 }) {
   // Index, not label: the model can emit two categories with the SAME name
   // (seen live - two piles both called "to do"), and looking a pile up by
@@ -115,11 +116,12 @@ export default function CardDeck({
     clearTimeout(undoTimer.current);
   }
 
+  // Opening the card swaps it for TaskPanel, which loads its own thread and
+  // carries the actions. Drag is already off while it's open, so the composer
+  // and the calendar form can be typed into without the card flying away.
   function toggle() {
     if (dragged.current) { dragged.current = false; return; }
-    const next = !expanded;
-    setExpanded(next);
-    if (next && top && (top.kind === 'sms' || top.kind === 'meta')) onLoadContext?.(top);
+    setExpanded(e => !e);
   }
 
   // ── Pile picker ───────────────────────────────────────────
@@ -155,8 +157,6 @@ export default function CardDeck({
     );
   }
 
-  const isText = top && (top.kind === 'sms' || top.kind === 'meta');
-  const cal = top ? calState[top.id] : null;
   const seat = total - queue.length + 1;
   const ghost = {
     appearance: 'none', border: `1px solid ${SHELF.border}`, borderRadius: 6,
@@ -244,16 +244,17 @@ export default function CardDeck({
                 setTimeout(() => { dragged.current = false; }, 0);
               }}
             >
-              <ItemCard t={top} tint={tint} expanded={expanded} entry={context[top.id]}
-                        cal={cal} onToggle={toggle} bodyMax={6}
-                        style={{ borderColor: SHELF.borderHi }}
-                        actions={[
-                          { label: expanded ? 'close' : (isText ? 'thread' : 'details'), onPress: toggle },
-                          ...(top.reply ? [{ label: 'reply', onPress: () => onDraftReply?.(top) }] : []),
-                          ...(isText ? [{ label: cal === 'adding' ? 'adding…' : 'add to cal',
-                                          onPress: e => onAddToCal?.(top, e) }] : []),
-                          { label: 'ignore', onPress: commitIgnore },
-                        ]} />
+              {expanded
+                ? <TaskPanel t={top} auth={auth} onClose={toggle}
+                             onDone={() => commitDone()}
+                             onOpenBrowser={onOpenBrowser} onOpenChat={onOpenChat} />
+                : <ItemCard t={top} tint={tint} expanded={false} entry={null} cal={null}
+                            onToggle={toggle} bodyMax={6}
+                            style={{ borderColor: SHELF.borderHi }}
+                            actions={[
+                              { label: top.reply ? 'open · reply' : 'open', onPress: toggle, strong: true },
+                              { label: 'ignore', onPress: commitIgnore },
+                            ]} />}
             </motion.div>
           </AnimatePresence>
         </div>

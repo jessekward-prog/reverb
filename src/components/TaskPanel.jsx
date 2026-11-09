@@ -25,10 +25,15 @@ const READABLE = new Set(['sms', 'meta']);
 // which would open the form on the wrong day every morning.
 const ymdLocal = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
+// textTransform: none is load-bearing, not decoration - this panel also renders
+// inside the report tabs, whose root sets uppercase for the terminal chrome,
+// and text-transform is inherited. Without it you type a client's address and
+// the field shouts it back at you.
 const field = {
   background: C.bg, color: C.text1, border: `1px solid ${C.border}`, borderRadius: 6,
   padding: '10px 11px', fontFamily: FONT.sans, fontSize: FS.body, minHeight: 42,
-  outline: 'none', width: '100%', boxSizing: 'border-box',
+  outline: 'none', width: '100%', boxSizing: 'border-box', textTransform: 'none',
+  letterSpacing: 'normal',
 };
 
 export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onOpenChat }) {
@@ -38,6 +43,7 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
   const [busy, setBusy]       = useState(null);   // 'drafting' | 'sending' | null
   const [note, setNote]       = useState('');
   const [cal, setCal]         = useState(null);
+  const [detail, setDetail]   = useState(null);   // the expanded brief, on request
   const [calForm, setCalForm] = useState(null);   // the manual add, when there's nothing to read
   const [calUrl, setCalUrl]   = useState(null);
   const boxRef = useRef(null);
@@ -104,6 +110,21 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
       .finally(() => setBusy(null));
   }
 
+  // A card is a summary by construction. When it isn't enough, this reads the
+  // whole thread (or the whole job record) back and writes the longer version,
+  // so the answer to "what is this actually about" is one press away instead of
+  // a trip out of the app.
+  function expand() {
+    if (busy === 'reading') return;
+    setBusy('reading'); setDetail({ loading: true });
+    fetch('/api/item/detail', { method: 'POST', headers: jsonHead, body: JSON.stringify(t) })
+      .then(r => r.json())
+      .then(d => setDetail(d.detail ? { text: d.detail, grounded: d.grounded }
+                                    : { error: d.error || 'the model had nothing to add' }))
+      .catch(() => setDetail({ error: 'could not reach the model' }))
+      .finally(() => setBusy(null));
+  }
+
   // A date out of whatever the item already knows, so the form opens on
   // something sensible rather than an empty box.
   function seedForm(why) {
@@ -152,6 +173,7 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
   const actions = [
     channel && { label: composing ? 'hide reply' : '✍ reply', strong: !composing,
                  onPress: () => (composing ? setCompose(false) : openComposer()) },
+    { label: busy === 'reading' ? 'reading…' : (detail ? '🔍 re-read it' : '🔍 more detail'), onPress: expand },
     (t.kind === 'email' || t.kind === 'bizemail') && { label: '✉ open in gmail', onPress: () => onOpenBrowser?.() },
     t.kind !== 'cal' && { label: '📅 add to calendar', onPress: addToCal },
     { label: '💬 ask about this', onPress: () => onOpenChat?.(t) },
@@ -168,6 +190,25 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
       style={{ margin: `${SP[2]}px 0 ${SP[3]}px` }}>
       <ItemCard t={t} tint={k.tint} expanded entry={entry} cal={cal} actions={actions}
                 onToggle={() => onClose?.()} />
+
+      {detail && (
+        <div style={{ border: `1px solid ${C.border}`, borderTop: 0,
+                      borderRadius: `0 0 ${C.radius}px ${C.radius}px`,
+                      background: C.surface2, padding: SP[3],
+                      display: 'flex', flexDirection: 'column', gap: SP[2] }}>
+          <div style={{ display: 'flex', gap: SP[2], fontFamily: FONT.mono, fontSize: FS.label,
+                        letterSpacing: '.08em', textTransform: 'uppercase', color: C.text3 }}>
+            <span>the longer version</span>
+            <span style={{ flex: 1 }} />
+            {detail.grounded && <span>from the {detail.grounded}</span>}
+          </div>
+          <div style={{ fontFamily: FONT.sans, fontSize: FS.body, lineHeight: 1.6,
+                        textWrap: 'pretty', whiteSpace: 'pre-wrap', textTransform: 'none',
+                        letterSpacing: 'normal', color: detail.error ? C.danger : C.text1 }}>
+            {detail.loading ? 'reading it all back…' : (detail.text || detail.error)}
+          </div>
+        </div>
+      )}
 
       {calForm && (
         <div style={{ border: `1px solid ${C.borderHi}`, borderTop: 0,
@@ -221,7 +262,8 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
       )}
 
       {calUrl && (
-        <div style={{ padding: `${SP[2]}px ${SP[3]}px`, fontFamily: FONT.sans, fontSize: FS.meta }}>
+        <div style={{ padding: `${SP[2]}px ${SP[3]}px`, fontFamily: FONT.sans, fontSize: FS.meta,
+                      textTransform: 'none' }}>
           <a href={calUrl} target="_blank" rel="noreferrer" style={{ color: C.amber }}>
             the calendar tab didn't take it — open the event here
           </a>
@@ -248,7 +290,7 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
               width: '100%', boxSizing: 'border-box', resize: 'vertical',
               background: C.bg, color: C.text1, border: `1px solid ${C.border}`,
               borderRadius: 6, padding: SP[3], fontFamily: FONT.sans, fontSize: FS.body,
-              lineHeight: 1.5, outline: 'none',
+              lineHeight: 1.5, outline: 'none', textTransform: 'none', letterSpacing: 'normal',
             }} />
 
           <div style={{ display: 'flex', alignItems: 'center', gap: SP[2], flexWrap: 'wrap' }}>
@@ -273,7 +315,7 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
           </div>
 
           {note && (
-            <div style={{ fontFamily: FONT.sans, fontSize: FS.meta,
+            <div style={{ fontFamily: FONT.sans, fontSize: FS.meta, textTransform: 'none',
                           color: note.startsWith('sent') ? C.amber : C.danger }}>{note}</div>
           )}
         </div>

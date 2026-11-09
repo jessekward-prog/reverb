@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { DitherField, CrtLayers, BACKDROP_CSS, INK, AMBER,
          EDGE, RULE, HAIR, WELL, RAISED, FILM, ROW, PANEL } from './CrtBackdrop.jsx';
 import { authHeaders } from '../api.js';
-import { KINDS } from '../lib/kinds.js';
 import CardDeck from './CardDeck.jsx';
 import CardGrid from './CardGrid.jsx';
 import ActionBand from './ActionBand.jsx';
@@ -241,8 +240,6 @@ export default function ReportView({
   const [actions, setActions] = useState([]);
   const [scannedAt, setScannedAt] = useState(null);
   const [outstanding, setOutstanding] = useState(0);
-  const [context, setContext] = useState({});   // itemId -> {loading, messages} full thread
-  const [calState, setCalState] = useState({});  // itemId -> 'adding' | 'done' | error string
   const [expandedId, setExpandedId] = useState(null);
   const [toast, setToast] = useState('');
   const [peopleOpen, setPeopleOpen] = useState(false);
@@ -333,38 +330,6 @@ export default function ReportView({
       headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
       body: JSON.stringify({ done: false }),
     }).then(() => load()).catch(() => {});
-  }
-
-  // Pull the full thread behind an item so its one-line snippet makes sense.
-  function loadContext(t) {
-    if (context[t.id]) return; // already loading/loaded
-    setContext(c => ({ ...c, [t.id]: { loading: true, messages: [] } }));
-    fetch(`/api/item/context?from=${encodeURIComponent(t.from)}`, { headers: authHeaders(auth?.token) })
-      .then(r => (r.ok ? r.json() : { messages: [] }))
-      .then(d => setContext(c => ({ ...c, [t.id]: { loading: false, messages: d.messages || [] } })))
-      .catch(() => setContext(c => ({ ...c, [t.id]: { loading: false, messages: [] } })));
-  }
-
-  // Extract the agreed event from the thread and open it pre-filled in the live
-  // calendar tab; the user saves it there. Switches them to that tab on success.
-  function addToCal(t, e) {
-    e?.stopPropagation();
-    setCalState(s => ({ ...s, [t.id]: 'adding' }));
-    fetch('/api/item/tocal', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
-      body: JSON.stringify({ from: t.from, text: t.text }),
-    })
-      .then(r => r.json())
-      .then(d => {
-        if (d.error) { setCalState(s => ({ ...s, [t.id]: d.error })); return; }
-        setCalState(s => ({ ...s, [t.id]: 'done' }));
-        setToast(`event ready in calendar — hit save`);
-        clearTimeout(toastTimer.current);
-        toastTimer.current = setTimeout(() => setToast(''), 3000);
-        onOpenBrowser?.();
-      })
-      .catch(() => setCalState(s => ({ ...s, [t.id]: 'could not reach calendar' })));
   }
 
   const total = categories.reduce((sum, c) => sum + c.items.length, 0);
@@ -497,13 +462,11 @@ export default function ReportView({
               <CardDeck
                 categories={categories}
                 tints={TINTS}
-                context={context}
-                calState={calState}
+                auth={auth}
                 onDone={t => dismiss(t.id, t)}
                 onIgnore={t => dismiss(t.id, null)}
-                onAddToCal={(t, e) => addToCal(t, e)}
-                onLoadContext={t => loadContext(t)}
-                onDraftReply={t => onDraftReply?.(t)}
+                onOpenBrowser={onOpenBrowser}
+                onOpenChat={t => onDraftReply?.(t)}
                 onUndo={t => undoDone(t)}
                 initialIndex={focusIndex}
                 onExit={() => setFocusIndex(null)}
@@ -516,18 +479,13 @@ export default function ReportView({
               <CardGrid
                 categories={categories}
                 tints={TINTS}
-                context={context}
-                calState={calState}
+                auth={auth}
                 expandedId={expandedId}
-                onToggle={t => {
-                  const open = expandedId !== t.id;
-                  setExpandedId(open ? t.id : null);
-                  if (open && (t.kind === 'sms' || t.kind === 'meta')) loadContext(t);
-                }}
+                onToggle={t => setExpandedId(id => (id === t.id ? null : t.id))}
                 onDone={(t, e) => dismiss(t.id, t, e)}
                 onIgnore={(t, e) => dismiss(t.id, null, e)}
-                onAddToCal={(t, e) => addToCal(t, e)}
-                onDraftReply={t => onDraftReply?.(t)}
+                onOpenBrowser={onOpenBrowser}
+                onOpenChat={t => onDraftReply?.(t)}
                 onFocus={(c, ci) => { setFocusIndex(ci); pickMode('deck'); }}
               />
             </div>

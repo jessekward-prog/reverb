@@ -1,6 +1,7 @@
 import React from 'react';
 import { motion } from 'framer-motion';
 import ItemCard, { SHELF } from './ItemCard.jsx';
+import TaskPanel from './TaskPanel.jsx';
 import { C, FS, FONT } from '../lib/design.js';
 
 // ShelfStation's card grid: everything visible at once, each card carrying its
@@ -8,9 +9,15 @@ import { C, FS, FONT } from '../lib/design.js';
 // for working one pile down. Category grouping is kept (the synopsis is written
 // per category and is the agent's read on the pile), with the legend dot that
 // ShelfStation uses to tie a card back to its group.
+//
+// Opening a card hands it to TaskPanel - the same action surface the Vita
+// Switch page uses. The old expanded card could only show you the thread and
+// then send you elsewhere to act on it, and its add-to-cal dead-ended in an
+// error whenever there was no conversation to read. One panel, so the two
+// surfaces can't offer different things.
 export default function CardGrid({
-  categories, tints, context, calState, expandedId,
-  onToggle, onDone, onIgnore, onAddToCal, onDraftReply, onFocus,
+  categories, tints, auth, expandedId,
+  onToggle, onDone, onIgnore, onOpenBrowser, onOpenChat, onFocus,
 }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 26 }}>
@@ -45,26 +52,28 @@ export default function CardGrid({
 
             <div style={{ display: 'grid', gap: 12,
                           gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))' }}>
-              {c.items.map(t => {
-                const isText = t.kind === 'sms' || t.kind === 'meta';
-                const expanded = expandedId === t.id;
-                return (
+              {c.items.map(t => (
+                expandedId === t.id ? (
+                  <div key={t.id} style={{ gridColumn: '1 / -1' }}>
+                    <TaskPanel
+                      t={t} auth={auth}
+                      onClose={() => onToggle?.(t)}
+                      onDone={item => onDone?.(item)}
+                      onOpenBrowser={onOpenBrowser}
+                      onOpenChat={onOpenChat} />
+                  </div>
+                ) : (
                   <ItemCard
-                    key={t.id} t={t} tint={tint} expanded={expanded}
-                    entry={context[t.id]} cal={calState[t.id]}
+                    key={t.id} t={t} tint={tint} expanded={false} entry={null} cal={null}
                     onToggle={() => onToggle?.(t)}
-                    style={expanded ? { gridColumn: '1 / -1', borderColor: SHELF.borderHi } : undefined}
                     actions={[
-                      { label: expanded ? 'close' : (isText ? 'thread' : 'details'), onPress: () => onToggle?.(t) },
-                      ...(t.reply ? [{ label: 'reply', onPress: () => onDraftReply?.(t) }] : []),
-                      ...(isText ? [{ label: calState[t.id] === 'adding' ? 'adding…' : 'add to cal',
-                                      onPress: e => onAddToCal?.(t, e) }] : []),
+                      { label: t.reply ? 'open · reply' : 'open', onPress: () => onToggle?.(t), strong: true },
                       { label: 'ignore', onPress: e => onIgnore?.(t, e) },
-                      { label: 'done ✓', onPress: e => onDone?.(t, e), strong: true },
+                      { label: 'done ✓', onPress: e => onDone?.(t, e) },
                     ]}
                   />
-                );
-              })}
+                )
+              ))}
             </div>
           </div>
         );

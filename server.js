@@ -8,6 +8,7 @@ import {
   TEXTS_TOOL, SEARCH_TEXTS_TOOL, searchTexts, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL,
   WAITING_TOOL, getWaitingReplies, UNBOOKED_JOBS_TOOL, getUnbookedJobs, DRAFT_TEXT_TOOL,
   SEARCH_EMAIL_TOOL, searchEmail,
+  ADD_TO_CALENDAR_TOOL, TODO_TOOL, MARK_DONE_TOOL,
   getRecentTexts, getRecentTextsBrief, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
   fetchThreads, fetchEvents, fetchChannel,
 } from './src/lib/tools.js';
@@ -362,7 +363,64 @@ async function proxyModels(req, res) {
   }
 }
 
-const TOOLS = [DRAFT_TEXT_TOOL, SEARCH_EMAIL_TOOL, WAITING_TOOL, UNBOOKED_JOBS_TOOL, TEXTS_TOOL, SEARCH_TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
+const TOOLS = [DRAFT_TEXT_TOOL, ADD_TO_CALENDAR_TOOL, TODO_TOOL, MARK_DONE_TOOL, SEARCH_EMAIL_TOOL, WAITING_TOOL, UNBOOKED_JOBS_TOOL, TEXTS_TOOL, SEARCH_TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
+
+// ── What the chat can do, not just read ───────────────────
+// The bot had every source and a send button but no way to finish anything:
+// it could tell you a job wasn't booked and then leave you to book it. These
+// three close that loop, and each one maps onto a button the cards already
+// have, so the two surfaces can't drift into doing different things.
+
+async function calendarForChat(args = {}) {
+  if (!args.date || !/^\d{4}-\d{2}-\d{2}$/.test(String(args.date))) {
+    return 'No event was created: a real date in YYYY-MM-DD form is required. Ask the user which day, or work it out from today, and call again.';
+  }
+  const known = args.contact ? await lookupContact(args.contact).catch(() => null) : null;
+  const title = String(args.title || 'Job').slice(0, 180);
+  const { url, navigated } = await openCalendarDraft({
+    title,
+    date: args.date,
+    time: /^\d{1,2}:\d{2}$/.test(String(args.time || '')) ? args.time : '',
+    durationMins: Number(args.durationMins) || 60,
+    place: args.location || known?.address || null,
+    details: `Added from Vita Switch chat${known?.display_name ? ` — ${known.display_name}` : ''}.`,
+  });
+  const when = `${args.date}${args.time ? ` at ${args.time}` : ' (all day)'}`;
+  return navigated
+    ? `"${title}" is open and pre-filled in the user's calendar tab for ${when}. Tell them it is ready and that they press save in the calendar to confirm it — it is NOT saved yet. Do not claim you booked it.`
+    : `The calendar tab could not be opened, so nothing is pre-filled. Give the user this link to open the event themselves: ${url}`;
+}
+
+async function todoForChat({ bucket = 'all' } = {}) {
+  let list;
+  try { list = await buildTaskList(); }
+  catch (e) { return `Could not read the to-do list: ${e.message}`; }
+  const cats = (list.categories || [])
+    .filter(c => bucket === 'all' || c.bucket === bucket);
+  if (!cats.length) return 'The to-do list is empty — nothing is outstanding.';
+  const block = cats.map(c => {
+    const rows = c.items.map(t => {
+      const age = daysOpen(t.firstSeenAt);
+      return `  - [id ${t.id}] (${t.kind}${t.from ? `, ${t.from}` : ''}) ${String(t.text || '').replace(/\s+/g, ' ')}`
+        + `${t.when ? ` — ${t.when}${t.overdue ? ' OVERDUE' : ''}` : ''}`
+        + `${age >= 2 ? ` — sitting ${age} days` : ''}`
+        + `${t.brief ? `\n      where it stands: ${t.brief}` : ''}`;
+    }).join('\n');
+    return `${c.label} (${c.bucket}):${c.synopsis ? `\n  ${c.synopsis}` : ''}\n${rows}`;
+  }).join('\n\n');
+  return `The user's to-do list as the app ranks it, highest first. ${list.summary}\n\n${block}\n\nThe ids are needed for mark_item_done. Answer from this list; do not go and re-read the raw sources.`;
+}
+
+async function markDoneForChat({ id, kind, from } = {}) {
+  if (!id || !/^[a-f0-9]{6,}$/.test(String(id))) {
+    return 'Nothing was marked done: a valid item id from get_todo_list is required. Call get_todo_list and use the id it gives for the item the user means.';
+  }
+  try {
+    await pool.query('INSERT INTO swept_done (task_id) VALUES ($1) ON CONFLICT (task_id) DO NOTHING', [id]);
+    if (kind && from) await signalContact(pool, kind, normalizeIdentifier(kind, from), 'dismiss').catch(() => {});
+    return `Item ${id} is cleared off the to-do list. Confirm that briefly; it is gone from the user's cards already.`;
+  } catch (e) { return `Could not mark it done: ${e.message}`; }
+}
 
 async function proxyChat(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
@@ -406,6 +464,14 @@ async function proxyChat(req, res) {
             ? `A ${channel} draft to ${who.name || who.number} is now in front of the user with a send button. It has NOT been sent. Tell them it is ready and let them press send; do not claim you sent it.`
             : `No phone number is on file for "${args.to}", so nothing can be drafted to them. Tell the user that and ask for the number.`,
         });
+      } else if (tc.function.name === 'add_to_calendar') {
+        res.write(`data: ${JSON.stringify({ type: 'status', message: 'Opening the calendar…' })}\n\n`);
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await calendarForChat(args) });
+      } else if (tc.function.name === 'get_todo_list') {
+        res.write(`data: ${JSON.stringify({ type: 'status', message: 'Reading the to-do list…' })}\n\n`);
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await todoForChat(args) });
+      } else if (tc.function.name === 'mark_item_done') {
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await markDoneForChat(args) });
       } else if (tc.function.name === 'get_waiting_replies') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking who is waiting…' })}\n\n`);
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getWaitingReplies(args)).text });
@@ -829,6 +895,15 @@ const groupHeat = c => c.items.reduce((m, t) => Math.max(m, taskScore(t)), 0);
 
 async function handleTasks(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const payload = await buildTaskList();
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(payload));
+}
+
+// The to-do list, exactly as the cards see it. Factored out so the chat can
+// answer "what's on my list" from the same ranked data rather than re-reading
+// every source and arriving at a different answer than the screen shows.
+async function buildTaskList() {
   const [work, life] = await Promise.all([
     readSummaryTable('work_summary'), readSummaryTable('life_summary'),
   ]);
@@ -847,8 +922,7 @@ async function handleTasks(req, res) {
     ? `${total} ${total === 1 ? 'thing' : 'things'} on the list${chase ? `, ${chase} need chasing` : ''}.`
     : 'nothing on the list right now.';
 
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ actions: await nextActions().catch(() => []), summary, categories, scannedAt, outstanding: chase }));
+  return { actions: await nextActions().catch(() => []), summary, categories, scannedAt, outstanding: chase };
 }
 
 // ── Generate pipeline: classify -> work report -> life report ───────────
@@ -1026,6 +1100,17 @@ async function handleJobPhoto(req, res, id) {
 // person awaiting a reply. Drop those here so they don't become report items.
 const AUTOMATED_SNIPPET = /\b(verification code|security code|is your\b.{0,20}\bcode|one.?time|do not (share|reply)|unsubscribe|password reset)\b/i;
 
+// Only sms threads get a model-written brief (they are the only ones the
+// bridge can read back), so every other row's title has to carry the content
+// itself. "Reply to Daniel Smith" told you nothing you could act on; the
+// message does. The id hashes from|snippet, not text, so retitling an item
+// does not resurrect something already dismissed.
+function replyTitle(kind, who, snippet) {
+  if (kind === 'sms' || kind === 'meta') return `Reply to ${who}`;
+  const line = String(snippet || '').replace(/\s+/g, ' ').trim();
+  return line ? `${who}: ${line.slice(0, 120)}` : `Reply to ${who}`;
+}
+
 // Deterministic half: read every source and annotate from the rules and the
 // contact directory. No model call anywhere in here, which is what lets the
 // scheduler run it often and only pay for the model when something changed.
@@ -1065,7 +1150,8 @@ async function collectRawItems() {
   for (const w of waiting.items || []) {
     if (AUTOMATED_SNIPPET.test(w.snippet || '')) continue;
     items.push({ kind: w.kind || 'sms', from: w.identifier, snippet: w.snippet,
-                 text: `Reply to ${w.identifier}`, reply: true, hintBucket: null });
+                 text: replyTitle(w.kind || 'sms', w.identifier, w.snippet),
+                 reply: true, hintBucket: null });
   }
   // record what each source said about itself, for the watchdog
   noteHealth('personal email', email.health || 'ok');
@@ -1092,11 +1178,11 @@ async function collectRawItems() {
   }
   for (const m of personal.messenger || [])
     items.push({ kind: 'messenger', from: m.name, snippet: m.snippet, when: m.when,
-                 text: `Reply to ${m.name}`, reply: true, hintBucket: 'work' });
+                 text: replyTitle('messenger', m.name, m.snippet), reply: true, hintBucket: 'work' });
 
   for (const m of personal.whatsapp || [])
     items.push({ kind: 'whatsapp', from: m.name, snippet: m.snippet, when: m.when,
-                 text: `Reply to ${m.name}`, reply: true, hintBucket: 'work' });
+                 text: replyTitle('whatsapp', m.name, m.snippet), reply: true, hintBucket: 'work' });
 
   for (const e of bizEmail.items || [])
     items.push({ kind: 'bizemail', from: e.identifier, snippet: e.snippet, subject: e.subject,
@@ -1303,6 +1389,71 @@ async function handleItemContext(req, res) {
 // A suggested reply for an item, grounded in the thread behind it. The model
 // only ever writes into a box the user then edits and presses send on - there
 // is no path from here to an actual message (see handleTextSend).
+// "Generate more detail from the card." A card is a summary by construction,
+// and when the summary isn't enough the only options used to be leaving the app
+// or regenerating the whole report. This expands one item on demand, grounded
+// in whatever that item actually has behind it: the full thread for a text, the
+// job record for a job. It never invents a fact it wasn't given - an empty
+// record says so instead of being padded out into prose.
+async function handleItemDetail(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const t = JSON.parse(await readBody(req));
+  if (!t.from) { res.writeHead(400); res.end(JSON.stringify({ error: 'who?' })); return; }
+
+  let thread = '';
+  if (t.kind === 'sms' || t.kind === 'meta') {
+    try {
+      const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?contact=${encodeURIComponent(t.from)}&limit=1`, {
+        headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+        signal: AbortSignal.timeout(20000),
+      });
+      const { threads = [] } = r.ok ? await r.json() : {};
+      thread = (threads[0]?.messages || [])
+        .map(m => `${m.outbound ? 'me' : 'them'}: ${m.text}`).join('\n');
+    } catch { /* fall back to the record below */ }
+  }
+
+  const known = await lookupContact(t.from).catch(() => null);
+  const todo = (t.tasks || []).filter(x => x && x.text)
+    .map(x => `${x.done ? '[done]' : '[open]'} ${x.text}`).join('\n');
+  const record = [
+    t.business ? `Business: ${t.business}` : null,
+    t.status ? `Status: ${String(t.status).replace(/_/g, ' ')}` : null,
+    t.when ? `Scheduled: ${t.when}${t.overdue ? ' (OVERDUE)' : ''}` : 'Scheduled: not booked',
+    (t.address || known?.address) ? `Address: ${t.address || known.address}` : null,
+    t.phone ? `Phone: ${t.phone}` : null,
+    t.preferredDays ? `Client prefers: ${t.preferredDays}` : null,
+    t.timeline ? `Timeline: ${t.timeline}` : null,
+    t.raised ? `Raised: ${String(t.raised).slice(0, 10)}` : null,
+    todo ? `Checklist:\n${todo}` : null,
+    t.lastNote?.message ? `Last note (${t.lastNote.author}): ${String(t.lastNote.message).slice(0, 400)}` : null,
+    t.subject ? `Subject: ${t.subject}` : null,
+    t.snippet ? `Content: ${t.snippet}` : null,
+  ].filter(Boolean).join('\n');
+
+  const prompt = `You are briefing Jesse, a self-employed electrician in Geelong, on one item from his to-do list. Today is ${ymd(new Date())}.
+
+Item: ${t.text || ''}
+Who: ${known?.display_name || t.from}
+Source: ${t.kind || 'unknown'}
+${thread ? `The full conversation:\n${thread}` : `The record:\n${record || '(nothing beyond the title)'}`}
+
+Write a short brief, 3-5 sentences of plain English, covering only what the material above actually supports:
+- what this is really about
+- what has already been settled or agreed (quote figures, dates and addresses exactly as they appear)
+- what is still open, and the single next thing he should do
+
+Do not invent details. If something important is missing - no price, no date, no address - say plainly that it is missing. No headings, no bullet points, no preamble.`;
+
+  try {
+    const detail = String(await askModel(prompt, 900) || '').trim();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ detail, grounded: thread ? 'thread' : 'record' }));
+  } catch (e) {
+    res.writeHead(200); res.end(JSON.stringify({ error: e.message }));
+  }
+}
+
 async function handleItemDraft(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
   const { from, text, snippet, brief, kind } = JSON.parse(await readBody(req));
@@ -1813,8 +1964,12 @@ async function nextActions() {
         detail: `${r.what}${when ? ` — agreed for ${when}` : ', no day pinned down yet'}`
               + `${known?.address ? ` at ${known.address}` : ''}.`,
         quote: r.quote,
-        href: calendarUrl(`${r.what} — ${who}`, when, r.when_time, r.quote, known?.address),
-        cta: when ? 'add to calendar' : null,
+        // No day agreed is still actionable: open the event on today's date
+        // with everything else filled in and change the day in the calendar.
+        // Leaving the row with no button at all is how "I can't action this"
+        // happens - the band told him to book it and then offered nothing.
+        href: calendarUrl(`${r.what} — ${who}`, when || today, r.when_time, r.quote, known?.address),
+        cta: when ? 'add to calendar' : 'pick a day in the calendar',
       });
     }
   } catch (e) { console.error('actions: commitments —', e.message); }
@@ -2101,6 +2256,7 @@ createServer(async (req, res) => {
     if (req.method === 'GET'  && u === '/api/item/context') return await handleItemContext(req, res);
     if (req.method === 'POST' && u === '/api/item/tocal')   return await handleItemToCal(req, res);
     if (req.method === 'POST' && u === '/api/item/draft')   return await handleItemDraft(req, res);
+    if (req.method === 'POST' && u === '/api/item/detail')  return await handleItemDetail(req, res);
     return await serveStatic(req, res);
   } catch (err) {
     console.error(err);
