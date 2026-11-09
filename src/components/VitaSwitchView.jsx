@@ -46,6 +46,12 @@ export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSwee
       .then(d => {
         if (d.running) { setSweep({ step: d.step || 'working' }); setTimeout(poll, 2000); return; }
         const r = d.result || {};
+        if (r.blind) {
+          setSweep({ note: 'everything re-read, but your calendar could not be read — reconnect Google in LIFE_CMD before trusting what is marked booked' });
+          load(true);
+          setTimeout(() => setSweep(null), 12000);
+          return;
+        }
         const bits = [];
         if (r.booked) bits.push(`${r.booked} already in your calendar`);
         if (r.found) bits.push(`${r.found} agreed time${r.found === 1 ? '' : 's'} found`);

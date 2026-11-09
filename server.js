@@ -846,10 +846,45 @@ async function handleActionDone(req, res) {
 // check button and the full refresh, so both answer "is it booked?" the same
 // way. Only a definite match clears one; needs_confirm means something is on
 // that day but nothing ties it to this job, and is counted, never acted on.
+// A calendar nobody can read looks exactly like an empty one, and an empty one
+// means "nothing is booked" - which is how the app spent weeks telling him jobs
+// were not in a diary it could not see. A working week always has something in
+// it, so no events at all across a seven-week window means the feed is dark,
+// not the diary.
+// Ask, do not infer. A frozen feed with one stale event still inside the
+// window reads as live to any heuristic - which is exactly the state this was
+// written for, so the heuristic alone would have missed the very case it was
+// meant to catch. LIFE_CMD knows whether its Google token is alive; the window
+// check below survives only as a fallback for when it cannot be reached.
+async function calendarUnreadable(events = []) {
+  try {
+    const r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/google/status`,
+                          { signal: AbortSignal.timeout(6000) });
+    if (r.ok) return !(await r.json()).connected;
+  } catch { /* fall back to the shape of the data */ }
+  return calendarIsDark(events);
+}
+
+function calendarIsDark(events = []) {
+  const from = ymd(new Date(Date.now() - 7 * 86400000));
+  const to = ymd(new Date(Date.now() + 42 * 86400000));
+  return !events.some(e => {
+    const d = String(e.date || '').slice(0, 10);
+    return d >= from && d <= to;
+  });
+}
+
 async function reconcileOpenCommitments() {
-  let booked = 0, unsure = 0;
+  let booked = 0, unsure = 0, blind = false;
   try {
     const events = await fetchEvents();
+    if (await calendarUnreadable(events)) {
+      // Do not touch a single status. Everything would read as unbooked, which
+      // is the safe thing to show but a lie to act on.
+      const { rows } = await pool.query(
+        "SELECT count(*)::int n FROM commitments WHERE status = 'unbooked'");
+      return { booked: 0, unsure: rows[0].n, blind: true };
+    }
     const { rows } = await pool.query(
       "SELECT id, who, what, when_date FROM commitments WHERE status = 'unbooked'");
     for (const r of rows) {
@@ -860,8 +895,8 @@ async function reconcileOpenCommitments() {
         booked++;
       } else if (status === 'needs_confirm') unsure++;
     }
-  } catch (e) { console.error('reconcile:', e.message); }
-  return { booked, unsure };
+  } catch (e) { console.error('reconcile:', e.message); blind = true; }
+  return { booked, unsure, blind };
 }
 
 // Verify instead of trusting. Every band row is derived from state that can be
@@ -878,12 +913,12 @@ async function reconcileOpenCommitments() {
 async function handleActionsRefresh(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
   const before = await nextActions().catch(() => []);
-  const { booked, unsure } = await reconcileOpenCommitments();
+  const { booked, unsure, blind } = await reconcileOpenCommitments();
   const after = await nextActions().catch(() => []);
   const cleared = before.filter(b => !after.some(a => a.id === b.id))
                         .map(b => ({ kind: b.kind, title: b.title }));
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ ok: true, actions: after, cleared, booked, unsure }));
+  res.end(JSON.stringify({ ok: true, actions: after, cleared, booked, unsure, blind }));
 }
 
 // Fired when the user acts on an item (currently: "draft reply") — the
@@ -2343,6 +2378,10 @@ async function nextActions() {
                        || (w.length > 3 && String(j.identifier || '').toLowerCase().includes(w))) || null;
   };
 
+  // Whether the calendar can be read at all, so the rows below can say "not in
+  // the calendar" only when that has actually been checked.
+  const calDark = await calendarUnreadable(await fetchEvents().catch(() => []));
+
   // Agreed in a message, absent from the calendar.
   try {
     const { rows } = await pool.query(
@@ -2390,7 +2429,9 @@ async function nextActions() {
         },
         work,
         title: who,
-        detail: `${when ? `Agreed for ${when}` : 'No day pinned down yet'}. Not in the calendar.`,
+        detail: `${when ? `Agreed for ${when}` : 'No day pinned down yet'}. `
+              + (calDark ? 'Cannot see your calendar to check — reconnect Google in LIFE_CMD.'
+                         : 'Not in the calendar.'),
         quote: r.quote,
         // Structured, not a bare Google link: the button opens the booking
         // form so how long it will take and whether it needs parts get
@@ -2833,12 +2874,12 @@ async function runFullRefresh() {
     const led = await refreshCommitments().catch(e => ({ ok: false, reason: e.message }));
 
     step('checking the calendar for what is already booked');
-    const { booked, unsure } = await reconcileOpenCommitments();
+    const { booked, unsure, blind } = await reconcileOpenCommitments();
 
     refreshJob.result = {
       items: raw.length,
       found: led.found ?? 0, superseded: led.superseded ?? 0,
-      booked, unsure,
+      booked, unsure, blind,
       actions: (await nextActions().catch(() => [])).length,
     };
   } catch (e) {

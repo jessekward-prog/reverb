@@ -45,6 +45,11 @@ export default function ActionBand({ actions = [], auth, onCleared }) {
     fetch('/api/actions/refresh', { method: 'POST', headers: authHeaders(auth?.token) })
       .then(r => r.json())
       .then(d => {
+        if (d.blind) {
+          setNote('could not read your calendar — LIFE_CMD\u2019s Google connection has dropped, so nothing can be confirmed as booked');
+          setCheck(false);
+          return;
+        }
         const bits = [];
         if (d.booked) bits.push(`${d.booked} now in your calendar`);
         if (d.cleared?.length) bits.push(`${d.cleared.length} cleared`);
