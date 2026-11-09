@@ -1300,6 +1300,45 @@ async function handleItemContext(req, res) {
 // structured event (grounded in the conversation, so it can't invent a time),
 // and open a pre-filled Google Calendar event in the logged-in calendar tab for
 // the user to confirm and save. Nothing is written without the user's click.
+// A suggested reply for an item, grounded in the thread behind it. The model
+// only ever writes into a box the user then edits and presses send on - there
+// is no path from here to an actual message (see handleTextSend).
+async function handleItemDraft(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const { from, text, snippet, brief, kind } = JSON.parse(await readBody(req));
+  if (!from) { res.writeHead(400); res.end(JSON.stringify({ error: 'who?' })); return; }
+
+  let thread = '';
+  try {
+    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?contact=${encodeURIComponent(from)}&limit=1`, {
+      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+      signal: AbortSignal.timeout(20000),
+    });
+    const { threads = [] } = r.ok ? await r.json() : {};
+    thread = (threads[0]?.messages || []).slice(-12)
+      .map(m => `${m.outbound ? 'me' : 'them'}: ${m.text}`).join('\n');
+  } catch { /* no thread for this channel - the snippet and brief still ground it */ }
+
+  const known = await lookupContact(from).catch(() => null);
+  const prompt = `You are drafting a reply that Jesse, a self-employed electrician in Geelong, will read and edit before sending. Write as him: plain, warm, short, no corporate phrasing, no emoji, Australian spelling.
+
+Who: ${known?.display_name || from}${known?.address ? ` (${known.address})` : ''}
+Channel: ${kind || 'sms'}
+${brief ? `Where it stands: ${brief}\n` : ''}${thread ? `The conversation so far:\n${thread}\n` : `Their last message: "${snippet || ''}"\n`}
+What he needs to do: ${text || 'reply'}
+
+Write ONLY the message body, 1-3 sentences. No greeting line if the thread is already mid-conversation, no sign-off, no quotes around it, no preamble.`;
+
+  try {
+    const draft = String(await askModel(prompt, 400) || '').trim()
+      .replace(/^["']|["']$/g, '').replace(/^(reply|draft|message)\s*:\s*/i, '');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ draft, grounded: !!thread }));
+  } catch (e) {
+    res.writeHead(200); res.end(JSON.stringify({ error: e.message }));
+  }
+}
+
 async function handleItemToCal(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
   const { from, text } = JSON.parse(await readBody(req));
@@ -2029,6 +2068,7 @@ createServer(async (req, res) => {
     if (req.method === 'GET' && jobPhotoMatch) return await handleJobPhoto(req, res, jobPhotoMatch[1]);
     if (req.method === 'GET'  && u === '/api/item/context') return await handleItemContext(req, res);
     if (req.method === 'POST' && u === '/api/item/tocal')   return await handleItemToCal(req, res);
+    if (req.method === 'POST' && u === '/api/item/draft')   return await handleItemDraft(req, res);
     return await serveStatic(req, res);
   } catch (err) {
     console.error(err);

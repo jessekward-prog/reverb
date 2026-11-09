@@ -13,7 +13,8 @@ const PILL = [
   ['chat', 'chat'], ['sweep', 'sweep'], ['texts', 'texts'], ['browser', 'browser'],
 ];
 
-export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSweep, onOpenTexts, onOpenBrowser }) {
+export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSweep,
+                                         onOpenTexts, onOpenBrowser, onDraftReply }) {
   const go = { chat: onOpenChat, sweep: onOpenSweep, texts: onOpenTexts, browser: onOpenBrowser };
   const [data, setData] = useState({ categories: [], actions: [], scannedAt: null });
   const [phase, setPhase] = useState('loading');
@@ -30,6 +31,23 @@ export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSwee
   }, [auth, onLockout]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Acting on something takes it off the list here and now. Waiting for the
+  // next scheduled rebuild to notice you replied is how the old flow sent you
+  // back to a regenerate button.
+  const finish = useCallback((t) => {
+    setData(d => ({
+      ...d,
+      categories: d.categories
+        .map(c => ({ ...c, items: (c.items || []).filter(i => i.id !== t.id) }))
+        .filter(c => c.items.length),
+    }));
+    fetch(`/api/tasks/${t.id}/done`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
+      body: JSON.stringify({ done: true, kind: t.kind, from: t.from }),
+    }).catch(() => {});
+  }, [auth]);
 
   // Quiet background refresh, and again whenever the app is brought forward.
   useEffect(() => {
@@ -71,7 +89,9 @@ export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSwee
                      display: 'flex' }}>
         {phase === 'loading'
           ? <div style={{ margin: 'auto', fontFamily: FONT.sans, fontSize: FS.body, color: C.text3 }}>reading everything…</div>
-          : <TriPane categories={data.categories} actions={data.actions} scannedAt={data.scannedAt} />}
+          : <TriPane categories={data.categories} actions={data.actions} scannedAt={data.scannedAt}
+                     auth={auth} onDone={finish} onOpenBrowser={onOpenBrowser}
+                     onOpenChat={onDraftReply} />}
       </main>
     </div>
   );

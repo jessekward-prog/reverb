@@ -3,6 +3,7 @@ import { motion } from 'framer-motion';
 import { C, FS, FONT, SP } from '../lib/design.js';
 import { KINDS } from '../lib/kinds.js';
 import ActionBand from './ActionBand.jsx';
+import TaskPanel from './TaskPanel.jsx';
 
 // Vita Switch: work on the left, life on the right, and the feed down the
 // middle so nothing is hidden behind a tab. The side panes are the full list
@@ -164,7 +165,11 @@ function Wires({ wires, hover }) {
 const SCOPES = ['today', 'week', 'all'];
 const WIRE_MIN_WIDTH = 1000;   // matches the one-pane breakpoint below
 
-export default function TriPane({ categories = [], actions = [], scannedAt, onOpen }) {
+export default function TriPane({ categories = [], actions = [], scannedAt,
+                                  auth, onDone, onOpenBrowser, onOpenChat }) {
+  // The open row. One at a time: the panel is tall, and two of them turns the
+  // feed back into a wall of text.
+  const [openId, setOpenId] = useState(null);
   const [scope, setScope] = useState('all');
   const [workFilter, setWorkFilter] = useState('all');
   const [lifeFilter, setLifeFilter] = useState('all');
@@ -201,6 +206,19 @@ export default function TriPane({ categories = [], actions = [], scannedAt, onOp
   const paneEl   = useRef({});                 // section elements, for the gutter edges
   const scrollEl = useRef({});                 // scrollers, to know what's actually on screen
   const rowEl    = useRef(new Map());          // "<pane>:<id>" -> row element
+
+  // Opening from a side pane scrolls the middle to the same row, so the panel
+  // never opens somewhere you cannot see.
+  const open = useCallback((t) => {
+    let opened = false;
+    setOpenId(cur => { opened = cur !== t.id; return opened ? t.id : null; });
+    // Whether it was opened from the middle or from a side pane, put the panel
+    // where you can see it: expanding a row near the bottom otherwise pushes
+    // the composer straight off the screen.
+    setTimeout(() => {
+      if (opened) rowEl.current.get(`feed:${t.id}`)?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }, 40);
+  }, []);
 
   const register = useCallback((paneKey) => (id) => (el) => {
     const key = `${paneKey}:${id}`;
@@ -274,7 +292,7 @@ export default function TriPane({ categories = [], actions = [], scannedAt, onOp
     frame.current = requestAnimationFrame(measure);
   }, [measure]);
 
-  useLayoutEffect(() => { remeasure(); }, [remeasure, feed, work.length, life.length, workFilter, lifeFilter, scope, pane]);
+  useLayoutEffect(() => { remeasure(); }, [remeasure, feed, work.length, life.length, workFilter, lifeFilter, scope, pane, openId]);
 
   useEffect(() => {
     const ro = new ResizeObserver(remeasure);
@@ -287,7 +305,7 @@ export default function TriPane({ categories = [], actions = [], scannedAt, onOp
   const panes = {
     work: <Pane title="switch" accent={C.amber} items={byFilter(work, workFilter)}
                 filters={catsOf(work)} filter={workFilter} setFilter={setWorkFilter}
-                onOpen={onOpen} empty="work is clear"
+                onOpen={open} empty="work is clear"
                 paneRef={el => { paneEl.current.work = el; }}
                 scrollRef={el => { scrollEl.current.work = el; }}
                 onScroll={remeasure} register={register('work')}
@@ -319,16 +337,21 @@ export default function TriPane({ categories = [], actions = [], scannedAt, onOp
             ? <div style={{ padding: `${SP[6]}px 0`, textAlign: 'center', fontFamily: FONT.sans,
                             fontSize: FS.body, color: C.text3 }}>nothing in this window</div>
             : feed.map(t => (
-                <Row key={t.id} t={t} showTag onOpen={onOpen}
-                     register={register('feed')(t.id)} onHover={setHover}
-                     lit={hover === t.id} dimmed={hover != null && hover !== t.id} />
+                <div key={t.id} ref={register('feed')(t.id)}>
+                  {t.id === openId
+                    ? <TaskPanel t={t} auth={auth} onClose={() => setOpenId(null)}
+                                 onDone={(item, how) => { setOpenId(null); onDone?.(item, how); }}
+                                 onOpenBrowser={onOpenBrowser} onOpenChat={onOpenChat} />
+                    : <Row t={t} showTag onOpen={() => open(t)} onHover={setHover}
+                           lit={hover === t.id} dimmed={hover != null && hover !== t.id} />}
+                </div>
               ))}
         </div>
       </section>
     ),
     life: <Pane title="vita" accent={LIFE} items={byFilter(life, lifeFilter)}
                 filters={catsOf(life)} filter={lifeFilter} setFilter={setLifeFilter}
-                onOpen={onOpen} empty="nothing personal waiting"
+                onOpen={open} empty="nothing personal waiting"
                 paneRef={el => { paneEl.current.life = el; }}
                 scrollRef={el => { scrollEl.current.life = el; }}
                 onScroll={remeasure} register={register('life')}

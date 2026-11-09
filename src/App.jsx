@@ -91,7 +91,7 @@ export default function App() {
   };
 
   let content;
-  if (view === 'home')         content = <VitaSwitchView auth={auth} onLockout={handleLockout} {...nav} />;
+  if (view === 'home')         content = <VitaSwitchView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
   else if (view === 'sweep')        content = <SweepView auth={auth} onLockout={handleLockout} {...nav} />;
   else if (view === 'tasks')   content = <TasksView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
   else if (view === 'work')    content = <WorkView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
