@@ -328,11 +328,50 @@ export async function fetchThreads(limit = 20) {
   return (await r.json()).threads || [];
 }
 
-export async function fetchEvents() {
+// The calendar, read from the browser he is already signed into. No OAuth
+// token to expire - which is the failure that had the app insisting for weeks
+// that booked jobs were not in a diary it could not see - and it sees every
+// calendar he sees, not one account's primary. LIFE_CMD stays as a fallback
+// for when the bridge is down.
+//
+// Driving the browser costs seconds, and the band asks for this on every load,
+// so the answer is held briefly. Anything he presses to force a check asks for
+// it fresh.
+let calCache = { at: 0, events: [], source: 'none' };
+const CAL_TTL = 5 * 60 * 1000;
+
+export async function fetchCalendar({ fresh = false } = {}) {
+  if (!fresh && calCache.source !== 'none' && Date.now() - calCache.at < CAL_TTL) return calCache;
+
+  try {
+    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/calendar?back=7`, {
+      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+      signal: AbortSignal.timeout(120000),
+    });
+    if (r.ok) {
+      const { events } = await r.json();
+      if (Array.isArray(events) && events.length) {
+        calCache = { at: Date.now(), events, source: 'browser' };
+        return calCache;
+      }
+    }
+  } catch { /* fall through to LIFE_CMD */ }
+
   try {
     const r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/events`);
-    return r.ok ? await r.json() : [];
-  } catch { return []; }
+    if (r.ok) {
+      const events = await r.json();
+      calCache = { at: Date.now(), events, source: 'lifecmd' };
+      return calCache;
+    }
+  } catch { /* nothing can read it */ }
+
+  calCache = { at: Date.now(), events: [], source: 'none' };
+  return calCache;
+}
+
+export async function fetchEvents() {
+  return (await fetchCalendar()).events;
 }
 
 // Personal Messenger. Everything in here is private by default - only the

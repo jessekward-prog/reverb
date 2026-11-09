@@ -11,7 +11,7 @@ import {
   ADD_TO_CALENDAR_TOOL, TODO_TOOL, MARK_DONE_TOOL,
   MUTE_SENDER_TOOL,
   getRecentTexts, getRecentTextsBrief, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
-  fetchThreads, fetchEvents, fetchChannel,
+  fetchThreads, fetchEvents, fetchCalendar, fetchChannel,
 } from './src/lib/tools.js';
 import { parseExtraction, reconcileStatus, projectCommitments, ymd } from './src/lib/commitments.js';
 import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules,
@@ -856,7 +856,12 @@ async function handleActionDone(req, res) {
 // written for, so the heuristic alone would have missed the very case it was
 // meant to catch. LIFE_CMD knows whether its Google token is alive; the window
 // check below survives only as a fallback for when it cannot be reached.
-async function calendarUnreadable(events = []) {
+async function calendarUnreadable({ events = [], source = 'none' } = {}) {
+  // Read straight from the browser: that is the session he is signed into, so
+  // if it answered, the calendar is readable. No token to interrogate.
+  if (source === 'browser') return false;
+  if (source === 'none') return true;
+  // Only the LIFE_CMD fallback needs the token question asked of it.
   try {
     const r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/google/status`,
                           { signal: AbortSignal.timeout(6000) });
@@ -877,8 +882,9 @@ function calendarIsDark(events = []) {
 async function reconcileOpenCommitments() {
   let booked = 0, unsure = 0, blind = false;
   try {
-    const events = await fetchEvents();
-    if (await calendarUnreadable(events)) {
+    const cal = await fetchCalendar({ fresh: true });
+    const events = cal.events;
+    if (await calendarUnreadable(cal)) {
       // Do not touch a single status. Everything would read as unbooked, which
       // is the safe thing to show but a lie to act on.
       const { rows } = await pool.query(
@@ -2380,7 +2386,7 @@ async function nextActions() {
 
   // Whether the calendar can be read at all, so the rows below can say "not in
   // the calendar" only when that has actually been checked.
-  const calDark = await calendarUnreadable(await fetchEvents().catch(() => []));
+  const calDark = await calendarUnreadable(await fetchCalendar().catch(() => ({})));
 
   // Agreed in a message, absent from the calendar.
   try {
