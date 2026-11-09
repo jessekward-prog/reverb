@@ -1339,9 +1339,64 @@ Write ONLY the message body, 1-3 sentences. No greeting line if the thread is al
   }
 }
 
+// Build the pre-filled Google Calendar edit URL and open it in the logged-in
+// calendar tab. Shared by the two ways an event gets here: extracted from a
+// conversation, or typed in by hand after a phone call.
+async function openCalendarDraft({ title, date, time, durationMins, place, details }) {
+  const pad = n => String(n).padStart(2, '0');
+  const [y, mo, d] = String(date).split('-').map(Number);
+  let start, end;
+  if (time && /^\d{1,2}:\d{2}$/.test(time)) {
+    const [hh, mm] = time.split(':').map(Number);
+    const st = new Date(y, mo - 1, d, hh, mm);
+    const en = new Date(st.getTime() + (durationMins || 60) * 60000);
+    const fmt = t => `${t.getFullYear()}${pad(t.getMonth() + 1)}${pad(t.getDate())}T${pad(t.getHours())}${pad(t.getMinutes())}00`;
+    start = fmt(st); end = fmt(en);
+  } else {
+    const day = `${y}${pad(mo)}${pad(d)}`;   // all-day
+    start = day; end = day;
+  }
+  const url = 'https://calendar.google.com/calendar/u/0/r/eventedit'
+    + `?text=${encodeURIComponent(title)}`
+    + `&dates=${start}/${end}`
+    + (place ? `&location=${encodeURIComponent(place)}` : '')
+    + (details ? `&details=${encodeURIComponent(details)}` : '');
+
+  let navigated = false;
+  try {
+    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/navigate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+      body: JSON.stringify({ source: 'calendar', url }),
+    });
+    navigated = r.ok;
+  } catch { /* the url still works in a normal tab, and the caller gets it */ }
+  return { url, navigated };
+}
+
 async function handleItemToCal(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
-  const { from, text } = JSON.parse(await readBody(req));
+  const body = JSON.parse(await readBody(req));
+  const { from, text } = body;
+
+  // Manual path: you had the conversation on the phone, so there is nothing to
+  // read and nothing to extract. The form sends the event straight through.
+  if (body.date) {
+    const known = await lookupContact(from).catch(() => null);
+    const { url, navigated } = await openCalendarDraft({
+      title: (body.title || text || `Job for ${known?.display_name || from}`).slice(0, 180),
+      date: body.date,
+      time: body.time || '',
+      durationMins: Number(body.durationMins) || 60,
+      place: body.location || known?.address || null,
+      details: `Added by hand in Vita Switch${from ? ` — ${known?.display_name || from}` : ''}.`,
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, manual: true, url, navigated,
+                             event: { title: body.title || text, date: body.date, time: body.time || '' } }));
+    return;
+  }
+
   try {
     // 1. context
     const tr = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?contact=${encodeURIComponent(from)}&limit=1&live=1`, {
@@ -1369,20 +1424,7 @@ Resolve relative dates ("Friday", "Tuesday next week", "tomorrow") against today
       res.writeHead(200); res.end(JSON.stringify({ error: 'no concrete time was agreed in this conversation' })); return;
     }
 
-    // 3. build a Google Calendar event-edit URL (pre-filled; user saves)
-    const pad = n => String(n).padStart(2, '0');
-    const [y, mo, d] = ev.date.split('-').map(Number);
-    let start, end;
-    if (ev.time && /^\d{1,2}:\d{2}$/.test(ev.time)) {
-      const [hh, mm] = ev.time.split(':').map(Number);
-      const s = new Date(y, mo - 1, d, hh, mm);
-      const e = new Date(s.getTime() + (ev.durationMins || 60) * 60000);
-      const fmt = t => `${t.getFullYear()}${pad(t.getMonth()+1)}${pad(t.getDate())}T${pad(t.getHours())}${pad(t.getMinutes())}00`;
-      start = fmt(s); end = fmt(e);
-    } else {
-      const day = `${y}${pad(mo)}${pad(d)}`; // all-day
-      start = day; end = day;
-    }
+    // 3. pre-fill the event and open it in the live calendar tab.
     // Name and address from the directory, so the event says who and where
     // instead of a bare number with an empty location field. Anything the
     // thread itself mentions is learned here too, for next time.
@@ -1391,26 +1433,16 @@ Resolve relative dates ("Friday", "Tuesday next week", "tomorrow") against today
     if (inThread && !known?.address) {
       await rememberContact({ phone: from, address: inThread, source: 'chat' }).catch(() => {});
     }
-    const place = known?.address || inThread || ev.location || null;
     const who = known?.display_name || from;
-
     const title = ev.title || text || `Job for ${who}`;
-    const details = `Agreed over text with ${who}. Added via Reverb.`;
-    const calUrl = 'https://calendar.google.com/calendar/u/0/r/eventedit'
-      + `?text=${encodeURIComponent(title)}`
-      + `&dates=${start}/${end}`
-      + (place ? `&location=${encodeURIComponent(place)}` : '')
-      + `&details=${encodeURIComponent(details)}`;
-
-    // 4. open it in the logged-in calendar tab
-    await fetch(`${process.env.BRIDGE_BASE_URL}/api/navigate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
-      body: JSON.stringify({ source: 'calendar', url: calUrl }),
-    }).catch(() => {});
+    const { url, navigated } = await openCalendarDraft({
+      title, date: ev.date, time: ev.time || '', durationMins: ev.durationMins || 60,
+      place: known?.address || inThread || ev.location || null,
+      details: `Agreed over text with ${who}. Added via Vita Switch.`,
+    });
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, event: { title, date: ev.date, time: ev.time || '' } }));
+    res.end(JSON.stringify({ ok: true, url, navigated, event: { title, date: ev.date, time: ev.time || '' } }));
   } catch (e) { res.writeHead(502); res.end(JSON.stringify({ error: e.message })); }
 }
 
