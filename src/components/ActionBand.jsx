@@ -17,6 +17,7 @@ const LABEL = {
   'next-visit':    'book the next visit',
   'waiting-on-you':'they are waiting on you',
   'quote-owed':    'estimate never sent',
+  'reply-owed':    'they are waiting on a reply',
 };
 
 export default function ActionBand({ actions = [], auth }) {
@@ -117,7 +118,9 @@ export default function ActionBand({ actions = [], auth }) {
               <div style={{ marginTop: SP[1], paddingTop: SP[2], borderTop: `1px solid ${C.border}`,
                             display: 'flex', flexDirection: 'column', gap: 3 }}>
                 <div style={{ fontFamily: FONT.mono, fontSize: FS.label, letterSpacing: '.08em',
-                              textTransform: 'uppercase', color: C.text3 }}>the job</div>
+                              textTransform: 'uppercase', color: C.text3 }}>
+                  {a.kind === 'reply-owed' ? 'what they said' : 'the job'}
+                </div>
                 <div style={{ fontFamily: FONT.sans, fontSize: FS.body, lineHeight: 1.55,
                               color: C.text1, textTransform: 'none', textWrap: 'pretty' }}>
                   {a.work}

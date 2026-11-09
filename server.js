@@ -2430,6 +2430,45 @@ async function nextActions() {
     }
   }
 
+  // A person waiting on a reply. /api/waiting already works this out in code -
+  // the last message in the thread is not his - and has the bulk senders
+  // filtered out of it. It fed the reports and nothing else, so it told him
+  // about his mum only if he went and read a category. This is the life-side
+  // twin of the job rows above.
+  try {
+    const { items: owed = [] } = await getWaitingReplies({ limit: 25 });
+    // Names the band is already nagging him about, so a client who also texted
+    // does not take two slots.
+    const covered = new Set(out.map(a => String(a.title || '').toLowerCase().trim()).filter(Boolean));
+    const FLOOR_H = 12;   // replying the same morning is normal; this is for what got missed
+    for (const w of owed) {
+      const who = String(w.displayName || w.identifier || '').trim();
+      if (!who || covered.has(who.toLowerCase())) continue;
+      const at = w.occurred_at ? new Date(w.occurred_at).getTime() : 0;
+      if (!at) continue;
+      const hours = (Date.now() - at) / 3600000;
+      // Same rule the job photos get: past a month this is a conversation that
+      // ended, not a reply he owes, and left in it would sit at the urgency cap
+      // forever pushing out the ones he can still answer.
+      if (hours < FLOOR_H || hours > 30 * 24) continue;
+      const days = Math.floor(hours / 24);
+      const asked = String(w.snippet || '').replace(/\s+/g, ' ').trim();
+      out.push({
+        id: `owed-${w.kind}-${who.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
+        kind: 'reply-owed',
+        // Below a client at the same age - work leads - but it still climbs,
+        // so someone left a week gets to the top on their own.
+        urgency: Math.min(8, 5 + Math.floor(days / 2)),
+        at,
+        title: who,
+        person: { name: who, phone: null, address: null, via: null },
+        work: asked ? asked.slice(0, 220) : null,
+        detail: `Sent the last message ${days >= 1 ? `${days} day${days === 1 ? '' : 's'} ago` : 'yesterday'} on ${w.kind}${w.unread ? ', still unread' : ''}. You have not answered.`,
+        cta: null,
+      });
+    }
+  } catch (e) { console.error('actions: waiting —', e.message); }
+
   // A dark source outranks everything: nothing else on this list can be
   // trusted to be complete while one is down.
   for (const [source, h] of Object.entries(sourceHealth)) {
@@ -2450,8 +2489,19 @@ async function nextActions() {
   // person left waiting: dropping one off the bottom is how it got missed in
   // the first place, so the band stretches to six while any are open. They
   // sort above everything else, so the extra slots are theirs.
-  const nagging = out.some(a => a.kind === 'waiting-on-you' || a.kind === 'quote-owed');
-  return out.slice(0, nagging ? 6 : 4);
+  const NAG = new Set(['waiting-on-you', 'quote-owed', 'reply-owed']);
+  const nagging = out.some(a => NAG.has(a.kind));
+  const band = out.slice(0, nagging ? 6 : 4);
+
+  // Work will always out-urgency a personal message, so on a busy day every
+  // slot goes to a client and the one he asked to be reminded about - his mum -
+  // never appears. One slot is reserved: if anyone is owed a reply and none
+  // made the cut, the least urgent row gives up its place.
+  if (!band.some(a => a.kind === 'reply-owed')) {
+    const first = out.find(a => a.kind === 'reply-owed');
+    if (first) band.splice(band.length - 1, 1, first);
+  }
+  return band;
 }
 
 // Group the collected items into the two reports and persist them. The model

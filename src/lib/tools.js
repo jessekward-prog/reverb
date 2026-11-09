@@ -297,6 +297,9 @@ export async function getWaitingReplies({ limit = 25 } = {}) {
 
   const items = waiting.map(w => ({
     identifier: w.who, displayName: w.who, snippet: w.snippet, occurred_at: w.at, kind: w.source,
+    // The band needs these to decide whether a thread is worth nagging about
+    // and how long it has been sitting.
+    subject: w.subject || null, unread: w.unread === true, when: w.when || '',
   }));
   const line = w => `[${w.source}] ${w.who}${w.unread ? ' (unread)' : ''} - ${w.when}: ${w.subject ? w.subject + ' - ' : ''}${w.snippet}`;
 
