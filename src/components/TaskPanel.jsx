@@ -6,7 +6,7 @@ import { KINDS } from '../lib/kinds.js';
 import ItemCard from './ItemCard.jsx';
 
 // What you get when you open a row. The complaint this answers: a line saying
-// "Reply to Daniel Smith · 4d" is not something you can act on — you had to
+// a row reading "Reply to <name> · 4d" is not something you can act on — you had to
 // leave the app, do it in Messages, come back and regenerate the list.
 //
 // So everything needed to finish the thing is here: the conversation behind it

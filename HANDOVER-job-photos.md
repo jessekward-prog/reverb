@@ -54,7 +54,7 @@ the "N photos" count and no thumbnails. The Reverb change handles a missing
    Postgres, which `/api/photos/:id` would 404 on anyway.
 2. **Merge/deploy** both repos' `ccr-d7d247ac-iqbf8q` branches.
 3. **Verify end to end:** regenerate the To-do report, then open job #28
-   (Patrick Monaghan / Murphys, 3/164 Ryrie Street, 4 photos). Thumbnails
+   (a job with photos attached). Thumbnails
    should load, and tapping one should open it full screen.
    Note: the report is cached (it shows "last generated Xh ago"), so cards
    from before the deploy have no `photos` field until you **Regenerate now**.

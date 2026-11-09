@@ -1102,7 +1102,7 @@ const AUTOMATED_SNIPPET = /\b(verification code|security code|is your\b.{0,20}\b
 
 // Only sms threads get a model-written brief (they are the only ones the
 // bridge can read back), so every other row's title has to carry the content
-// itself. "Reply to Daniel Smith" told you nothing you could act on; the
+// itself. A bare "Reply to <name>" told you nothing you could act on; the
 // message does. The id hashes from|snippet, not text, so retitling an item
 // does not resurrect something already dismissed.
 function replyTitle(kind, who, snippet) {

@@ -582,7 +582,7 @@ export const ADD_TO_CALENDAR_TOOL = {
     parameters: {
       type: 'object',
       properties: {
-        title:        { type: 'string', description: 'What the event is, e.g. "Switchboard upgrade - Pat Monaghan".' },
+        title:        { type: 'string', description: 'What the event is, e.g. "Switchboard upgrade - 12 Example St".' },
         date:         { type: 'string', description: 'The day, as YYYY-MM-DD.' },
         time:         { type: 'string', description: '24h start time as HH:MM. Omit for an all-day entry.' },
         durationMins: { type: 'integer', description: 'How long, in minutes. Defaults to 60.' },
