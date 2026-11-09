@@ -306,6 +306,13 @@ export default function ReportView({
   // signal and no standing rule, so the conversation stays active and a later,
   // different message from them still shows. Both hide the item by its content
   // hash, so this exact notification won't come back.
+  // Done and ignore both tick the row off the list; the difference is what
+  // they say about the sender. "Done" means you dealt with it, so the sender
+  // is left alone. "Ignore" means it was not worth your time, so it nudges
+  // their dismissed count - enough of those and they fall to muted on their
+  // own. Passing the task is what sends that nudge. (These were the wrong way
+  // round: done penalised the sender and ignore said nothing, so ignoring a
+  // run of promos taught the app nothing at all.)
   function dismiss(id, task, e) {
     e?.stopPropagation();
     setCategories(prev => prev
@@ -318,7 +325,6 @@ export default function ReportView({
       body: JSON.stringify({ done: true, kind: task?.kind, from: task?.from }),
     }).catch(() => {});
   }
-  const ignore = (id, e) => dismiss(id, null, e);
 
   // Undo a "done" from the deck: the endpoint already un-dismisses on
   // done:false, so this just reverses it and re-reads. (The sender's contact
@@ -410,7 +416,7 @@ export default function ReportView({
           )}
 
           {/* Above everything: the things that should not wait. */}
-          <ActionBand actions={actions} />
+          <ActionBand actions={actions} auth={auth} onOpenBrowser={onOpenBrowser} />
 
           {summary && (
             <div style={{ marginBottom: 18, padding: '13px 16px', border: `1px solid ${HAIR}`,
@@ -463,8 +469,8 @@ export default function ReportView({
                 categories={categories}
                 tints={TINTS}
                 auth={auth}
-                onDone={t => dismiss(t.id, t)}
-                onIgnore={t => dismiss(t.id, null)}
+                onDone={t => dismiss(t.id, null)}
+                onIgnore={t => dismiss(t.id, t)}
                 onOpenBrowser={onOpenBrowser}
                 onOpenChat={t => onDraftReply?.(t)}
                 onUndo={t => undoDone(t)}
@@ -482,8 +488,8 @@ export default function ReportView({
                 auth={auth}
                 expandedId={expandedId}
                 onToggle={t => setExpandedId(id => (id === t.id ? null : t.id))}
-                onDone={(t, e) => dismiss(t.id, t, e)}
-                onIgnore={(t, e) => dismiss(t.id, null, e)}
+                onDone={(t, e) => dismiss(t.id, null, e)}
+                onIgnore={(t, e) => dismiss(t.id, t, e)}
                 onOpenBrowser={onOpenBrowser}
                 onOpenChat={t => onDraftReply?.(t)}
                 onFocus={(c, ci) => { setFocusIndex(ci); pickMode('deck'); }}

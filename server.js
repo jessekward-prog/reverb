@@ -9,6 +9,7 @@ import {
   WAITING_TOOL, getWaitingReplies, UNBOOKED_JOBS_TOOL, getUnbookedJobs, DRAFT_TEXT_TOOL,
   SEARCH_EMAIL_TOOL, searchEmail,
   ADD_TO_CALENDAR_TOOL, TODO_TOOL, MARK_DONE_TOOL,
+  MUTE_SENDER_TOOL,
   getRecentTexts, getRecentTextsBrief, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
   fetchThreads, fetchEvents, fetchChannel,
 } from './src/lib/tools.js';
@@ -363,7 +364,7 @@ async function proxyModels(req, res) {
   }
 }
 
-const TOOLS = [DRAFT_TEXT_TOOL, ADD_TO_CALENDAR_TOOL, TODO_TOOL, MARK_DONE_TOOL, SEARCH_EMAIL_TOOL, WAITING_TOOL, UNBOOKED_JOBS_TOOL, TEXTS_TOOL, SEARCH_TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
+const TOOLS = [DRAFT_TEXT_TOOL, ADD_TO_CALENDAR_TOOL, TODO_TOOL, MARK_DONE_TOOL, MUTE_SENDER_TOOL, SEARCH_EMAIL_TOOL, WAITING_TOOL, UNBOOKED_JOBS_TOOL, TEXTS_TOOL, SEARCH_TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
 
 // ── What the chat can do, not just read ───────────────────
 // The bot had every source and a send button but no way to finish anything:
@@ -375,15 +376,32 @@ async function calendarForChat(args = {}) {
   if (!args.date || !/^\d{4}-\d{2}-\d{2}$/.test(String(args.date))) {
     return 'No event was created: a real date in YYYY-MM-DD form is required. Ask the user which day, or work it out from today, and call again.';
   }
+  // The two things only he knows, enforced here rather than left to the tool
+  // description: a model that is merely asked to check will book an hour with
+  // no parts the first time it is in a hurry. durationMins must be given, and
+  // parts must be answered either way ("none" is a real answer).
+  if (!Number(args.durationMins)) {
+    return 'Nothing was created yet. Ask the user how long the job will take, then call add_to_calendar again with durationMins set. Do not guess a duration.';
+  }
+  if (args.parts === undefined || args.parts === null || String(args.parts).trim() === '') {
+    return 'Nothing was created yet. Ask the user whether the job needs any parts. Call add_to_calendar again with parts listing what to bring, or parts set to "none" if they say it needs nothing. Do not assume.';
+  }
   const known = args.contact ? await lookupContact(args.contact).catch(() => null) : null;
-  const title = String(args.title || 'Job').slice(0, 180);
+  const raw = String(args.parts).trim();
+  const parts = /^(none|no|nothing|n\/a)$/i.test(raw) ? '' : raw;
+  const base = String(args.title || 'Job').slice(0, 150);
+  const title = parts ? `${base} [parts]` : base;
   const { url, navigated } = await openCalendarDraft({
     title,
     date: args.date,
     time: /^\d{1,2}:\d{2}$/.test(String(args.time || '')) ? args.time : '',
-    durationMins: Number(args.durationMins) || 60,
+    durationMins: Number(args.durationMins),
     place: args.location || known?.address || null,
-    details: `Added from Vita Switch chat${known?.display_name ? ` — ${known.display_name}` : ''}.`,
+    details: [
+      parts ? `PARTS TO BRING: ${parts}` : 'No parts needed.',
+      `Allowed ${Number(args.durationMins)} minutes.`,
+      `Added from Vita Switch chat${known?.display_name ? ` — ${known.display_name}` : ''}.`,
+    ].join('\n'),
   });
   const when = `${args.date}${args.time ? ` at ${args.time}` : ' (all day)'}`;
   return navigated
@@ -409,6 +427,19 @@ async function todoForChat({ bucket = 'all' } = {}) {
     return `${c.label} (${c.bucket}):${c.synopsis ? `\n  ${c.synopsis}` : ''}\n${rows}`;
   }).join('\n\n');
   return `The user's to-do list as the app ranks it, highest first. ${list.summary}\n\n${block}\n\nThe ids are needed for mark_item_done. Answer from this list; do not go and re-read the raw sources.`;
+}
+
+// "Stop showing me their promos." Same tier the card's button sets, so the
+// two routes cannot drift: muted keeps anything with money in it and drops
+// the rest.
+async function muteForChat({ kind, from, name } = {}) {
+  const identifier = normalizeIdentifier(kind, from);
+  if (!kind || !identifier) return 'Nothing was muted: both the kind (email, bizemail, sms, ...) and the sender address or number are required. Get them from get_todo_list.';
+  try {
+    await upsertContact(pool, kind, identifier, name || from);
+    await pool.query('UPDATE contacts SET tier=$1 WHERE kind=$2 AND identifier=$3', ['muted', kind, identifier]);
+  } catch (e) { return `Could not mute ${identifier}: ${e.message}`; }
+  return `${identifier} is muted. Tell the user that their marketing and general mail will stop appearing, but anything about an invoice, receipt, payment or quote from them still comes through, and they can undo it in the People drawer.`;
 }
 
 async function markDoneForChat({ id, kind, from } = {}) {
@@ -470,6 +501,9 @@ async function proxyChat(req, res) {
       } else if (tc.function.name === 'get_todo_list') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Reading the to-do list…' })}\n\n`);
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await todoForChat(args) });
+      } else if (tc.function.name === 'mute_sender') {
+        res.write(`data: ${JSON.stringify({ type: 'status', message: 'Muting that sender…' })}\n\n`);
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await muteForChat(args) });
       } else if (tc.function.name === 'mark_item_done') {
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await markDoneForChat(args) });
       } else if (tc.function.name === 'get_waiting_replies') {
@@ -592,12 +626,17 @@ async function annotateAndFormat(kind, items, lineFn, sep, index, rules) {
     const identifier = normalizeIdentifier(kind, item.identifier);
     const contact = await upsertContact(pool, kind, identifier, item.displayName);
     const tier = deriveTier(contact);
-    if (tier === 'muted') continue;
+    const money = hasMoneyFlag(`${item.subject || ''} ${item.snippet || ''}`);
+    // Muted means "only when there is money in it", not total silence. The
+    // promo and the receipt arrive from the same sender, so silencing the
+    // sender outright loses the receipt too - which is the one thing worth
+    // keeping. An `ignore` RULE is still absolute; that one is typed on purpose.
+    if (tier === 'muted' && !money) continue;
     const ruleHit = matchRules(`${item.displayName || ''} ${identifier} ${item.subject || ''} ${item.snippet || ''}`, rules);
     if (ruleHit === 'ignore') continue;
     const annotated = {
       ...item, identifier, tier,
-      moneyFlag: hasMoneyFlag(`${item.subject || ''} ${item.snippet || ''}`),
+      moneyFlag: money,
       rulePriority: ruleHit === 'priority',
     };
     kept.push(annotated);
@@ -771,6 +810,22 @@ async function handleContactTier(req, res, id) {
   await pool.query('UPDATE contacts SET tier=$1 WHERE id=$2', [tier, id]);
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end('{"ok":true}');
+}
+
+// One press from a card: stop this sender filling the list with promos while
+// keeping anything with money in it. Identified by kind+from the way every
+// other contact write is, so it works for a sender never opened in the People
+// drawer. Reversible there (set the tier back to normal).
+async function handleContactMute(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const { kind, from, name, tier = 'muted' } = JSON.parse(await readBody(req));
+  const identifier = normalizeIdentifier(kind, from);
+  if (!kind || !identifier) { res.writeHead(400); res.end(JSON.stringify({ error: 'kind and from are required' })); return; }
+  if (!['muted', 'normal', 'vip'].includes(tier)) { res.writeHead(400); res.end('{}'); return; }
+  await upsertContact(pool, kind, identifier, name || from);
+  await pool.query('UPDATE contacts SET tier=$1 WHERE kind=$2 AND identifier=$3', [tier, kind, identifier]);
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, tier, identifier }));
 }
 
 // User-editable priority/ignore rules (Rules drawer) — plain substring
@@ -1289,7 +1344,8 @@ ${listing}`;
 
 // The deterministic rule layer — the part you can trust, because no model
 // touches it. Runs over the grounded facts before they're grouped:
-//   - an `ignore` rule or a muted contact drops the item entirely;
+//   - an `ignore` rule drops the item entirely, and a muted contact drops it
+//     unless it is about money (see the mute route: "only invoices from them");
 //   - a `priority` rule, a VIP contact, or an invoice/payment keyword flags it
 //     so /api/tasks floats it to the top of the list.
 // Rules and contact tiers come from the user's own Rules/People drawers, matched
@@ -1307,12 +1363,15 @@ async function annotateGrounded(items) {
     const rule = matchRules(`${t.from || ''} ${t.subject || ''} ${t.snippet || ''} ${t.text || ''}`, rules);
     if (rule === 'ignore') continue;
     const tier = tierOf.get(`${t.kind}|${normalizeIdentifier(t.kind, t.from)}`) || null;
-    if (tier === 'muted') continue;
+    const money = hasMoneyFlag(`${t.subject || ''} ${t.snippet || ''}`);
+    // See annotateAndFormat: a muted sender still gets through when the item
+    // is about money, so muting the promos never costs you the invoice.
+    if (tier === 'muted' && !money) continue;
     out.push({
       ...t,
       tier: tier === 'vip' ? 'vip' : (t.tier || null),
       rulePriority: rule === 'priority',
-      moneyFlag: hasMoneyFlag(`${t.subject || ''} ${t.snippet || ''}`),
+      moneyFlag: money,
     });
   }
   return out;
@@ -1534,13 +1593,22 @@ async function handleItemToCal(req, res) {
   // read and nothing to extract. The form sends the event straight through.
   if (body.date) {
     const known = await lookupContact(from).catch(() => null);
+    const parts = String(body.parts || '').replace(/\s+/g, ' ').trim();
+    // Parts go in the title, not only the notes: the month view shows the
+    // title and nothing else, and the whole reason for asking is to see on
+    // Sunday night what has to be picked up on Monday morning.
+    const base = (body.title || text || `Job for ${known?.display_name || from}`).slice(0, 150);
     const { url, navigated } = await openCalendarDraft({
-      title: (body.title || text || `Job for ${known?.display_name || from}`).slice(0, 180),
+      title: parts ? `${base} [parts]` : base,
       date: body.date,
       time: body.time || '',
       durationMins: Number(body.durationMins) || 60,
       place: body.location || known?.address || null,
-      details: `Added by hand in Vita Switch${from ? ` — ${known?.display_name || from}` : ''}.`,
+      details: [
+        parts ? `PARTS TO BRING: ${parts}` : 'No parts needed.',
+        `Allowed ${Number(body.durationMins) || 60} minutes.`,
+        `Added by hand in Vita Switch${from ? ` — ${known?.display_name || from}` : ''}.`,
+      ].join('\n'),
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true, manual: true, url, navigated,
@@ -1586,14 +1654,18 @@ Resolve relative dates ("Friday", "Tuesday next week", "tomorrow") against today
     }
     const who = known?.display_name || from;
     const title = ev.title || text || `Job for ${who}`;
-    const { url, navigated } = await openCalendarDraft({
-      title, date: ev.date, time: ev.time || '', durationMins: ev.durationMins || 60,
-      place: known?.address || inThread || ev.location || null,
-      details: `Agreed over text with ${who}. Added via Vita Switch.`,
-    });
 
+    // Nothing is opened here. The model can read a day and a time out of the
+    // thread; it cannot know how long the job will take or what you need to
+    // bring, and those are the two things that make a booking useful. So this
+    // hands the form a filled-in draft and the two questions get answered
+    // before anything reaches the calendar.
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, url, navigated, event: { title, date: ev.date, time: ev.time || '' } }));
+    res.end(JSON.stringify({ ok: true, draft: {
+      title, date: ev.date, time: ev.time || '09:00',
+      durationMins: ev.durationMins || 60,
+      location: known?.address || inThread || ev.location || '',
+    } }));
   } catch (e) { res.writeHead(502); res.end(JSON.stringify({ error: e.message })); }
 }
 
@@ -1944,9 +2016,42 @@ const calendarUrl = (title, date, time, details, location) => {
     + (details ? `&details=${encodeURIComponent(details)}` : '');
 };
 
+// What the work actually is, in the words the job record already holds. A row
+// reading "Book the next visit with <name>" told you nothing you could prepare
+// for - you had to open switch-craft to find out whether it was a switchboard
+// or a downlight. Outstanding tasks first (they are the work that is left),
+// then the description, then the job type.
+function jobWork(j) {
+  const todo = (j.tasks || []).filter(t => !t.done).map(t => String(t.text || '').trim()).filter(Boolean);
+  if (todo.length) return `Still to do: ${todo.slice(0, 4).join('; ')}`;
+  const desc = String(j.snippet || '').replace(/\s+/g, ' ').trim();
+  if (desc) return desc.slice(0, 220);
+  return j.jobType ? `Job type: ${j.jobType}` : null;
+}
+const jobWhere = j => [j.address, j.phone].filter(Boolean).join(' · ') || null;
+
+// A commitment's extracted WHAT is sometimes a pronoun ("me", "it") - the
+// model copied the wrong half of the line. A row built on that says nothing,
+// so fall through to the job record and then to the quoted line rather than
+// printing the pronoun back at him.
+const THIN_WHAT = /^(me|them|it|this|that|him|her|us|you|there|job|work|one)$/i;
+
 async function nextActions() {
   const today = ymd(new Date());
   const out = [];
+
+  // Jobs first: a commitment that matches an open job can borrow its
+  // description, which is always better than anything extracted from a text.
+  let jobs = [];
+  try { jobs = (await getSwitchcraftJobs()).items || []; }
+  catch (e) { console.error('actions: jobs —', e.message); }
+  const digits = v => String(v || '').replace(/\D/g, '').slice(-9);
+  const jobFor = who => {
+    const w = String(who || '').toLowerCase().trim();
+    const d = digits(who);
+    return jobs.find(j => (d && d.length >= 9 && digits(j.phone) === d)
+                       || (w.length > 3 && String(j.identifier || '').toLowerCase().includes(w))) || null;
+  };
 
   // Agreed in a message, absent from the calendar.
   try {
@@ -1956,29 +2061,38 @@ async function nextActions() {
     for (const r of rows) {
       const when = r.when_date ? ymd(r.when_date) : null;
       const known = await lookupContact(r.who).catch(() => null);
-      const who = known?.display_name || r.who;
+      const job = jobFor(r.who);
+      const who = known?.display_name || job?.identifier || r.who;
+      const said = String(r.what || '').trim();
+      // In order of how much it actually tells him about the job.
+      const work = (said && !THIN_WHAT.test(said) && said.length > 3) ? said
+                 : (job ? jobWork(job) : null)
+                 || String(r.quote || '').replace(/\s+/g, ' ').trim().slice(0, 160)
+                 || 'work agreed over text';
+      const place = known?.address || job?.address || null;
       out.push({
         id: `book-${r.id}`, kind: 'book',
         urgency: when && when <= today ? 4 : 2,
-        title: `Get ${who} in the calendar`,
-        detail: `${r.what}${when ? ` — agreed for ${when}` : ', no day pinned down yet'}`
-              + `${known?.address ? ` at ${known.address}` : ''}.`,
+        title: `${work} — ${who}`,
+        detail: `${when ? `Agreed for ${when}` : 'No day pinned down yet'}`
+              + `${place ? `, at ${place}` : ''}. Not in the calendar.`,
         quote: r.quote,
-        // No day agreed is still actionable: open the event on today's date
-        // with everything else filled in and change the day in the calendar.
-        // Leaving the row with no button at all is how "I can't action this"
-        // happens - the band told him to book it and then offered nothing.
-        href: calendarUrl(`${r.what} — ${who}`, when || today, r.when_time, r.quote, known?.address),
+        // Structured, not a bare Google link: the button opens the booking
+        // form so how long it will take and whether it needs parts get
+        // answered before anything is written. The link is the fallback for
+        // when the form cannot reach the calendar tab.
+        book: {
+          title: `${work} — ${who}`.slice(0, 180),
+          date: when || today, time: r.when_time || '09:00',
+          location: place || '', kind: 'sms', from: r.who,
+        },
+        href: calendarUrl(`${work} — ${who}`, when || today, r.when_time, r.quote, place),
         cta: when ? 'add to calendar' : 'pick a day in the calendar',
       });
     }
   } catch (e) { console.error('actions: commitments —', e.message); }
 
   // Jobs whose scheduled day has already passed, and jobs left open.
-  let jobs = [];
-  try { jobs = (await getSwitchcraftJobs()).items || []; }
-  catch (e) { console.error('actions: jobs —', e.message); }
-
   for (const j of jobs) {
     const past = j.scheduledDate && j.scheduledDate < today;
     const ongoing = ONGOING.has(j.status);
@@ -1988,6 +2102,7 @@ async function nextActions() {
         id: `invoice-${j.id}`, kind: 'invoice', urgency: 5,
         title: `Invoice ${j.identifier}`,
         detail: `${j.when}. If it is finished, invoice it — if it is not, mark it ongoing.`,
+        work: jobWork(j), where: jobWhere(j),
         href, cta: 'open the job',
       });
     } else if (ongoing && (past || !j.scheduledDate)) {
@@ -1997,6 +2112,14 @@ async function nextActions() {
         detail: past
           ? `Still marked ${String(j.status).replace(/_/g, ' ')} and ${j.when}. Lock the next visit in before it stalls.`
           : `Marked ${String(j.status).replace(/_/g, ' ')} with nothing booked next. Lock the next visit in before it stalls.`,
+        work: jobWork(j), where: jobWhere(j),
+        // The whole point of this row is to get a day in the diary, so it
+        // offers the booking form as well as the job record.
+        book: {
+          title: `${jobWork(j) || j.jobType || 'Next visit'} — ${j.identifier}`.slice(0, 180),
+          date: today, time: j.scheduledTime || '09:00',
+          location: j.address || '', kind: 'job', from: j.identifier,
+        },
         href, cta: 'open the job',
       });
     }
@@ -2244,6 +2367,7 @@ createServer(async (req, res) => {
     if (req.method === 'GET' && u === '/api/texts') return await handleTexts(req, res);
     if (req.method === 'GET'  && u === '/api/contacts') return await handleContacts(req, res);
     if (req.method === 'POST' && u === '/api/contacts/signal') return await handleContactSignal(req, res);
+    if (req.method === 'POST' && u === '/api/contacts/mute')   return await handleContactMute(req, res);
     const contactMatch = u.match(/^\/api\/contacts\/(\d+)$/);
     if (req.method === 'PATCH' && contactMatch) return await handleContactTier(req, res, contactMatch[1]);
     if (u === '/api/rules') return await handleRules(req, res);

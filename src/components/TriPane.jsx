@@ -332,7 +332,7 @@ export default function TriPane({ categories = [], actions = [], scannedAt,
         </header>
         <div ref={el => { scrollEl.current.feed = el; }} onScroll={remeasure}
              style={{ flex: 1, overflowY: 'auto', padding: `${SP[3]}px`, scrollbarWidth: 'none' }}>
-          <ActionBand actions={actions} />
+          <ActionBand actions={actions} auth={auth} onOpenBrowser={onOpenBrowser} />
           {feed.length === 0
             ? <div style={{ padding: `${SP[6]}px 0`, textAlign: 'center', fontFamily: FONT.sans,
                             fontSize: FS.body, color: C.text3 }}>nothing in this window</div>

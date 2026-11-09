@@ -578,18 +578,19 @@ export const ADD_TO_CALENDAR_TOOL = {
   type: 'function',
   function: {
     name: 'add_to_calendar',
-    description: "Put an appointment or job in the user's Google Calendar. Use it whenever they say to book, schedule, diarise or add something - including work agreed on a phone call, where there is no message to read. It opens the event pre-filled in their calendar for them to save; it does not write silently. Resolve relative days (\"Thursday\", \"tomorrow\") to a real date yourself before calling.",
+    description: "Put an appointment or job in the user's Google Calendar. Use it whenever they say to book, schedule, diarise or add something - including work agreed on a phone call, where there is no message to read. It opens the event pre-filled in their calendar for them to save; it does not write silently. Resolve relative days (\"Thursday\", \"tomorrow\") to a real date yourself before calling. ALWAYS ask the user two things first and put their answers in durationMins and parts: how long the job will take, and whether it needs any parts. Never guess either one - a wrong duration double-books his day and a missed part wastes the trip.",
     parameters: {
       type: 'object',
       properties: {
         title:        { type: 'string', description: 'What the event is, e.g. "Switchboard upgrade - 12 Example St".' },
         date:         { type: 'string', description: 'The day, as YYYY-MM-DD.' },
         time:         { type: 'string', description: '24h start time as HH:MM. Omit for an all-day entry.' },
-        durationMins: { type: 'integer', description: 'How long, in minutes. Defaults to 60.' },
+        durationMins: { type: 'integer', description: 'How long the job will take, in minutes, as the USER stated it. Ask them; do not estimate it yourself.' },
+        parts:        { type: 'string', description: 'What has to be picked up or ordered for the job, as the USER stated it, or the word "none" if they said it needs nothing. Ask them; this is never inferred.' },
         location:     { type: 'string', description: 'Address, if there is one. A known client\'s address is filled in automatically.' },
         contact:      { type: 'string', description: "Who it is with, if anyone - a name or number. Used to look up their address." },
       },
-      required: ['title', 'date'],
+      required: ['title', 'date', 'durationMins', 'parts'],
     },
   },
 };
@@ -621,6 +622,27 @@ export const MARK_DONE_TOOL = {
         from: { type: 'string', description: "The item's from field from get_todo_list." },
       },
       required: ['id'],
+    },
+  },
+};
+
+// A card can mute a sender in one press; the bot could not, so "stop showing me
+// Pinterest" was advice about a drawer instead of an action. Muted is not
+// silence: anything with an invoice, receipt, payment or quote in it still
+// comes through, which is the only reason muting a shop is safe at all.
+export const MUTE_SENDER_TOOL = {
+  type: 'function',
+  function: {
+    name: 'mute_sender',
+    description: "Stop a sender's everyday mail from appearing in the user's lists. Use it when they say a sender is junk, promos, marketing, noise, or that they only want the money ones from them. Anything that mentions an invoice, receipt, payment or quote still gets through, so say that when you confirm. Get kind and from from get_todo_list rather than guessing an address.",
+    parameters: {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', description: 'Which source the sender is on: email, bizemail, sms, whatsapp, messenger or meta.' },
+        from: { type: 'string', description: 'The sender exactly as the list gives it - an email address or a phone number.' },
+        name: { type: 'string', description: 'A display name for them, if the list has one.' },
+      },
+      required: ['kind', 'from'],
     },
   },
 };

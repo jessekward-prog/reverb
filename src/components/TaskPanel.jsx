@@ -4,6 +4,7 @@ import { authHeaders } from '../api.js';
 import { C, FS, FONT, SP } from '../lib/design.js';
 import { KINDS } from '../lib/kinds.js';
 import ItemCard from './ItemCard.jsx';
+import CalForm from './CalForm.jsx';
 
 // What you get when you open a row. The complaint this answers: a line saying
 // a row reading "Reply to <name> · 4d" is not something you can act on — you had to
@@ -24,17 +25,6 @@ const READABLE = new Set(['sms', 'meta']);
 // Local date, not toISOString: in AEDT a UTC date reads as yesterday until 11am,
 // which would open the form on the wrong day every morning.
 const ymdLocal = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-
-// textTransform: none is load-bearing, not decoration - this panel also renders
-// inside the report tabs, whose root sets uppercase for the terminal chrome,
-// and text-transform is inherited. Without it you type a client's address and
-// the field shouts it back at you.
-const field = {
-  background: C.bg, color: C.text1, border: `1px solid ${C.border}`, borderRadius: 6,
-  padding: '10px 11px', fontFamily: FONT.sans, fontSize: FS.body, minHeight: 42,
-  outline: 'none', width: '100%', boxSizing: 'border-box', textTransform: 'none',
-  letterSpacing: 'normal',
-};
 
 export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onOpenChat }) {
   const [entry, setEntry]     = useState(null);
@@ -127,46 +117,71 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
 
   // A date out of whatever the item already knows, so the form opens on
   // something sensible rather than an empty box.
-  function seedForm(why) {
+  function seedForm(why, draft) {
     const iso = String(t.when || '').match(/\d{4}-\d{2}-\d{2}/)?.[0] || ymdLocal(new Date());
     const hhmm = String(t.when || '').match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
     setCalForm({
-      date: iso,
-      time: hhmm ? `${String(hhmm[1]).padStart(2, '0')}:${hhmm[2]}` : '09:00',
-      durationMins: 60,
-      title: String(t.text || '').slice(0, 120),
-      location: t.address || '',
+      seed: {
+        date: iso,
+        time: hhmm ? `${String(hhmm[1]).padStart(2, '0')}:${hhmm[2]}` : '09:00',
+        durationMins: 60,
+        title: String(t.text || '').slice(0, 120),
+        location: t.address || '',
+        ...(draft || {}),
+      },
       why: why || '',
     });
   }
 
-  // Try to read the booking out of the conversation; when there is no
-  // conversation to read - a job raised off a phone call, nine times out of
-  // ten - don't just report that, open the form and let it be typed in.
+  // Reading the thread fills the form in; it never books anything. The model
+  // can find the day and the time in a conversation, but how long the job will
+  // take and what has to be brought are only in his head, and an event missing
+  // those is what sends you back out on a second trip.
   function addToCal() {
-    if (!READABLE.has(t.kind)) { seedForm('no conversation behind this one'); return; }
-    setCal('adding');
+    if (!READABLE.has(t.kind)) { seedForm('nothing to read here — fill it in'); return; }
+    setCal('reading the thread');
     fetch('/api/item/tocal', { method: 'POST', headers: jsonHead,
       body: JSON.stringify({ from: t.from, text: t.text }) })
       .then(r => r.json())
       .then(d => {
-        if (d.error) { setCal(null); seedForm(d.error); return; }
-        setCal('done'); setCalUrl(d.navigated ? null : d.url); onOpenBrowser?.();
+        setCal(null);
+        if (d.draft) seedForm('read out of the conversation — check it', d.draft);
+        else seedForm(d.error || 'nothing concrete in the thread');
       })
-      .catch(() => setCal('could not reach calendar'));
+      .catch(() => { setCal(null); seedForm('could not read the thread'); });
   }
 
-  function submitCal() {
-    if (!calForm?.date) return;
+  function submitCal(f) {
+    if (!f?.date) return;
     setBusy('calling'); setCal('adding');
     fetch('/api/item/tocal', { method: 'POST', headers: jsonHead,
-      body: JSON.stringify({ from: t.from, text: t.text, ...calForm }) })
+      body: JSON.stringify({ from: t.from, text: t.text, ...f,
+                             parts: f.needsParts ? f.parts : '' }) })
       .then(r => r.json())
       .then(d => {
         if (d.error) { setCal(d.error); return; }
         setCal('done'); setCalForm(null); setCalUrl(d.navigated ? null : d.url); onOpenBrowser?.();
       })
       .catch(() => setCal('could not reach calendar'))
+      .finally(() => setBusy(null));
+  }
+
+  // Marking one promo done only clears that one promo - the next one has a
+  // different id and comes straight back. This is the button that actually
+  // stops them: the sender is muted, and anything mentioning an invoice,
+  // receipt, payment or quote still gets through, so a shop's receipts
+  // survive its marketing. Undo it in the People drawer.
+  function mute() {
+    setBusy('muting');
+    fetch('/api/contacts/mute', { method: 'POST', headers: jsonHead,
+      body: JSON.stringify({ kind: t.kind, from: t.from, name: t.displayName || t.from }) })
+      .then(r => r.json())
+      .then(d => {
+        if (!d.ok) { setNote(d.error || 'could not mute them'); return; }
+        setNote('muted — only invoices and receipts from them from now on');
+        setTimeout(() => onDone?.(t, 'muted'), 700);
+      })
+      .catch(() => setNote('could not mute them'))
       .finally(() => setBusy(null));
   }
 
@@ -177,6 +192,7 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
     (t.kind === 'email' || t.kind === 'bizemail') && { label: '✉ open in gmail', onPress: () => onOpenBrowser?.() },
     t.kind !== 'cal' && { label: '📅 add to calendar', onPress: addToCal },
     { label: '💬 ask about this', onPress: () => onOpenChat?.(t) },
+    { label: busy === 'muting' ? 'muting…' : '🔇 only invoices from them', onPress: mute },
     { label: '✓ done', onPress: () => onDone?.(t, 'done') },
     { label: 'close', onPress: () => onClose?.() },
   ].filter(Boolean);
@@ -211,54 +227,11 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
       )}
 
       {calForm && (
-        <div style={{ border: `1px solid ${C.borderHi}`, borderTop: 0,
-                      borderRadius: `0 0 ${C.radius}px ${C.radius}px`,
-                      background: C.surface, padding: SP[3], display: 'flex',
-                      flexDirection: 'column', gap: SP[2] }}>
-          <div style={{ fontFamily: FONT.mono, fontSize: FS.label, letterSpacing: '.08em',
-                        textTransform: 'uppercase', color: C.text3 }}>
-            add it by hand{calForm.why ? ` — ${calForm.why}` : ''}
-          </div>
-
-          <input value={calForm.title} onChange={e => setCalForm(f => ({ ...f, title: e.target.value }))}
-                 placeholder="what the event is" style={field} />
-
-          <div style={{ display: 'flex', gap: SP[2], flexWrap: 'wrap' }}>
-            <input type="date" value={calForm.date}
-                   onChange={e => setCalForm(f => ({ ...f, date: e.target.value }))}
-                   style={{ ...field, flex: '1 1 150px' }} />
-            <input type="time" value={calForm.time}
-                   onChange={e => setCalForm(f => ({ ...f, time: e.target.value }))}
-                   style={{ ...field, flex: '1 1 110px' }} />
-            <select value={calForm.durationMins}
-                    onChange={e => setCalForm(f => ({ ...f, durationMins: Number(e.target.value) }))}
-                    style={{ ...field, flex: '1 1 110px' }}>
-              {[30, 60, 90, 120, 180, 240, 480].map(m => (
-                <option key={m} value={m}>{m < 60 ? `${m} min` : `${m / 60} hr${m > 60 ? 's' : ''}`}</option>
-              ))}
-            </select>
-          </div>
-
-          <input value={calForm.location} onChange={e => setCalForm(f => ({ ...f, location: e.target.value }))}
-                 placeholder="address (optional)" style={field} />
-
-          <div style={{ display: 'flex', alignItems: 'center', gap: SP[2] }}>
-            <button type="button" onClick={() => setCalForm(null)} style={{
-              appearance: 'none', cursor: 'pointer', fontFamily: FONT.mono, fontSize: FS.label,
-              letterSpacing: '.08em', textTransform: 'uppercase', borderRadius: 6,
-              padding: '9px 12px', minHeight: 40, border: `1px solid ${C.border}`,
-              background: 'transparent', color: C.text3,
-            }}>cancel</button>
-            <span style={{ flex: 1 }} />
-            <motion.button type="button" onClick={submitCal} whileTap={{ scale: .98 }}
-              disabled={!calForm.date || busy === 'calling'} style={{
-                appearance: 'none', cursor: 'pointer', fontFamily: FONT.mono, fontSize: FS.ui,
-                letterSpacing: '.08em', textTransform: 'uppercase', borderRadius: 6,
-                padding: '9px 16px', minHeight: 44, border: `1px solid ${C.amber}`,
-                fontWeight: 700, background: C.amber, color: '#140d02',
-              }}>{busy === 'calling' ? 'opening…' : 'put it in the calendar →'}</motion.button>
-          </div>
-        </div>
+        <CalForm seed={calForm.seed} why={calForm.why}
+                 busy={busy === 'calling'}
+                 error={typeof cal === 'string' && cal !== 'adding' && cal !== 'done' ? cal : null}
+                 onCancel={() => { setCalForm(null); setCal(null); }}
+                 onSubmit={submitCal} />
       )}
 
       {calUrl && (

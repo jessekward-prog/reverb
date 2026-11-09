@@ -1,6 +1,8 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
+import { authHeaders } from '../api.js';
 import { C, FS, FONT, SP, EASE_OUT } from '../lib/design.js';
+import CalForm from './CalForm.jsx';
 
 // The pressure band. Amber in this app means "act on this now" — it is not
 // decoration, and this is the only surface that earns it.
@@ -15,9 +17,34 @@ const LABEL = {
   'next-visit': 'book the next visit',
 };
 
-export default function ActionBand({ actions = [] }) {
+export default function ActionBand({ actions = [], auth, onOpenBrowser }) {
   const reduce = useReducedMotion();
+  const [booking, setBooking] = useState(null);   // the action id being booked
+  const [busy, setBusy]       = useState(null);
+  const [err, setErr]         = useState(null);
+  const [link, setLink]       = useState(null);   // {id, url} when the tab refused it
   if (!actions.length) return null;
+
+  // The band used to hand you a bare Google link that assumed two hours and no
+  // parts. It opens the same form the cards use instead, so how long it takes
+  // and what has to be brought are answered before the event exists.
+  function book(a, f) {
+    setBusy(a.id); setErr(null);
+    fetch('/api/item/tocal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
+      body: JSON.stringify({ from: a.book.from, text: a.title, ...f,
+                             parts: f.needsParts ? f.parts : '' }),
+    })
+      .then(r => r.json())
+      .then(d => {
+        if (d.error) { setErr(d.error); return; }
+        setBooking(null);
+        if (d.navigated) onOpenBrowser?.(); else setLink({ id: a.id, url: d.url });
+      })
+      .catch(() => setErr('could not reach the calendar'))
+      .finally(() => setBusy(null));
+  }
 
   return (
     <div style={{ marginBottom: SP[5], display: 'flex', flexDirection: 'column', gap: SP[2] }}>
@@ -67,7 +94,50 @@ export default function ActionBand({ actions = [] }) {
               </div>
             )}
 
-            {a.href && a.cta && (
+            {/* What the work actually is, straight off the job record - the
+                row is useless for preparing if it only names the client. */}
+            {a.work && (
+              <div style={{ fontFamily: FONT.sans, fontSize: FS.body, lineHeight: 1.55,
+                            color: C.text1, textTransform: 'none', textWrap: 'pretty' }}>
+                {a.work}
+              </div>
+            )}
+            {a.where && (
+              <div style={{ fontFamily: FONT.mono, fontSize: FS.meta, color: C.text3,
+                            textTransform: 'none', letterSpacing: 'normal' }}>
+                {a.where}
+              </div>
+            )}
+
+            {a.book && booking !== a.id && (
+              <motion.button type="button" whileTap={{ scale: .98 }}
+                onClick={() => { setBooking(a.id); setErr(null); setLink(null); }}
+                style={{
+                  alignSelf: 'flex-start', marginTop: SP[1], appearance: 'none', cursor: 'pointer',
+                  fontFamily: FONT.mono, fontSize: FS.ui, letterSpacing: '.04em',
+                  color: C.bg, background: C.amber, fontWeight: 700, border: 'none',
+                  padding: `${SP[2]}px ${SP[3]}px`, borderRadius: 6, minHeight: 40,
+                }}>{a.kind === 'book' ? (a.cta || 'add to calendar') : 'book a day for it'} →</motion.button>
+            )}
+
+            {a.book && booking === a.id && (
+              <div style={{ marginTop: SP[2] }}>
+                <CalForm seed={a.book} why="how long, and does it need parts?"
+                         busy={busy === a.id} error={err}
+                         onCancel={() => { setBooking(null); setErr(null); }}
+                         onSubmit={f => book(a, f)} />
+              </div>
+            )}
+
+            {link?.id === a.id && (
+              <a href={link.url} target="_blank" rel="noreferrer"
+                 style={{ fontFamily: FONT.sans, fontSize: FS.meta, color: C.amber,
+                          textTransform: 'none' }}>
+                the calendar tab didn't take it — open the event here
+              </a>
+            )}
+
+            {a.href && a.cta && a.kind !== 'book' && (
               <a href={a.href} target="_blank" rel="noopener noreferrer"
                  style={{
                    alignSelf: 'flex-start', marginTop: SP[1], textDecoration: 'none',
