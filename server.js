@@ -842,6 +842,42 @@ async function handleActionDone(req, res) {
   res.end('{"ok":true}');
 }
 
+// Verify instead of trusting. Every band row is derived from state that can be
+// re-checked, so a refresh re-reads the sources and lets the rows that are
+// genuinely done fall away on the evidence rather than on a button press. The
+// jobs feed and the waiting index are already read live on every call; the one
+// thing that was not was the calendar, which only reconciled on a timer - so
+// adding an event and expecting the row to go was a wait, not an action.
+//
+// Only a definite match clears a booking. reconcileStatus also returns
+// needs_confirm, meaning "something is on that day but nothing ties it to this
+// job"; that is reported, never used to clear, because the whole point here is
+// that nothing disappears unless it has been proven done.
+async function handleActionsRefresh(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const before = await nextActions().catch(() => []);
+  let booked = 0, unsure = 0;
+  try {
+    const events = await fetchEvents();
+    const { rows } = await pool.query(
+      "SELECT id, who, what, when_date FROM commitments WHERE status = 'unbooked'");
+    for (const r of rows) {
+      const status = reconcileStatus(
+        { who: r.who, what: r.what, date: r.when_date ? ymd(r.when_date) : null }, events);
+      if (status === 'booked') {
+        await pool.query("UPDATE commitments SET status = 'booked' WHERE id = $1", [r.id]);
+        booked++;
+      } else if (status === 'needs_confirm') unsure++;
+    }
+  } catch (e) { console.error('actions refresh:', e.message); }
+
+  const after = await nextActions().catch(() => []);
+  const cleared = before.filter(b => !after.some(a => a.id === b.id))
+                        .map(b => ({ kind: b.kind, title: b.title }));
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, actions: after, cleared, booked, unsure }));
+}
+
 // Fired when the user acts on an item (currently: "draft reply") — the
 // positive counterpart to handleTaskDone's dismiss signal.
 async function handleContactSignal(req, res) {
@@ -2811,6 +2847,7 @@ createServer(async (req, res) => {
     if (req.method === 'POST' && u === '/api/contacts/signal') return await handleContactSignal(req, res);
     if (req.method === 'POST' && u === '/api/contacts/mute')   return await handleContactMute(req, res);
     if (req.method === 'POST' && u === '/api/actions/done')    return await handleActionDone(req, res);
+    if (req.method === 'POST' && u === '/api/actions/refresh') return await handleActionsRefresh(req, res);
     const contactMatch = u.match(/^\/api\/contacts\/(\d+)$/);
     if (req.method === 'PATCH' && contactMatch) return await handleContactTier(req, res, contactMatch[1]);
     if (u === '/api/rules') return await handleRules(req, res);

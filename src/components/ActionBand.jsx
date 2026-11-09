@@ -27,7 +27,35 @@ export default function ActionBand({ actions = [], auth, onCleared }) {
   const [err, setErr]         = useState(null);
   const [link, setLink]       = useState(null);   // {id, url} when the tab refused it
   const [cleared, setCleared] = useState([]);     // ids clearing, so they animate out
-  if (!actions.length) return null;
+  const [undo, setUndo]       = useState(null);   // the last row cleared by hand
+  const [checking, setCheck]  = useState(false);
+  const [note, setNote]       = useState(null);
+  // The refresh hands back the re-derived band, so it updates in place rather
+  // than reloading the whole report and flashing a spinner over everything.
+  const [live, setLive]       = useState(null);
+  const rows = (live ?? actions).filter(a => !cleared.includes(a.id));
+  if (!rows.length && !note) return null;
+
+  // Check, do not trust. Every row here is derived from something that can be
+  // re-read - the calendar for a booking, the job feed for a client waiting -
+  // so this re-reads them and lets whatever is genuinely done fall away on the
+  // evidence. Only a definite calendar match clears a booking.
+  function recheck() {
+    setCheck(true); setNote(null);
+    fetch('/api/actions/refresh', { method: 'POST', headers: authHeaders(auth?.token) })
+      .then(r => r.json())
+      .then(d => {
+        const bits = [];
+        if (d.booked) bits.push(`${d.booked} now in your calendar`);
+        if (d.cleared?.length) bits.push(`${d.cleared.length} cleared`);
+        if (d.unsure) bits.push(`${d.unsure} had something else on that day — left here to check`);
+        setNote(bits.length ? bits.join(' · ') : 'checked — nothing has changed yet');
+        if (Array.isArray(d.actions)) { setLive(d.actions); setCleared([]); setUndo(null); }
+        onCleared?.();
+      })
+      .catch(() => setNote('could not check'))
+      .finally(() => setCheck(false));
+  }
 
   // The band was a wall you could not get through: every row permanent, no way
   // to say "handled". Clearing sends the fingerprint back with the id, so the
@@ -39,8 +67,22 @@ export default function ActionBand({ actions = [], auth, onCleared }) {
       headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
       body: JSON.stringify({ id: a.id, fact: a.fact ?? '', done: true }),
     })
-      .then(() => onCleared?.(a))
+      .then(() => { setUndo(a); onCleared?.(a); })
       .catch(() => setCleared(c => c.filter(x => x !== a.id)));
+  }
+
+  // A mis-tap must not cost him a job. Clearing is reversible for as long as
+  // the band is on screen.
+  function undoClear() {
+    const a = undo;
+    if (!a) return;
+    setUndo(null);
+    setCleared(c => c.filter(x => x !== a.id));
+    fetch('/api/actions/done', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
+      body: JSON.stringify({ id: a.id, done: false }),
+    }).then(() => onCleared?.()).catch(() => {});
   }
 
   // The band used to hand you a bare Google link that assumed two hours and no
@@ -76,11 +118,36 @@ export default function ActionBand({ actions = [], auth, onCleared }) {
                     textTransform: 'uppercase', color: C.amber }}>
         <span style={{ width: 7, height: 7, background: C.amber, borderRadius: 2 }} />
         do these first
-        <span style={{ color: C.text3 }}>{actions.length}</span>
+        <span style={{ color: C.text3 }}>{rows.length}</span>
+        <button type="button" onClick={recheck} disabled={checking}
+          style={{ marginLeft: 'auto', appearance: 'none', background: 'none',
+                   border: `1px solid ${C.border}`, borderRadius: 6, cursor: 'pointer',
+                   fontFamily: FONT.mono, fontSize: FS.label, letterSpacing: '.08em',
+                   textTransform: 'uppercase', color: C.text2, padding: '6px 10px',
+                   minHeight: 32 }}>
+          {checking ? 'checking…' : '⟳ check what\u2019s done'}
+        </button>
       </div>
 
+      {note && (
+        <div style={{ fontFamily: FONT.sans, fontSize: FS.meta, color: C.text2,
+                      textTransform: 'none', letterSpacing: 'normal' }}>{note}</div>
+      )}
+
+      {undo && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: SP[2],
+                      fontFamily: FONT.sans, fontSize: FS.meta, color: C.text2,
+                      textTransform: 'none', letterSpacing: 'normal' }}>
+          cleared “{undo.title}”
+          <button type="button" onClick={undoClear}
+            style={{ appearance: 'none', background: 'none', border: 'none', padding: 0,
+                     cursor: 'pointer', color: C.amber, fontFamily: FONT.mono,
+                     fontSize: FS.meta, textDecoration: 'underline' }}>undo</button>
+        </div>
+      )}
+
       <AnimatePresence initial={false}>
-        {actions.filter(a => !cleared.includes(a.id)).map((a, i) => (
+        {rows.map((a, i) => (
           <motion.div
             key={a.id}
             initial={reduce ? { opacity: 0 } : { opacity: 0, transform: 'translateY(6px)' }}
@@ -180,7 +247,7 @@ export default function ActionBand({ actions = [], auth, onCleared }) {
                   cursor: 'pointer', background: 'none', border: 'none', padding: `${SP[1]}px 0`,
                   fontFamily: FONT.mono, fontSize: FS.meta, letterSpacing: '.06em',
                   textTransform: 'uppercase', color: C.text3, minHeight: 32,
-                }}>✓ handled</button>
+                }}>✓ handled — i did this myself</button>
             )}
 
             {a.book && booking !== a.id && (

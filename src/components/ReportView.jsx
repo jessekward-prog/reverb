@@ -420,7 +420,7 @@ export default function ReportView({
           <TopicStrip topics={topics} onView={onView} />
 
           {/* Above everything: the things that should not wait. */}
-          <ActionBand actions={actions} auth={auth} />
+          <ActionBand actions={actions} auth={auth} onCleared={() => {}} />
 
           {summary && (
             <div style={{ marginBottom: 18, padding: '13px 16px', border: `1px solid ${HAIR}`,
