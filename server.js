@@ -86,6 +86,16 @@ async function initDb() {
       read_at    TIMESTAMPTZ,
       UNIQUE (topic_id, item_id)
     );
+    -- A band row he has dealt with. Keyed by the row id AND a fingerprint of
+    -- the state that justified it, so "done" means "I handled this", not
+    -- "never show me this again": when the client sends something new, the
+    -- fingerprint changes and the row comes back.
+    CREATE TABLE IF NOT EXISTS action_done (
+      action_id TEXT PRIMARY KEY,
+      fact      TEXT NOT NULL,
+      done_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+
     CREATE TABLE IF NOT EXISTS swept_done (
       task_id    TEXT PRIMARY KEY,
       created_at TIMESTAMPTZ DEFAULT NOW()
@@ -808,6 +818,25 @@ async function handleTaskDone(req, res, id) {
     if (kind && from) await signalContact(pool, kind, normalizeIdentifier(kind, from), 'dismiss');
   } else {
     await pool.query('DELETE FROM swept_done WHERE task_id=$1', [id]);
+  }
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end('{"ok":true}');
+}
+
+// Clear a band row. The fact fingerprint comes back with it, so the row stays
+// gone only while nothing about it has changed - a new message from the client
+// brings it straight back rather than leaving it dismissed forever.
+async function handleActionDone(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const { id, fact, done = true } = JSON.parse(await readBody(req));
+  if (!id) { res.writeHead(400); res.end('{"error":"id required"}'); return; }
+  if (done) {
+    await pool.query(
+      `INSERT INTO action_done (action_id, fact) VALUES ($1, $2)
+       ON CONFLICT (action_id) DO UPDATE SET fact = EXCLUDED.fact, done_at = now()`,
+      [id, String(fact ?? '')]);
+  } else {
+    await pool.query('DELETE FROM action_done WHERE action_id=$1', [id]);
   }
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end('{"ok":true}');
@@ -2255,7 +2284,7 @@ const THIN_WHAT = /^(me|them|it|this|that|him|her|us|you|there|job|work|one)$/i;
 
 async function nextActions() {
   const today = ymd(new Date());
-  const out = [];
+  let out = [];
 
   // Jobs first: a commitment that matches an open job can borrow its
   // description, which is always better than anything extracted from a text.
@@ -2294,7 +2323,15 @@ async function nextActions() {
       const phone = phoneLast9(r.who) ? r.who : (job?.phone || null);
       out.push({
         id: `book-${r.id}`, kind: 'book',
-        urgency: when && when <= today ? 4 : 2,
+        // Re-based. These used to sit at 2-4, which was top of the band when
+        // the band held nothing else. Adding a whole tier of client nags above
+        // them pushed every one off - and "they agreed a time and it is not in
+        // your diary" is the row most likely to cost a job he simply does not
+        // turn up to. Today or already past outranks everything bar a dead
+        // source.
+        urgency: !when ? 5 : when <= today ? 8 : when <= ymd(new Date(Date.now() + 2 * 86400000)) ? 7 : 6,
+        at: when ? new Date(`${when}T00:00:00`).getTime() : 0,
+        fact: `${r.id}:${when || ''}`,
         // The row is a contact card: who, how to reach them, where, and what
         // the job is. A title that was only the extracted phrase told him
         // neither who it was nor what he would be doing.
@@ -2362,7 +2399,7 @@ async function nextActions() {
         ? `${j.photoCount} photo${j.photoCount === 1 ? '' : 's'}` : '';
       const ago = days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
       out.push({
-        id: `reply-${j.id}`, kind: 'waiting-on-you',
+        id: `reply-${j.id}`, kind: 'waiting-on-you', fact: `${j.id}:${asked}`,
         urgency: Math.min(8, 6 + Math.floor(days / 2)),
         at: asked,
         title: j.identifier,
@@ -2384,7 +2421,7 @@ async function nextActions() {
       const days = daysOpen(j.raised);
       if (days >= 1) {
         out.push({
-          id: `quote-${j.id}`, kind: 'quote-owed',
+          id: `quote-${j.id}`, kind: 'quote-owed', fact: `${j.id}:${j.status}`,
           urgency: Math.min(8, 6 + Math.floor(days / 3)),
           at: new Date(j.raised || 0).getTime(),
           title: j.identifier,
@@ -2405,6 +2442,7 @@ async function nextActions() {
     if (past && !ongoing) {
       out.push({
         id: `invoice-${j.id}`, kind: 'invoice', urgency: 5,
+        fact: `${j.id}:${j.status}:${j.scheduledDate || ''}`,
         title: `Invoice ${j.identifier}`,
         detail: `${j.when}. If it is finished, invoice it — if it is not, mark it ongoing.`,
         work: jobWork(j), where: jobWhere(j),
@@ -2413,6 +2451,7 @@ async function nextActions() {
     } else if (ongoing && (past || !j.scheduledDate)) {
       out.push({
         id: `next-${j.id}`, kind: 'next-visit', urgency: 6,
+        fact: `${j.id}:${j.status}:${j.scheduledDate || ''}`,
         title: `Book the next visit with ${j.identifier}`,
         detail: past
           ? `Still marked ${String(j.status).replace(/_/g, ' ')} and ${j.when}. Lock the next visit in before it stalls.`
@@ -2441,7 +2480,18 @@ async function nextActions() {
     // does not take two slots.
     const covered = new Set(out.map(a => String(a.title || '').toLowerCase().trim()).filter(Boolean));
     const FLOOR_H = 12;   // replying the same morning is normal; this is for what got missed
+    // Email belongs in the reports, not on the band. Everything transactional
+    // is conversational by shape - a depot notice, an order confirmation - and
+    // three of the first six rows this produced were mail nobody was waiting
+    // on. On the top-six pressure surface precision beats reach; the reports
+    // still carry every one of them.
+    const BAND_SOURCES = new Set(['sms', 'whatsapp', 'messenger', 'meta']);
+    // A conversation that ended with a thanks is not someone waiting. No
+    // question asked, short, and grateful: that is a full stop, not a prompt.
+    const THANKS = /\b(thanks|thank you|ta|cheers|no worries|all good|appreciate it)\b/i;
+    const isEnder = t => !t.includes('?') && t.length <= 80 && THANKS.test(t);
     for (const w of owed) {
+      if (!BAND_SOURCES.has(w.kind)) continue;
       const who = String(w.displayName || w.identifier || '').trim();
       if (!who || covered.has(who.toLowerCase())) continue;
       const at = w.occurred_at ? new Date(w.occurred_at).getTime() : 0;
@@ -2453,9 +2503,11 @@ async function nextActions() {
       if (hours < FLOOR_H || hours > 30 * 24) continue;
       const days = Math.floor(hours / 24);
       const asked = String(w.snippet || '').replace(/\s+/g, ' ').trim();
+      if (isEnder(asked)) continue;
       out.push({
         id: `owed-${w.kind}-${who.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
         kind: 'reply-owed',
+        fact: `${w.kind}:${at}`,
         // Below a client at the same age - work leads - but it still climbs,
         // so someone left a week gets to the top on their own.
         urgency: Math.min(8, 5 + Math.floor(days / 2)),
@@ -2489,18 +2541,33 @@ async function nextActions() {
   // person left waiting: dropping one off the bottom is how it got missed in
   // the first place, so the band stretches to six while any are open. They
   // sort above everything else, so the extra slots are theirs.
+  // Rows he has already dealt with, while the thing that justified them has
+  // not changed.
+  try {
+    const { rows } = await pool.query('SELECT action_id, fact FROM action_done');
+    const done = new Map(rows.map(r => [r.action_id, r.fact]));
+    out = out.filter(a => !(done.has(a.id) && done.get(a.id) === String(a.fact ?? '')));
+  } catch (e) { console.error('actions: done —', e.message); }
+
   const NAG = new Set(['waiting-on-you', 'quote-owed', 'reply-owed']);
   const nagging = out.some(a => NAG.has(a.kind));
   const band = out.slice(0, nagging ? 6 : 4);
 
-  // Work will always out-urgency a personal message, so on a busy day every
-  // slot goes to a client and the one he asked to be reminded about - his mum -
-  // never appears. One slot is reserved: if anyone is owed a reply and none
-  // made the cut, the least urgent row gives up its place.
-  if (!band.some(a => a.kind === 'reply-owed')) {
-    const first = out.find(a => a.kind === 'reply-owed');
-    if (first) band.splice(band.length - 1, 1, first);
+  // Ranking by urgency alone buries whole categories. A day of client nags
+  // pushed every booking row off the band, and a busy work day buries the
+  // personal message he asked to be reminded about. Each of these keeps one
+  // slot, taken from the least urgent row not holding a slot of its own.
+  for (const kind of ['book', 'reply-owed']) {
+    if (band.some(a => a.kind === kind)) continue;
+    const want = out.find(a => a.kind === kind);
+    if (!want) continue;
+    for (let i = band.length - 1; i >= 0; i--) {
+      if (band[i].kind === 'book' || band[i].kind === 'reply-owed') continue;
+      band.splice(i, 1, want);
+      break;
+    }
   }
+  band.sort((a, b) => b.urgency - a.urgency || (b.at || 0) - (a.at || 0));
   return band;
 }
 
@@ -2740,6 +2807,7 @@ createServer(async (req, res) => {
     if (req.method === 'GET'  && u === '/api/contacts') return await handleContacts(req, res);
     if (req.method === 'POST' && u === '/api/contacts/signal') return await handleContactSignal(req, res);
     if (req.method === 'POST' && u === '/api/contacts/mute')   return await handleContactMute(req, res);
+    if (req.method === 'POST' && u === '/api/actions/done')    return await handleActionDone(req, res);
     const contactMatch = u.match(/^\/api\/contacts\/(\d+)$/);
     if (req.method === 'PATCH' && contactMatch) return await handleContactTier(req, res, contactMatch[1]);
     if (u === '/api/rules') return await handleRules(req, res);

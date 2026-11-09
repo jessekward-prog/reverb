@@ -20,13 +20,28 @@ const LABEL = {
   'reply-owed':    'they are waiting on a reply',
 };
 
-export default function ActionBand({ actions = [], auth }) {
+export default function ActionBand({ actions = [], auth, onCleared }) {
   const reduce = useReducedMotion();
   const [booking, setBooking] = useState(null);   // the action id being booked
   const [busy, setBusy]       = useState(null);
   const [err, setErr]         = useState(null);
   const [link, setLink]       = useState(null);   // {id, url} when the tab refused it
+  const [cleared, setCleared] = useState([]);     // ids clearing, so they animate out
   if (!actions.length) return null;
+
+  // The band was a wall you could not get through: every row permanent, no way
+  // to say "handled". Clearing sends the fingerprint back with the id, so the
+  // row returns the moment anything about it changes.
+  function clear(a) {
+    setCleared(c => [...c, a.id]);
+    fetch('/api/actions/done', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
+      body: JSON.stringify({ id: a.id, fact: a.fact ?? '', done: true }),
+    })
+      .then(() => onCleared?.(a))
+      .catch(() => setCleared(c => c.filter(x => x !== a.id)));
+  }
 
   // The band used to hand you a bare Google link that assumed two hours and no
   // parts. It opens the same form the cards use instead, so how long it takes
@@ -65,7 +80,7 @@ export default function ActionBand({ actions = [], auth }) {
       </div>
 
       <AnimatePresence initial={false}>
-        {actions.map((a, i) => (
+        {actions.filter(a => !cleared.includes(a.id)).map((a, i) => (
           <motion.div
             key={a.id}
             initial={reduce ? { opacity: 0 } : { opacity: 0, transform: 'translateY(6px)' }}
@@ -155,6 +170,17 @@ export default function ActionBand({ actions = [], auth }) {
                             textTransform: 'none', letterSpacing: 'normal' }}>
                 {a.where}
               </div>
+            )}
+
+            {/* Every row can be cleared, next to whatever it suggests doing. */}
+            {a.kind !== 'source-down' && booking !== a.id && (
+              <button type="button" onClick={() => clear(a)}
+                style={{
+                  alignSelf: 'flex-start', marginTop: SP[1], appearance: 'none',
+                  cursor: 'pointer', background: 'none', border: 'none', padding: `${SP[1]}px 0`,
+                  fontFamily: FONT.mono, fontSize: FS.meta, letterSpacing: '.06em',
+                  textTransform: 'uppercase', color: C.text3, minHeight: 32,
+                }}>✓ handled</button>
             )}
 
             {a.book && booking !== a.id && (
