@@ -12,9 +12,11 @@ import CalForm from './CalForm.jsx';
 // left open with nothing booked next. No model decides what goes here, so it
 // can't nag about something that was never said.
 const LABEL = {
-  book:         'not booked',
-  invoice:      'invoice or mark ongoing',
-  'next-visit': 'book the next visit',
+  book:            'not booked',
+  invoice:         'invoice or mark ongoing',
+  'next-visit':    'book the next visit',
+  'waiting-on-you':'they are waiting on you',
+  'quote-owed':    'estimate never sent',
 };
 
 export default function ActionBand({ actions = [], auth }) {

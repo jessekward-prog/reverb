@@ -2327,6 +2327,66 @@ async function nextActions() {
     }
   } catch (e) { console.error('actions: commitments —', e.message); }
 
+  // Someone is waiting on HIM. These two outrank the housekeeping rows below,
+  // and climb as they age, because a client left hanging is the only thing on
+  // this list that costs work. Both are computed from timestamps, so neither
+  // can nag about something that was already answered.
+  const person = j => ({
+    name: j.identifier,
+    phone: j.phone || null,
+    address: j.address || null,
+    via: null,
+  });
+  for (const j of jobs) {
+    const href = `${process.env.SWITCHCRAFT_BASE_URL}/admin/jobs/${j.id}`;
+
+    // A note or a photo the client added after his last reply. A photo with no
+    // note is still a question - "is this okay" is usually the photo itself.
+    const fromClient = j.lastNote && j.lastNote.author === 'client' ? new Date(j.lastNote.at).getTime() : 0;
+    const photoAt = j.lastPhotoAt ? new Date(j.lastPhotoAt).getTime() : 0;
+    const asked = Math.max(fromClient, photoAt);
+    const replied = j.lastReplyAt ? new Date(j.lastReplyAt).getTime() : 0;
+    if (asked && asked > replied) {
+      const days = Math.floor((Date.now() - asked) / 86400000);
+      const said = j.lastNote && j.lastNote.author === 'client'
+        ? String(j.lastNote.message || '').replace(/\s+/g, ' ').trim() : '';
+      const added = photoAt > replied && j.photoCount
+        ? `${j.photoCount} photo${j.photoCount === 1 ? '' : 's'}` : '';
+      const ago = days <= 0 ? 'today' : days === 1 ? 'yesterday' : `${days} days ago`;
+      out.push({
+        id: `reply-${j.id}`, kind: 'waiting-on-you',
+        urgency: Math.min(8, 6 + Math.floor(days / 2)),
+        title: j.identifier,
+        person: person(j),
+        work: jobWork(j),
+        detail: [
+          added ? `Put up ${added}` : 'Left a note',
+          said ? `and asked, ${ago}.` : `${ago}.`,
+          replied ? 'You have not answered since.' : 'You have never answered on this job.',
+        ].join(' '),
+        quote: said ? said.slice(0, 180) : null,
+        href, cta: 'answer them on the job',
+      });
+    }
+
+    // A quote asked for and never sent. Status 'quoted' is the only thing that
+    // closes it, so this keeps turning up until an estimate actually goes out.
+    if (j.jobType === 'quote' && j.status !== 'quoted') {
+      const days = daysOpen(j.raised);
+      if (days >= 1) {
+        out.push({
+          id: `quote-${j.id}`, kind: 'quote-owed',
+          urgency: Math.min(8, 6 + Math.floor(days / 3)),
+          title: j.identifier,
+          person: person(j),
+          work: jobWork(j),
+          detail: `Asked for an estimate ${days} day${days === 1 ? '' : 's'} ago and nothing has gone out. It stays here until the job is marked quoted.`,
+          href, cta: 'send the estimate',
+        });
+      }
+    }
+  }
+
   // Jobs whose scheduled day has already passed, and jobs left open.
   for (const j of jobs) {
     const past = j.scheduledDate && j.scheduledDate < today;

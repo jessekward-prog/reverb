@@ -553,6 +553,10 @@ export async function getSwitchcraftJobs() {
       ? j.photos.filter(p => p && Number.isInteger(p.id)).map(p => ({ id: p.id, name: p.original_name || '' }))
       : [],
     lastNote: j.last_note && j.last_note.message ? j.last_note : null,
+    // Who is waiting on whom: the latest thing the client put on the job
+    // against the last time he answered it.
+    lastPhotoAt: j.last_photo_at || null,
+    lastReplyAt: j.last_reply_at || null,
     raised: j.created_at || null,
   }));
   const text = items.map(j => {
