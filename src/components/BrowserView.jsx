@@ -22,6 +22,9 @@ const SOURCES = [
 export default function BrowserView({ auth, onLockout, ...nav }) {
   const [source, setSource] = useState('messages');
   const [status, setStatus] = useState('connecting');
+  const [fit, setFit]       = useState(true);   // fit-to-width, or the tab at its own size
+  const [vp, setVp]         = useState({ w: 0, h: 0 });
+  const [gotFrame, setGot]  = useState(false);
   const imgRef = useRef(null);
   const frameRef = useRef(null);         // the <img> showing the current frame
   const vpRef = useRef({ w: 0, h: 0 });  // the tab's CSS viewport, for input mapping
@@ -36,6 +39,7 @@ export default function BrowserView({ auth, onLockout, ...nav }) {
       if (!r.ok) { setStatus('waiting for the tab…'); return; }
       const vp = (r.headers.get('x-viewport') || '0x0').split('x').map(Number);
       vpRef.current = { w: vp[0] || 0, h: vp[1] || 0 };
+      setVp(prev => (prev.w === vpRef.current.w && prev.h === vpRef.current.h ? prev : vpRef.current));
       const blob = await r.blob();
       const url = URL.createObjectURL(blob);
       if (frameRef.current) {
@@ -43,6 +47,7 @@ export default function BrowserView({ auth, onLockout, ...nav }) {
         frameRef.current.onload = () => old && URL.revokeObjectURL(old);
         frameRef.current.src = url;
       }
+      setGot(true);
       setStatus('live');
     } catch { setStatus('offline'); }
   }, [source, auth, onLockout]);
@@ -50,6 +55,7 @@ export default function BrowserView({ auth, onLockout, ...nav }) {
   useEffect(() => {
     alive.current = true;
     setStatus('connecting');
+    setGot(false);
     let timer;
     const loop = async () => { if (!alive.current) return; await poll(); timer = setTimeout(loop, 900); };
     loop();
@@ -126,6 +132,11 @@ export default function BrowserView({ auth, onLockout, ...nav }) {
             <button key={s.key} type="button" style={tabBtn(source === s.key)}
                     onClick={() => setSource(s.key)}>{s.label}</button>
           ))}
+          {/* A desktop tab squeezed into a phone width is unreadable. Actual
+              size and pan is the only way to read it there; fit is the only way
+              to see where you are. Both, rather than a compromise between. */}
+          <button type="button" style={{ ...tabBtn(!fit), marginLeft: 'auto' }}
+                  onClick={() => setFit(v => !v)}>{fit ? 'actual size' : 'fit width'}</button>
         </div>
 
         {/* the live frame — focusable so it takes keyboard, clickable for the tab */}
@@ -134,8 +145,9 @@ export default function BrowserView({ auth, onLockout, ...nav }) {
           onKeyDown={onKey}
           style={{
             margin: '14px 20px 20px', flex: 1, minHeight: 0, border: `1px solid ${HAIR}`,
-            background: '#000', overflow: 'hidden', position: 'relative', outline: 'none',
-            display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+            background: '#000', position: 'relative', outline: 'none',
+            overflow: fit ? 'hidden' : 'auto', WebkitOverflowScrolling: 'touch',
+            display: 'flex', alignItems: 'flex-start', justifyContent: fit ? 'center' : 'flex-start',
           }}
         >
           <img
@@ -144,9 +156,11 @@ export default function BrowserView({ auth, onLockout, ...nav }) {
             onClick={onClick}
             onWheel={onWheel}
             draggable={false}
-            style={{ width: '100%', height: 'auto', display: 'block', cursor: 'crosshair', userSelect: 'none' }}
+            style={{ width: fit ? '100%' : (vp.w ? `${vp.w}px` : '100%'), maxWidth: fit ? '100%' : 'none',
+                     height: 'auto', display: 'block', cursor: 'crosshair', userSelect: 'none',
+                     imageRendering: 'auto', flex: 'none' }}
           />
-          {status !== 'live' && (
+          {status !== 'live' && !gotFrame && (
             <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center',
                           justifyContent: 'center', background: RAISED, opacity: .9,
                           fontSize: 12, letterSpacing: '.08em', textTransform: 'uppercase', color: AMBER }}>

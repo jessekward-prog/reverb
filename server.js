@@ -425,7 +425,7 @@ async function calendarForChat(args = {}) {
   const parts = /^(none|no|nothing|n\/a)$/i.test(raw) ? '' : raw;
   const base = String(args.title || 'Job').slice(0, 150);
   const title = parts ? `${base} [parts]` : base;
-  const { url, navigated } = await openCalendarDraft({
+  const url = calendarDraftUrl({
     title,
     date: args.date,
     time: /^\d{1,2}:\d{2}$/.test(String(args.time || '')) ? args.time : '',
@@ -438,9 +438,7 @@ async function calendarForChat(args = {}) {
     ].join('\n'),
   });
   const when = `${args.date}${args.time ? ` at ${args.time}` : ' (all day)'}`;
-  return navigated
-    ? `"${title}" is open and pre-filled in the user's calendar tab for ${when}. Tell them it is ready and that they press save in the calendar to confirm it — it is NOT saved yet. Do not claim you booked it.`
-    : `The calendar tab could not be opened, so nothing is pre-filled. Give the user this link to open the event themselves: ${url}`;
+  return `A pre-filled event for ${when} is ready, but it is NOT saved. Give the user this link exactly as it is, on its own line, and tell them to open it and press save in the calendar: ${url}`;
 }
 
 async function todoForChat({ bucket = 'all' } = {}) {
@@ -1590,10 +1588,12 @@ Write ONLY the message body, 1-3 sentences. No greeting line if the thread is al
   }
 }
 
-// Build the pre-filled Google Calendar edit URL and open it in the logged-in
-// calendar tab. Shared by the two ways an event gets here: extracted from a
-// conversation, or typed in by hand after a phone call.
-async function openCalendarDraft({ title, date, time, durationMins, place, details }) {
+// Build the pre-filled Google Calendar edit URL. It used to also drive the
+// bridge's calendar tab, but that tab is shared with the message scrapers, so
+// the live view flickered between calendar and messages and the event could
+// not be saved. The url goes back to whoever asked and is opened in a tab of
+// its own - on a phone that hands off to the Calendar app.
+function calendarDraftUrl({ title, date, time, durationMins, place, details }) {
   const pad = n => String(n).padStart(2, '0');
   const [y, mo, d] = String(date).split('-').map(Number);
   let start, end;
@@ -1612,17 +1612,7 @@ async function openCalendarDraft({ title, date, time, durationMins, place, detai
     + `&dates=${start}/${end}`
     + (place ? `&location=${encodeURIComponent(place)}` : '')
     + (details ? `&details=${encodeURIComponent(details)}` : '');
-
-  let navigated = false;
-  try {
-    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/navigate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
-      body: JSON.stringify({ source: 'calendar', url }),
-    });
-    navigated = r.ok;
-  } catch { /* the url still works in a normal tab, and the caller gets it */ }
-  return { url, navigated };
+  return url;
 }
 
 async function handleItemToCal(req, res) {
@@ -1639,7 +1629,7 @@ async function handleItemToCal(req, res) {
     // title and nothing else, and the whole reason for asking is to see on
     // Sunday night what has to be picked up on Monday morning.
     const base = (body.title || text || `Job for ${known?.display_name || from}`).slice(0, 150);
-    const { url, navigated } = await openCalendarDraft({
+    const url = calendarDraftUrl({
       title: parts ? `${base} [parts]` : base,
       date: body.date,
       time: body.time || '',
@@ -1652,7 +1642,7 @@ async function handleItemToCal(req, res) {
       ].join('\n'),
     });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, manual: true, url, navigated,
+    res.end(JSON.stringify({ ok: true, manual: true, url,
                              event: { title: body.title || text, date: body.date, time: body.time || '' } }));
     return;
   }

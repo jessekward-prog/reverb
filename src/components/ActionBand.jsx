@@ -17,7 +17,7 @@ const LABEL = {
   'next-visit': 'book the next visit',
 };
 
-export default function ActionBand({ actions = [], auth, onOpenBrowser }) {
+export default function ActionBand({ actions = [], auth }) {
   const reduce = useReducedMotion();
   const [booking, setBooking] = useState(null);   // the action id being booked
   const [busy, setBusy]       = useState(null);
@@ -28,8 +28,13 @@ export default function ActionBand({ actions = [], auth, onOpenBrowser }) {
   // The band used to hand you a bare Google link that assumed two hours and no
   // parts. It opens the same form the cards use instead, so how long it takes
   // and what has to be brought are answered before the event exists.
+  //
+  // The tab has to be opened here, inside the press, or the browser blocks it
+  // as a popup - the fetch that fills it in comes back too late to count as a
+  // user gesture. It starts blank and gets the url a moment later.
   function book(a, f) {
     setBusy(a.id); setErr(null);
+    const tab = window.open('', '_blank');
     fetch('/api/item/tocal', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
@@ -38,11 +43,11 @@ export default function ActionBand({ actions = [], auth, onOpenBrowser }) {
     })
       .then(r => r.json())
       .then(d => {
-        if (d.error) { setErr(d.error); return; }
+        if (d.error || !d.url) { try { tab?.close(); } catch {} setErr(d.error || 'no event came back'); return; }
         setBooking(null);
-        if (d.navigated) onOpenBrowser?.(); else setLink({ id: a.id, url: d.url });
+        if (tab) tab.location.href = d.url; else setLink({ id: a.id, url: d.url });
       })
-      .catch(() => setErr('could not reach the calendar'))
+      .catch(() => { try { tab?.close(); } catch {} setErr('could not reach the calendar'); })
       .finally(() => setBusy(null));
   }
 
@@ -171,7 +176,7 @@ export default function ActionBand({ actions = [], auth, onOpenBrowser }) {
               <a href={link.url} target="_blank" rel="noreferrer"
                  style={{ fontFamily: FONT.sans, fontSize: FS.meta, color: C.amber,
                           textTransform: 'none' }}>
-                the calendar tab didn't take it — open the event here
+                open the pre-filled event in your calendar →
               </a>
             )}
 
