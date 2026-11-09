@@ -842,6 +842,28 @@ async function handleActionDone(req, res) {
   res.end('{"ok":true}');
 }
 
+// Re-check every open commitment against the calendar. Shared by the band's
+// check button and the full refresh, so both answer "is it booked?" the same
+// way. Only a definite match clears one; needs_confirm means something is on
+// that day but nothing ties it to this job, and is counted, never acted on.
+async function reconcileOpenCommitments() {
+  let booked = 0, unsure = 0;
+  try {
+    const events = await fetchEvents();
+    const { rows } = await pool.query(
+      "SELECT id, who, what, when_date FROM commitments WHERE status = 'unbooked'");
+    for (const r of rows) {
+      const status = reconcileStatus(
+        { who: r.who, what: r.what, date: r.when_date ? ymd(r.when_date) : null }, events);
+      if (status === 'booked') {
+        await pool.query("UPDATE commitments SET status = 'booked' WHERE id = $1", [r.id]);
+        booked++;
+      } else if (status === 'needs_confirm') unsure++;
+    }
+  } catch (e) { console.error('reconcile:', e.message); }
+  return { booked, unsure };
+}
+
 // Verify instead of trusting. Every band row is derived from state that can be
 // re-checked, so a refresh re-reads the sources and lets the rows that are
 // genuinely done fall away on the evidence rather than on a button press. The
@@ -856,21 +878,7 @@ async function handleActionDone(req, res) {
 async function handleActionsRefresh(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
   const before = await nextActions().catch(() => []);
-  let booked = 0, unsure = 0;
-  try {
-    const events = await fetchEvents();
-    const { rows } = await pool.query(
-      "SELECT id, who, what, when_date FROM commitments WHERE status = 'unbooked'");
-    for (const r of rows) {
-      const status = reconcileStatus(
-        { who: r.who, what: r.what, date: r.when_date ? ymd(r.when_date) : null }, events);
-      if (status === 'booked') {
-        await pool.query("UPDATE commitments SET status = 'booked' WHERE id = $1", [r.id]);
-        booked++;
-      } else if (status === 'needs_confirm') unsure++;
-    }
-  } catch (e) { console.error('actions refresh:', e.message); }
-
+  const { booked, unsure } = await reconcileOpenCommitments();
   const after = await nextActions().catch(() => []);
   const cleared = before.filter(b => !after.some(a => a.id === b.id))
                         .map(b => ({ kind: b.kind, title: b.title }));
@@ -2796,6 +2804,75 @@ async function autoTick() {
   }
 }
 
+// "Refresh all data", by hand. The timer's own pass, with the change gate
+// forced open: the gate exists so a quiet ten minutes costs nothing, but when
+// he presses the button he wants the work done whether or not a hash moved.
+//
+// It is a slow pass - browser reads and model calls, minutes not seconds - so
+// it runs detached and reports progress, rather than holding a request open
+// past whatever Cloudflare is willing to wait. Every step is idempotent, so
+// pressing it twice is harmless; `ticking` is shared with the timer so the two
+// can never run over each other.
+let refreshJob = null;
+
+async function runFullRefresh() {
+  const step = s => { if (refreshJob) refreshJob.step = s; console.log(`refresh all: ${s}`); };
+  ticking = true;
+  try {
+    step('reading every source');
+    const raw = await collectRawItems();
+
+    step('filing topic tabs');
+    try { await fileTopics(raw); } catch (e) { console.error('refresh topics:', e.message); }
+
+    step('rewriting the lists');
+    await buildReports(await briefConversations(raw));
+    lastItemHash = itemsHash(raw);
+
+    step('looking for times agreed in messages');
+    const led = await refreshCommitments().catch(e => ({ ok: false, reason: e.message }));
+
+    step('checking the calendar for what is already booked');
+    const { booked, unsure } = await reconcileOpenCommitments();
+
+    refreshJob.result = {
+      items: raw.length,
+      found: led.found ?? 0, superseded: led.superseded ?? 0,
+      booked, unsure,
+      actions: (await nextActions().catch(() => [])).length,
+    };
+  } catch (e) {
+    console.error('refresh all failed:', e.message);
+    refreshJob.error = e.message;
+  } finally {
+    ticking = false;
+    refreshJob.running = false;
+    refreshJob.step = null;
+    refreshJob.finishedAt = Date.now();
+  }
+}
+
+async function handleRefreshAll(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const status = () => ({
+    running: !!refreshJob?.running, step: refreshJob?.step || null,
+    startedAt: refreshJob?.startedAt || null, finishedAt: refreshJob?.finishedAt || null,
+    result: refreshJob?.result || null, error: refreshJob?.error || null,
+  });
+  if (req.method === 'POST' && !refreshJob?.running) {
+    if (ticking || generating) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ...status(), busy: true }));
+      return;
+    }
+    refreshJob = { running: true, step: 'starting', startedAt: Date.now(),
+                   finishedAt: null, result: null, error: null };
+    runFullRefresh();                       // deliberately not awaited
+  }
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(status()));
+}
+
 function startAutoRefresh() {
   if (AUTO_MS <= 0) { console.log('auto refresh: off'); return; }
   console.log(`auto refresh: every ${Math.round(AUTO_MS / 60000)}m`);
@@ -2848,6 +2925,7 @@ createServer(async (req, res) => {
     if (req.method === 'POST' && u === '/api/contacts/mute')   return await handleContactMute(req, res);
     if (req.method === 'POST' && u === '/api/actions/done')    return await handleActionDone(req, res);
     if (req.method === 'POST' && u === '/api/actions/refresh') return await handleActionsRefresh(req, res);
+    if (u === '/api/refresh-all' && (req.method === 'POST' || req.method === 'GET')) return await handleRefreshAll(req, res);
     const contactMatch = u.match(/^\/api\/contacts\/(\d+)$/);
     if (req.method === 'PATCH' && contactMatch) return await handleContactTier(req, res, contactMatch[1]);
     if (u === '/api/rules') return await handleRules(req, res);

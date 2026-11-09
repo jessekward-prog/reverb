@@ -20,6 +20,7 @@ export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSwee
   const go = { chat: onOpenChat, sweep: onOpenSweep, texts: onOpenTexts, browser: onOpenBrowser };
   const [data, setData] = useState({ categories: [], actions: [], scannedAt: null });
   const [phase, setPhase] = useState('loading');
+  const [sweep, setSweep] = useState(null);   // {step} while a full pass runs, then {note}
 
   const load = useCallback((quiet = false) => {
     if (!quiet) setPhase('loading');
@@ -33,6 +34,35 @@ export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSwee
   }, [auth, onLockout]);
 
   useEffect(() => { load(); }, [load]);
+
+  // "Refresh all data": re-read every source, look for times newly agreed, and
+  // check the calendar for what has since been booked. It is minutes of work,
+  // so the server runs it detached and this polls the step it is on - the
+  // alternative is a button that looks broken for three minutes.
+  const refreshAll = useCallback(() => {
+    setSweep({ step: 'starting' });
+    const poll = () => fetch('/api/refresh-all', { headers: authHeaders(auth?.token) })
+      .then(r => r.json())
+      .then(d => {
+        if (d.running) { setSweep({ step: d.step || 'working' }); setTimeout(poll, 2000); return; }
+        const r = d.result || {};
+        const bits = [];
+        if (r.booked) bits.push(`${r.booked} already in your calendar`);
+        if (r.found) bits.push(`${r.found} agreed time${r.found === 1 ? '' : 's'} found`);
+        if (r.superseded) bits.push(`${r.superseded} no longer agreed`);
+        if (r.unsure) bits.push(`${r.unsure} to check by eye`);
+        setSweep({ note: d.error ? `refresh failed: ${d.error}`
+                                 : bits.length ? bits.join(' · ') : 'everything re-read — nothing changed' });
+        load(true);
+        setTimeout(() => setSweep(null), 9000);
+      })
+      .catch(() => { setSweep({ note: 'could not refresh' }); setTimeout(() => setSweep(null), 5000); });
+
+    fetch('/api/refresh-all', { method: 'POST', headers: authHeaders(auth?.token) })
+      .then(r => r.json())
+      .then(d => { setSweep({ step: d.busy ? 'already running' : (d.step || 'starting') }); setTimeout(poll, 1500); })
+      .catch(() => setSweep({ note: 'could not start a refresh' }));
+  }, [auth, load]);
 
   // Acting on something takes it off the list here and now. Waiting for the
   // next scheduled rebuild to notice you replied is how the old flow sent you
@@ -73,6 +103,15 @@ export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSwee
           <span style={{ color: C.amber }}>vita</span> switch
         </div>
         <span style={{ flex: 1 }} />
+        <button type="button" onClick={refreshAll} disabled={!!sweep?.step}
+          style={{ appearance: 'none', cursor: sweep?.step ? 'default' : 'pointer',
+                   fontFamily: FONT.mono, fontSize: FS.label, letterSpacing: '.1em',
+                   textTransform: 'uppercase', padding: '7px 10px', minHeight: 32,
+                   border: `1px solid ${sweep?.step ? C.amber : C.border}`,
+                   background: 'transparent', color: sweep?.step ? C.amber : C.text2,
+                   whiteSpace: 'nowrap' }}>
+          {sweep?.step ? `⟳ ${sweep.step}` : '⟳ refresh all data'}
+        </button>
         {/* The rail covers this at desktop width; under 1024px it's hidden, so
             the other tabs need a way out of here. */}
         <nav className="rv-head-nav" style={{ display: 'flex', gap: 1 }}>
@@ -85,6 +124,13 @@ export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSwee
           ))}
         </nav>
       </header>
+
+      {sweep?.note && (
+        <div style={{ position: 'relative', zIndex: 2, padding: `0 ${SP[4]}px ${SP[2]}px`,
+                      fontFamily: FONT.sans, fontSize: FS.meta, color: C.text2 }}>
+          {sweep.note}
+        </div>
+      )}
 
       {/* Phone only - at desktop width the rail carries these. */}
       <div style={{ position: 'relative', zIndex: 2, padding: `0 ${SP[4]}px` }}>
