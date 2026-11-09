@@ -2346,7 +2346,15 @@ async function nextActions() {
     const photoAt = j.lastPhotoAt ? new Date(j.lastPhotoAt).getTime() : 0;
     const asked = Math.max(fromClient, photoAt);
     const replied = j.lastReplyAt ? new Date(j.lastReplyAt).getTime() : 0;
-    if (asked && asked > replied) {
+    // A photo on its own goes stale. Several jobs carry photos uploaded at
+    // booking time and no admin note ever, because he answered by phone - four
+    // months on that is not a client waiting, it is a job he closed off the
+    // app, and it would sit on the band forever pushing today's out. An actual
+    // typed question never expires; a bare photo stops counting after a
+    // fortnight.
+    const noteIsTheAsk = fromClient > replied;
+    const stale = !noteIsTheAsk && (Date.now() - asked) > 14 * 86400000;
+    if (asked && asked > replied && !stale) {
       const days = Math.floor((Date.now() - asked) / 86400000);
       const said = j.lastNote && j.lastNote.author === 'client'
         ? String(j.lastNote.message || '').replace(/\s+/g, ' ').trim() : '';
@@ -2356,6 +2364,7 @@ async function nextActions() {
       out.push({
         id: `reply-${j.id}`, kind: 'waiting-on-you',
         urgency: Math.min(8, 6 + Math.floor(days / 2)),
+        at: asked,
         title: j.identifier,
         person: person(j),
         work: jobWork(j),
@@ -2377,6 +2386,7 @@ async function nextActions() {
         out.push({
           id: `quote-${j.id}`, kind: 'quote-owed',
           urgency: Math.min(8, 6 + Math.floor(days / 3)),
+          at: new Date(j.raised || 0).getTime(),
           title: j.identifier,
           person: person(j),
           work: jobWork(j),
@@ -2432,7 +2442,10 @@ async function nextActions() {
     });
   }
 
-  out.sort((a, b) => b.urgency - a.urgency);
+  // Urgency caps at 8, so without a tie-break a four-month-old row and
+  // this morning's one sort by whatever order the feed happened to use.
+  // Most recently asked wins the tie - that is the one he can still fix.
+  out.sort((a, b) => b.urgency - a.urgency || (b.at || 0) - (a.at || 0));
   // Four is a list you act on; ten is a second to-do list. The exception is a
   // person left waiting: dropping one off the bottom is how it got missed in
   // the first place, so the band stretches to six while any are open. They
