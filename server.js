@@ -13,7 +13,7 @@ import {
   getRecentTexts, getRecentTextsBrief, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
   fetchThreads, fetchEvents, fetchCalendar, fetchChannel,
 } from './src/lib/tools.js';
-import { parseExtraction, reconcileStatus, projectCommitments, ymd, msgLine } from './src/lib/commitments.js';
+import { parseExtraction, reconcileStatus, projectCommitments, ymd, msgLine, resolveWhen } from './src/lib/commitments.js';
 import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules,
          extractAddress, phoneLast9 } from './src/lib/contacts.js';
 
@@ -1888,6 +1888,17 @@ async function refreshCommitments() {
     `SELECT id FROM commitments WHERE status <> 'superseded' AND source_thread = ANY($1)`, [names],
   );
   const { supersede } = projectCommitments(open.map(r => r.id), extracted);
+
+  // ...but its day can still pass. Out-of-window rows are re-read from their
+  // own WHEN text as of when first seen; the message was sent before that,
+  // so if even this reading is in the past, the real day is too.
+  const { rows: aged } = await pool.query(
+    `SELECT id, when_date, when_text, first_seen_at FROM commitments
+      WHERE status <> 'superseded' AND NOT (source_thread = ANY($1))`, [names]);
+  for (const r of aged) {
+    const day = r.when_date ? ymd(r.when_date) : r.when_text ? resolveWhen(r.when_text, r.first_seen_at).date : null;
+    if (day && day < today) supersede.push(r.id);
+  }
   if (supersede.length) {
     await pool.query(`UPDATE commitments SET status='superseded', last_seen_at=NOW() WHERE id = ANY($1)`, [supersede]);
   }
