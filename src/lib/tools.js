@@ -1,3 +1,4 @@
+import { msgLine, ymd } from './commitments.js';
 export const TEXTS_TOOL = {
   type: 'function',
   function: {
@@ -411,7 +412,7 @@ export async function getUnbookedJobs({ days_back = 14 } = {}) {
   // conversations whole is more than the model needs to read.
   const msgBlock = threads.map(t => {
     const lines = (t.messages || []).slice(-12)
-      .map(m => `    ${m.outbound ? 'me' : 'them'}: ${String(m.text || '').replace(/\s+/g, ' ').slice(0, 200)}`)
+      .map(m => `    ${msgLine(m)}`)
       .join('\n');
     return `— ${t.name}${t.when ? ` (last activity ${t.when})` : ''} —\n${lines}`;
   }).join('\n\n');
@@ -420,8 +421,9 @@ export async function getUnbookedJobs({ days_back = 14 } = {}) {
     ? window.map(e => `${e.date}${e.time ? ' ' + e.time : ''}: ${e.text}${e.location ? ' @ ' + e.location : ''}`).join('\n')
     : events.length ? '(no events in this window)' : '(CALENDAR UNAVAILABLE - could not read it, so nothing below can be confirmed as booked)';
 
-  const today = new Date().toISOString().slice(0, 10);
-  const text = `Today is ${today}. Below are recent text conversations in full (me = the user, them = the other person), then the calendar from ${from} to ${to}. Find where work or an appointment was actually agreed or requested - a day or time settled on ("Thursday works", "see you at lunch"), a job someone asked for - and say which have NO matching calendar entry. Resolve relative days ("Thursday", "tomorrow") against today. Quote the message verbatim and name who it is with. Ignore chit-chat, thanks and anything already on the calendar. If you are not sure a message is a job, leave it out.
+  const now = new Date();
+  const today = `${now.toLocaleDateString('en-AU', { weekday: 'long' })} ${ymd(now)}`;
+  const text = `Today is ${today}. Below are recent text conversations in full (me = the user, them = the other person, each line prefixed with the day it was sent), then the calendar from ${from} to ${to}. Find where work or an appointment was actually agreed or requested - a day or time settled on ("Thursday works", "see you at lunch"), a job someone asked for - and say which have NO matching calendar entry. Resolve relative days ("Thursday", "tomorrow") against the day that message was SENT, not today, and skip anything whose day has already passed. Quote the message verbatim and name who it is with. Ignore chit-chat, thanks and anything already on the calendar. If you are not sure a message is a job, leave it out.
 
 CONVERSATIONS (oldest line first within each):
 ${msgBlock}

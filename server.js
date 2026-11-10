@@ -13,7 +13,7 @@ import {
   getRecentTexts, getRecentTextsBrief, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
   fetchThreads, fetchEvents, fetchCalendar, fetchChannel,
 } from './src/lib/tools.js';
-import { parseExtraction, reconcileStatus, projectCommitments, ymd } from './src/lib/commitments.js';
+import { parseExtraction, reconcileStatus, projectCommitments, ymd, msgLine } from './src/lib/commitments.js';
 import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules,
          extractAddress, phoneLast9 } from './src/lib/contacts.js';
 
@@ -1822,7 +1822,7 @@ Resolve relative dates ("Friday", "Tuesday next week", "tomorrow") against today
 function commitmentPrompt(threads, today, weekday) {
   const convos = threads.map(t => {
     const lines = (t.messages || []).slice(-12)
-      .map(m => `  ${m.outbound ? 'me' : 'them'}: ${String(m.text || '').replace(/\s+/g, ' ').slice(0, 200)}`)
+      .map(m => `  ${msgLine(m)}`)
       .join('\n');
     return `— ${t.name} —\n${lines}`;
   }).join('\n\n');
@@ -1838,7 +1838,7 @@ WHAT  - the work itself, a few words (e.g. "ceiling fan installation")
 WHEN  - the timing words COPIED VERBATIM from the thread ("Thursday", "tomorrow", "next week", "9am"). Leave empty if no timing was stated.
 QUOTE - the one message line where the work was agreed or asked for, COPIED VERBATIM
 
-Copy WHEN and QUOTE exactly as they appear - anything you reword or invent is discarded. Do not work out dates yourself. If a job was later called off in the thread, leave it out. Ignore chit-chat, thanks, deliveries and parcel notices. If you are unsure something is work, leave it out. No numbering, no headings, no commentary.
+Copy WHEN and QUOTE exactly as they appear, without the [date] in front of each line - anything you reword or invent is discarded. Do not work out dates yourself. If a job was later called off, rescheduled or already done in the thread, leave out the old arrangement and give only the latest one. Ignore chit-chat, thanks, deliveries and parcel notices. If you are unsure something is work, leave it out. No numbering, no headings, no commentary.
 
 CONVERSATIONS:
 ${convos}`;

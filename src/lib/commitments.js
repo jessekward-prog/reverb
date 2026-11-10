@@ -61,19 +61,19 @@ export function resolveWhen(whenText, ref = new Date()) {
   // Vague windows are a real answer: we know there is a commitment, not when.
   if (VAGUE.test(noTime)) return { date: null, time, reason: 'vague' };
 
+  // A named day beats a relative word: "tomorrow is out, but Wednesday should
+  // be good" agrees to Wednesday.
   let date = null;
-  if (/\b(today|tonight|this arvo|this afternoon|this morning)\b/.test(noTime)) {
+  const hit = DAY_WORDS.find(([w]) => new RegExp(`\\b${w}\\b`).test(noTime));
+  if (hit) {
+    const [, target] = hit;
+    let offset = (target - ref.getDay() + 7) % 7;       // 0 = today
+    if (/\bnext\b/.test(noTime) && offset === 0) offset = 7;
+    date = iso(addDays(ref, offset));
+  } else if (/\b(today|tonight|this arvo|this afternoon|this morning)\b/.test(noTime)) {
     date = iso(ref);
   } else if (/\btomorrow\b/.test(noTime)) {
     date = iso(addDays(ref, 1));
-  } else {
-    const hit = DAY_WORDS.find(([w]) => new RegExp(`\\b${w}\\b`).test(noTime));
-    if (hit) {
-      const [, target] = hit;
-      let offset = (target - ref.getDay() + 7) % 7;       // 0 = today
-      if (/\bnext\b/.test(noTime) && offset === 0) offset = 7;
-      date = iso(addDays(ref, offset));
-    }
   }
   if (!date) return { date: null, time, reason: 'unrecognised' };
 
@@ -107,12 +107,19 @@ export function groundedInThread(thread, quote, whenText) {
   return !w || hay.includes(w);
 }
 
-const findThread = (threads, who) => {
-  const w = norm(who);
-  return threads.find(t => norm(t.name) === w)
-      || threads.find(t => w && (norm(t.name).includes(w) || w.includes(norm(t.name))))
-      || null;
+// A bridge message's `at` is local wall-clock "YYYY-MM-DDTHH:MM".
+const atDate = at => {
+  const m = String(at || '').match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  return m ? new Date(+m[1], m[2] - 1, +m[3], +m[4], +m[5]) : null;
 };
+
+// One message as the model reads it: dated, so last week's "Thursday works"
+// is not mistaken for this week's.
+export function msgLine(m) {
+  const d = atDate(m.at);
+  const stamp = d ? `[${d.toLocaleDateString('en-AU', { weekday: 'short', day: 'numeric', month: 'short' })}] ` : '';
+  return `${stamp}${m.outbound ? 'me' : 'them'}: ${String(m.text || '').replace(/\s+/g, ' ').slice(0, 200)}`;
+}
 
 // Parse the model's line output. Line-based, not JSON, because gemma is
 // unreliable at strict JSON (see Agentic-LM-Pipeline-Pattern).
@@ -132,6 +139,7 @@ export function parseExtraction(raw, threads, ref = new Date()) {
     const fields = line.split('::')
       .map(f => f.trim()
                  .replace(/^\d+\s*[.)]\s*/, '')          // leading index
+                 .replace(/^\[[^\]]*\]\s*/, '')           // date stamp from msgLine
                  .replace(/^(me|them|you|it)\s*:\s*/i, '') // speaker label
                  .replace(/^[—–-]+\s*|\s*[—–-]+$/g, '')
                  .replace(/^["“']|["”']$/g, '')
@@ -139,26 +147,40 @@ export function parseExtraction(raw, threads, ref = new Date()) {
       .filter(Boolean);
     if (fields.length < 2) continue;
 
-    // 1. the quote: grounded verbatim in exactly the thread it came from
+    // 1. the thread: named by WHO when the model copied the heading. Without
+    //    this, a short WHAT like "installation" matched whichever thread
+    //    happened to contain that word first, and a job landed on a stranger.
+    const named = threads.find(t => fields.some(f => norm(f) === norm(t.name)));
+    const pool = named ? [named] : threads;
+
+    // 2. the quote: the LONGEST field grounded verbatim in that thread - a
+    //    short WHAT can be verbatim too, and must not win over the real line.
     let thread = null, quote = null, qi = -1;
-    for (let i = 0; i < fields.length; i++) {
-      const hit = threads.find(t => groundedInThread(t, fields[i], ''));
-      if (hit) { thread = hit; quote = fields[i]; qi = i; break; }
-    }
+    fields.forEach((f, i) => {
+      if (quote && f.length <= quote.length) return;
+      const hit = pool.find(t => groundedInThread(t, f, ''));
+      if (hit) { thread = hit; quote = f; qi = i; }
+    });
     if (!thread) continue;   // nothing verbatim -> invention, drop it
 
-    // 2. the timing: whichever remaining field actually reads as one
+    // Weekdays resolve from when the quoted message was SENT, not from now.
+    const q = norm(quote);
+    const sent = atDate((thread.messages || []).find(m => norm(m.text).includes(q))?.at) || ref;
+
+    // 3. the timing: whichever remaining field actually reads as one, else
+    //    the quote itself ("Let's do Thursday this week! ... 9am").
     const rest = fields.filter((_, i) => i !== qi);
     let whenText = '', when = { date: null, time: null, reason: 'empty' };
-    for (const f of rest) {
-      if (f.length > 40) continue;                   // a sentence, not a date
-      const r = resolveWhen(f, ref);
+    for (const f of [...rest.filter(f => f.length <= 40), quote]) {   // >40: a sentence, not a date
+      const r = resolveWhen(f, sent);
       if (r.date || r.reason === 'vague' || r.reason === 'day-of-month conflict') {
-        whenText = f; when = r; break;
+        whenText = f === quote ? '' : f; when = r; break;
       }
     }
+    // Its day has been and gone: nothing left to put in the calendar.
+    if (when.date && when.date < iso(ref)) continue;
 
-    // 3. what is left, longest first, is the description of the work
+    // 4. what is left, longest first, is the description of the work
     // Drop the timing and any field that is just the thread's own name, so a
     // present WHO is not mistaken for the description of the work.
     const what = rest

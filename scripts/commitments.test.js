@@ -135,3 +135,47 @@ for (const line of shapes) {
 }
 // Still refuses a quote that appears in no thread, whatever the order.
 assert.strictEqual(parseExtraction('me :: made up :: Friday :: not in any thread', [thread], REF).length, 0);
+
+// ── dated messages: last week's "Thursday" is not this week's ──
+// Real failure, 2026-11-11: an old "Thursday works" was re-read as the coming
+// Thursday, while the actual new booking ("tomorrow is out, but Wednesday")
+// never surfaced. Wednesday 11 Nov, morning.
+const WED = new Date(2026, 10, 11, 7, 40);
+const fans = {
+  name: '0400 333 444',
+  messages: [
+    { outbound: true,  at: '2026-11-03T09:10', text: 'Busy start to the week sorry! Lets book this in for Thursday?' },
+    { outbound: false, at: '2026-11-03T09:30', text: 'All good! Thursday works 👌' },
+    { outbound: true,  at: '2026-11-05T11:56', text: 'Heading out to you shortly' },
+    { outbound: false, at: '2026-11-09T10:17', text: "Let me know what day you're thinking for the install so I can clear the rooms." },
+    { outbound: true,  at: '2026-11-09T16:39', text: 'No worries, tomorrow is out, but I think Wednesday should be good to go! Maybe 9am if that suits.' },
+    { outbound: false, at: '2026-11-09T16:43', text: 'Hi, Yep Wednesday is good.' },
+  ],
+};
+// A different thread that happens to contain the word "installation".
+const other = {
+  name: 'Sample Outdoor Co',
+  messages: [{ outbound: false, at: '2026-11-09T08:00', text: 'Roof installation is done, thanks for the fan bracket.' }],
+};
+const both = [other, fans];
+
+assert.strictEqual(resolveWhen('tomorrow is out, but I think Wednesday', new Date(2026, 10, 9, 16, 39)).date, '2026-11-11');
+
+const wed = parseExtraction('0400 333 444 :: installation :: Wednesday :: Hi, Yep Wednesday is good.', both, WED);
+assert.strictEqual(wed.length, 1);
+assert.strictEqual(wed[0].who, '0400 333 444', 'a short WHAT must not pull the job into another thread');
+assert.strictEqual(wed[0].date, '2026-11-11', 'Wednesday as said on Monday 9th');
+assert.strictEqual(wed[0].what, 'installation');
+
+// The model copied the date stamp it was shown; still grounded.
+assert.strictEqual(parseExtraction('0400 333 444 :: fans :: Wednesday :: [Mon 9 Nov] them: Hi, Yep Wednesday is good.', both, WED)[0]?.date, '2026-11-11');
+
+// Last week's Thursday is in the past, not tomorrow - dropped.
+assert.strictEqual(parseExtraction('0400 333 444 :: fans :: Thursday :: All good! Thursday works 👌', both, WED).length, 0);
+
+// No WHEN field: the day comes from the quote itself.
+const fromQuote = parseExtraction('0400 333 444 :: install ::  :: No worries, tomorrow is out, but I think Wednesday should be good to go! Maybe 9am if that suits.', both, WED);
+assert.strictEqual(fromQuote[0]?.date, '2026-11-11');
+assert.strictEqual(fromQuote[0]?.time, '09:00');
+
+console.log('commitments.test.js: dated-message assertions passed');
