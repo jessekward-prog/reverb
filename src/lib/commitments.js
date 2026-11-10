@@ -278,8 +278,16 @@ export function parseExtraction(raw, threads, ref = new Date()) {
         whenText = f === quote ? '' : f; when = r; break;
       }
     }
-    // "Wednesday" in WHEN, "Maybe 9am" in the quote: keep the time.
-    if (when.date && !when.time) when.time = resolveWhen(quote, sent, { strict: true }).time;
+    // "Yep Wednesday is good" agrees to a time said in another message
+    // ("Wednesday... Maybe 9am"). Take the latest time the thread pins to
+    // that same day, the quote first.
+    if (when.date && !when.time) {
+      const said = [{ text: quote, at: null }, ...(thread.messages || []).slice().reverse()];
+      for (const m of said) {
+        const r = resolveWhen(m.text, atDate(m.at) || sent, { strict: true });
+        if (r.time && (r.date === when.date || (m.at === null && !r.date))) { when.time = r.time; break; }
+      }
+    }
     // Its day has been and gone: nothing left to put in the calendar.
     if (when.date && when.date < iso(ref)) continue;
 

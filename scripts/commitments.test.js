@@ -252,3 +252,16 @@ assert.strictEqual(ask[0]?.date, null);
 console.log('commitments.test.js: phrasing variations passed');
 assert.strictEqual(resolveWhen('I should be back by 8:30.', MON).time, '08:30');   // full stop after the time
 console.log('commitments.test.js: trailing full stop passed');
+
+// The quote has no time, but another message pins one to the same day.
+const noTime = parseExtraction('0400 333 444 :: install :: Wednesday :: Hi, Yep Wednesday is good.', both, WED);
+assert.strictEqual(noTime[0]?.time, '09:00');
+// A time said about a different day is not borrowed.
+const other2 = { name: '0400 555 666', messages: [
+  { outbound: true,  at: '2026-11-09T09:00', text: 'I can do Tuesday at 7am, or later in the week?' },
+  { outbound: false, at: '2026-11-09T09:30', text: 'Thursday would be better for us' },
+] };
+const t2 = parseExtraction('0400 555 666 :: job :: Thursday :: Thursday would be better for us', [other2], WED);
+assert.strictEqual(t2[0]?.date, '2026-11-12');
+assert.strictEqual(t2[0]?.time, null);
+console.log('commitments.test.js: time from the thread passed');
