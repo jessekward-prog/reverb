@@ -179,3 +179,9 @@ assert.strictEqual(fromQuote[0]?.date, '2026-11-11');
 assert.strictEqual(fromQuote[0]?.time, '09:00');
 
 console.log('commitments.test.js: dated-message assertions passed');
+
+// Day from WHEN, time from the quote.
+const split = parseExtraction('0400 333 444 :: install :: Hi, Yep Wednesday is good. :: No worries, tomorrow is out, but I think Wednesday should be good to go! Maybe 9am if that suits.', both, WED);
+assert.strictEqual(split[0]?.date, '2026-11-11');
+assert.strictEqual(split[0]?.time, '09:00');
+console.log('commitments.test.js: time-from-quote passed');

@@ -177,6 +177,8 @@ export function parseExtraction(raw, threads, ref = new Date()) {
         whenText = f === quote ? '' : f; when = r; break;
       }
     }
+    // "Wednesday" in WHEN, "Maybe 9am" in the quote: keep the time.
+    if (when.date && !when.time) when.time = resolveWhen(quote, sent).time;
     // Its day has been and gone: nothing left to put in the calendar.
     if (when.date && when.date < iso(ref)) continue;
 
