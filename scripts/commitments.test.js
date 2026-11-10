@@ -185,3 +185,70 @@ const split = parseExtraction('0400 333 444 :: install :: Hi, Yep Wednesday is g
 assert.strictEqual(split[0]?.date, '2026-11-11');
 assert.strictEqual(split[0]?.time, '09:00');
 console.log('commitments.test.js: time-from-quote passed');
+
+// ── phrasing variations seen in real threads (paraphrased) ──
+// Said on Monday 9 Nov 2026, 10am.
+const MON = new Date(2026, 10, 9, 10, 0);
+const cases = [
+  // [span, date, time, reason]
+  ['Tuesday next week',                         '2026-11-17', null,    'ok'],
+  ['Wed next week',                             '2026-11-18', null,    'ok'],
+  ['next week, Thursday',                       '2026-11-19', null,    'ok'],
+  ['Thursday this week',                        '2026-11-12', null,    'ok'],
+  ['set up last week Tuesday',                  '2026-11-03', null,    'ok'],      // past -> dropped by caller
+  ['last Friday',                               '2026-11-06', null,    'ok'],
+  ['next Thursday',                             null,         null,    'ambiguous'], // this week's or next?
+  ['next Tuesday 17th',                         '2026-11-17', null,    'ok'],      // the date settles it
+  ['next Saturday',                             null,         null,    'ambiguous'],
+  ['next Monday',                               '2026-11-16', null,    'ok'],      // today is Monday
+  ['Tuesday week',                              null,         null,    'vague'],
+  ['Thurs or Friday work for you?',             null,         null,    'ambiguous'],
+  ['Mon, Tue (till 4pm) & Wed',                 null,         '16:00', 'ambiguous'],
+  ['this afternoon? Otherwise Wednesday',       null,         null,    'ambiguous'],
+  ['Friday, or sometime next week',             null,         null,    'ambiguous'],
+  ['any day except Thursday',                   null,         null,    'unrecognised'],
+  ["can't do Thursday, Friday works",           '2026-11-13', null,    'ok'],
+  ["Thursday's no good, how's Friday",          '2026-11-13', null,    'ok'],
+  ["I'm busy Friday, Thursday?",                '2026-11-12', null,    'ok'],
+  ["tomorrow is my wife's birthday, I'll have to do Thursday", '2026-11-12', null, 'ok'],
+  ['Talk tomoz',                                '2026-11-10', null,    'ok'],
+  ['tmrw arvo',                                 '2026-11-10', null,    'ok'],
+  ['day after tomorrow',                        '2026-11-11', null,    'ok'],
+  ['tomorrow from Midday',                      '2026-11-10', '12:00', 'ok'],
+  ['tomorrow morning at 8.30-9',                '2026-11-10', '08:30', 'ok'],
+  ['after 12.30 tomorrow',                      '2026-11-10', '12:30', 'ok'],
+  ["won't be leaving until 11 ish so Friday is ok", '2026-11-13', '11:00', 'ok'],
+  ['anytime up till 1.30pm Friday',             '2026-11-13', '13:30', 'ok'],
+  ['Weds 8am is a go.',                         '2026-11-11', '08:00', 'ok'],
+  ['wensday',                                   '2026-11-11', null,    'ok'],
+  ['thurday',                                   '2026-11-12', null,    'ok'],
+  ['20th November',                             '2026-11-20', null,    'ok'],
+  ['Nov 20',                                    '2026-11-20', null,    'ok'],
+  ['Friday 20/11/2026 05:20pm',                 '2026-11-20', '17:20', 'ok'],
+  ['Tuesday next week, 17th November at 5:20pm','2026-11-17', '17:20', 'ok'],
+  ['Wednesday 20th November',                   null,         null,    'day-of-month conflict'],  // 20th is a Friday
+  ['back on the 3rd so anytime after',          '2026-12-03', null,    'ok'],
+  ['on the 14th',                               '2026-11-14', null,    'ok'],
+  ['in a weeks time',                           null,         null,    'vague'],
+  ['over the weekend',                          null,         null,    'vague'],
+  ['early next week',                           null,         null,    'vague'],
+  ['$1.30 each',                                null,         null,    'unrecognised'],
+  ['at 12 Sample Drive',                        null,         null,    'unrecognised'],
+];
+for (const [span, date, time, reason] of cases) {
+  const r = resolveWhen(span, MON);
+  assert.deepStrictEqual([r.date, r.time, r.reason], [date, time, reason], `"${span}"`);
+}
+// Reading a whole message, the loose abbreviations are ordinary words.
+assert.strictEqual(resolveWhen("c'mon mate, I sat down with the builder", MON, { strict: true }).date, null);
+assert.strictEqual(resolveWhen('the sun sets early', MON, { strict: true }).date, null);
+assert.strictEqual(resolveWhen('Sat 8am?', MON).date, '2026-11-14');                // fine in a short span
+assert.strictEqual(resolveWhen('Weds 8am is a go.', MON, { strict: true }).date, '2026-11-11');
+
+// "next Thursday" can't be pinned, so the ledger asks rather than drops it.
+const ask = parseExtraction('0400 333 444 :: fans :: next Thursday :: Hi, Yep Wednesday is good.', both, WED);
+assert.strictEqual(ask[0]?.reason, 'ambiguous');
+assert.strictEqual(ask[0]?.date, null);
+console.log('commitments.test.js: phrasing variations passed');
+assert.strictEqual(resolveWhen('I should be back by 8:30.', MON).time, '08:30');   // full stop after the time
+console.log('commitments.test.js: trailing full stop passed');

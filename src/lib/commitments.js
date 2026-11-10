@@ -20,16 +20,32 @@
 import { createHash } from 'node:crypto';
 
 const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-// Longest-first so "thurs" wins over "thu" and never half-matches.
+// Every spelling seen or plausible in a text, typos included. Matched
+// longest-first, never inside a word or after an apostrophe ("c'mon").
 const DAY_WORDS = [
   ['sunday', 0], ['monday', 1], ['tuesday', 2], ['wednesday', 3], ['thursday', 4], ['friday', 5], ['saturday', 6],
+  ['wednsday', 3], ['wedensday', 3], ['wendsday', 3], ['wensday', 3], ['wedsday', 3], ['wednesay', 3],
+  ['thurday', 4], ['thursay', 4], ['thrusday', 4], ['tuesay', 2], ['teusday', 2], ['tuseday', 2],
+  ['firday', 5], ['saterday', 6], ['satuday', 6], ['monady', 1],
   ['thurs', 4], ['tues', 2], ['weds', 3], ['thur', 4], ['mon', 1], ['tue', 2], ['wed', 3], ['thu', 4], ['fri', 5], ['sat', 6], ['sun', 0],
-];
+].sort((a, b) => b[0].length - a[0].length);
+// Too often an ordinary word ("c'mon", "sat down", "the sun") to trust when
+// reading a whole message rather than a short WHEN span.
+const LOOSE = new Set(['mon', 'sat', 'sun']);
+const MONTHS = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+const MONTH_RE = '(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sept?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)';
 
-const VAGUE = /\b(next week|next month|week after|sometime|some time|later|soon|another day|in a few|tbc|tba|asap)\b/;
+const VAGUE = /\b(next week|next weeks|next month|week after|weeks? time|\d+ weeks|a week|fortnight|couple of (days|weeks)|few days|end of (the )?week|weekend|sometime|some time|later|soon|another day|in a few|tbc|tba|asap|any ?time|whenever)\b/;
+const ALTERNATIVE = /\b(or|otherwise|either)\b/;
+// A day that is ruled out, not agreed: "can't do Thursday", "any day except
+// Thursday", "tomorrow is out", "Friday's no good".
+const NEG_BEFORE = /\b(can'?t|cannot|can not|not|except|besides|other than|busy|booked)\s+(?:(?:do|make|on|the|this|that|be|until|till)\s+)*$/;
+const NEG_AFTER = /^\s*(?:is|'s)?\s*(?:out|no good|not good|bad|booked|full|busy|off|a no|no go|doesn'?t|does not|won'?t|will not|isn'?t|is not|not)\b/;
 
 const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const monWeek = d => (d.getDay() + 6) % 7;                 // Monday = 0, as weeks are said here
+const dayOnly = d => new Date(d.getFullYear(), d.getMonth(), d.getDate());
 
 export const norm = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
 
@@ -41,53 +57,138 @@ export const ymd = d => (d instanceof Date
   ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
   : String(d || '').slice(0, 10));
 
-// Resolve the day (and only an explicit clock time) from the short verbatim
-// span the model copied out of the thread. Returns date null when unsure.
-export function resolveWhen(whenText, ref = new Date()) {
-  const raw = norm(whenText);
-  if (!raw) return { date: null, time: null, reason: 'empty' };
+// Hours a tradie works: a bare "2" or "2ish" is the afternoon, not 2am.
+const workHour = h => (h >= 1 && h <= 6 ? h + 12 : h);
+const hhmm = (h, m) => `${String(h).padStart(2, '0')}:${m || '00'}`;
 
-  // Pull an explicit clock time first, and strip it, so its digits can't be
-  // mistaken for a day of the month below ("9am" must not look like the 9th).
+function pullTime(text) {
   let time = null;
-  const t = raw.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/);
-  if (t) {
-    let h = Number(t[1]) % 12;
-    if (t[3] === 'pm') h += 12;
-    time = `${String(h).padStart(2, '0')}:${t[2] || '00'}`;
+  const take = (re, fn) => {
+    text = text.replace(re, (...m) => { if (!time) time = fn(m); return ' '; });
+  };
+  take(/(?<![\d$.\/])(\d{1,2})(?:[:.](\d{2}))?\s*(am|pm)\b/g, m => {   // 9am, 1.30pm, 05:20pm
+    let h = Number(m[1]) % 12; if (m[3] === 'pm') h += 12; return hhmm(h, m[2]);
+  });
+  take(/\b(midday|noon)\b/g, () => '12:00');
+  take(/(?<![\d$.\/])(\d{1,2})[:.](\d{2})(?!\d|\.\d|\/)/g, m => hhmm(workHour(Number(m[1])), m[2]));  // 12.30, 8:30
+  take(/(?<![\d$.\/])(\d{1,2})\s*(?:-?ish|o'?clock)\b/g, m => hhmm(workHour(Number(m[1]))));      // 11 ish, 9 o'clock
+  return { time, rest: text };
+}
+
+// Every candidate day a span could mean. Several candidates is not a guess
+// to be made - it comes back as 'ambiguous' and is asked, never asserted.
+//
+// ponytail: still a whitelist, not a date parser. Anything not listed here
+// ("the following week", "a week from Monday") lands in needs_confirm.
+export function resolveWhen(whenText, ref = new Date(), { strict = false } = {}) {
+  const raw = norm(whenText).replace(/[‘’]/g, "'");
+  if (!raw) return { date: null, time: null, reason: 'empty' };
+  const today = dayOnly(ref);
+  const { time, rest } = pullTime(raw);
+  let text = rest;
+
+  // Explicit calendar dates: 20/10/2026, 20th October, Oct 20.
+  const explicit = new Set();
+  const nearestYear = (d, m, y) => {
+    if (y) return new Date(y < 100 ? 2000 + y : y, m, d);
+    let x = new Date(today.getFullYear(), m, d);
+    if (x < addDays(today, -60)) x = new Date(today.getFullYear() + 1, m, d);   // "3 Jan" said in December
+    return x;
+  };
+  const addExplicit = x => { if (!isNaN(x)) explicit.add(iso(x)); return ' '; };
+  text = text.replace(/(?<![\d$.])(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?(?![\d\/])/g,
+    (_, d, m, y) => (Number(m) >= 1 && Number(m) <= 12 ? addExplicit(nearestYear(+d, m - 1, y && +y)) : _));
+  text = text.replace(new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?(?: of)? ${MONTH_RE}\\b(?: (\\d{4}))?`, 'g'),
+    (_, d, mo, y) => addExplicit(nearestYear(+d, MONTHS.indexOf(mo.slice(0, 3)), y && +y)));
+  text = text.replace(new RegExp(`\\b${MONTH_RE} (\\d{1,2})(?:st|nd|rd|th)?\\b`, 'g'),
+    (_, mo, d) => addExplicit(nearestYear(+d, MONTHS.indexOf(mo.slice(0, 3)))));
+  // A bare ordinal ("the 3rd") pins the day of the month; a bare number does
+  // not - "12 Oberon Drive" is an address.
+  const ord = text.match(/\b(\d{1,2})(?:st|nd|rd|th)\b/);
+  const dom = ord ? Number(ord[1]) : null;
+
+  // Day mentions, each with its candidate dates. A negated one is dropped.
+  const mentions = [];
+  const negated = (at, len) => NEG_BEFORE.test(text.slice(Math.max(0, at - 30), at)) || NEG_AFTER.test(text.slice(at + len, at + len + 25));
+  let weekRelative = false;
+
+  const relWords = [
+    [/\bday after (?:tomorrow|tmrw|tmr|tomoz)\b/g, 2],
+    [/\b(?:tomorrow|tomorow|tommorow|tommorrow|tmrw|tmr|tomoz|2moro|2morrow)\b/g, 1],
+    [/\b(?:today|tonight|tonite|2day|this arvo|this afternoon|this morning|this evening)\b/g, 0],
+    [/\byesterday\b/g, -1],
+  ];
+  for (const [re, n] of relWords) {
+    text = text.replace(re, (m, at) => {
+      if (!negated(at, m.length)) mentions.push({ kind: 'rel', dates: [iso(addDays(today, n))] });
+      return ' '.repeat(m.length);   // keep offsets, and "tomorrow" inside "day after tomorrow" is spent
+    });
   }
-  const noTime = raw.replace(/\b\d{1,2}(?::\d{2})?\s*(am|pm)\b/g, ' ');
 
-  // Vague windows are a real answer: we know there is a commitment, not when.
-  if (VAGUE.test(noTime)) return { date: null, time, reason: 'vague' };
-
-  // A named day beats a relative word: "tomorrow is out, but Wednesday should
-  // be good" agrees to Wednesday.
-  let date = null;
-  const hit = DAY_WORDS.find(([w]) => new RegExp(`\\b${w}\\b`).test(noTime));
-  if (hit) {
-    const [, target] = hit;
-    let offset = (target - ref.getDay() + 7) % 7;       // 0 = today
-    if (/\bnext\b/.test(noTime) && offset === 0) offset = 7;
-    date = iso(addDays(ref, offset));
-  } else if (/\b(today|tonight|this arvo|this afternoon|this morning)\b/.test(noTime)) {
-    date = iso(ref);
-  } else if (/\btomorrow\b/.test(noTime)) {
-    date = iso(addDays(ref, 1));
+  const dayRe = new RegExp(`(?<![\\w'])(${DAY_WORDS.map(([w]) => w).join('|')})(?!\\w)`, 'g');
+  for (const m of text.matchAll(dayRe)) {
+    const word = m[1], at = m.index;
+    if (strict && LOOSE.has(word)) continue;
+    if (negated(at, word.length)) continue;
+    const t = DAY_WORDS.find(([w]) => w === word)[1];
+    const before = text.slice(Math.max(0, at - 20), at);
+    const after = text.slice(at + word.length, at + word.length + 20);
+    const mondayThis = addDays(today, -monWeek(today));
+    const inWeek = k => [iso(addDays(mondayThis, 7 * k + (t + 6) % 7))];
+    const off = (t - today.getDay() + 7) % 7;
+    let dates;
+    if (/^\s*,?\s*next week\b/.test(after) || /\bnext week\s*,?\s*$/.test(before)) dates = inWeek(1);
+    else if (/^\s*,?\s*last week\b/.test(after) || /\blast week\s*,?\s*$/.test(before)) dates = inWeek(-1);
+    else if (/^\s*,?\s*this week\b/.test(after)) dates = inWeek(0);
+    else if (/^\s*week\b/.test(after)) { weekRelative = true; continue; }          // "Tuesday week"
+    else if (/\blast\s+$/.test(before)) dates = [iso(addDays(today, -(((today.getDay() - t + 7) % 7) || 7)))];
+    else if (/\bnext\s+$/.test(before)) {
+      // "next Thursday" said on a Monday is this Thursday to some, next week's to others.
+      dates = off === 0 ? [iso(addDays(today, 7))]
+        : (t + 6) % 7 > monWeek(today) ? [iso(addDays(today, off)), iso(addDays(today, off + 7))]
+        : [iso(addDays(today, off))];
+    } else dates = [iso(addDays(today, off))];
+    mentions.push({ kind: 'day', dates });
   }
-  if (!date) return { date: null, time, reason: 'unrecognised' };
 
-  // Disagreement guard. If the span also names a day of the month and it does
-  // not match what the weekday resolved to, the two readings conflict — most
-  // often a PAST reference like "Monday 2nd". Refuse rather than pick one.
-  const dom = noTime.match(/\b(\d{1,2})(?:st|nd|rd|th)?\b/);
+  const domOf = d => Number(d.slice(8, 10));
+  const done = (date, reason = 'ok') => ({ date, time, reason });
+  const days = mentions.filter(m => m.kind === 'day');
+
+  if (explicit.size) {
+    if (explicit.size > 1) return done(null, 'ambiguous');
+    const [only] = explicit;
+    // A weekday named alongside must be that date's weekday.
+    const wd = new Date(only + 'T00:00').getDay();
+    if (days.length && !days.some(m => m.dates.some(d => new Date(d + 'T00:00').getDay() === wd))) return done(null, 'day-of-month conflict');
+    return done(only);
+  }
+
   if (dom) {
-    const n = Number(dom[1]);
-    if (n >= 1 && n <= 31 && n !== Number(date.slice(8, 10))) {
-      return { date: null, time, reason: 'day-of-month conflict' };
+    // Most often a PAST reference like "Monday 2nd": refuse rather than pick.
+    if (mentions.length) {
+      const hits = [...new Set(mentions.flatMap(m => m.dates).filter(d => domOf(d) === dom))];
+      return hits.length === 1 ? done(hits[0]) : done(null, hits.length ? 'ambiguous' : 'day-of-month conflict');
     }
+    let x = new Date(today.getFullYear(), today.getMonth(), dom);
+    if (x < today) x = new Date(today.getFullYear(), today.getMonth() + 1, dom);
+    return x.getDate() === dom ? done(iso(x)) : done(null, 'unrecognised');
   }
-  return { date, time, reason: 'ok' };
+
+  if (days.some(m => m.dates.length > 1)) return done(null, 'ambiguous');
+  const dayDates = [...new Set(days.flatMap(m => m.dates))];
+  const relDates = [...new Set(mentions.filter(m => m.kind === 'rel').flatMap(m => m.dates))];
+  const all = [...new Set([...dayDates, ...relDates])];
+  const offered = ALTERNATIVE.test(text) && (all.length > 1 || VAGUE.test(text));
+
+  if (dayDates.length > 1 || relDates.length > 1 && !dayDates.length) return done(null, 'ambiguous');
+  if (offered) return done(null, 'ambiguous');                     // "Thurs or Friday?"
+  // A named day beats a relative word: "tomorrow is my wife's birthday, I'll
+  // have to do Thursday" agrees to Thursday.
+  if (dayDates.length) return done(dayDates[0]);
+  if (relDates.length) return done(relDates[0]);
+  if (weekRelative || VAGUE.test(text)) return done(null, 'vague');
+  return done(null, 'unrecognised');
 }
 
 // Stable per thread + quoted line, so re-extraction updates the same row
@@ -172,13 +273,13 @@ export function parseExtraction(raw, threads, ref = new Date()) {
     const rest = fields.filter((_, i) => i !== qi);
     let whenText = '', when = { date: null, time: null, reason: 'empty' };
     for (const f of [...rest.filter(f => f.length <= 40), quote]) {   // >40: a sentence, not a date
-      const r = resolveWhen(f, sent);
-      if (r.date || r.reason === 'vague' || r.reason === 'day-of-month conflict') {
+      const r = resolveWhen(f, sent, { strict: f === quote });
+      if (r.date || ['vague', 'ambiguous', 'day-of-month conflict'].includes(r.reason)) {
         whenText = f === quote ? '' : f; when = r; break;
       }
     }
     // "Wednesday" in WHEN, "Maybe 9am" in the quote: keep the time.
-    if (when.date && !when.time) when.time = resolveWhen(quote, sent).time;
+    if (when.date && !when.time) when.time = resolveWhen(quote, sent, { strict: true }).time;
     // Its day has been and gone: nothing left to put in the calendar.
     if (when.date && when.date < iso(ref)) continue;
 
