@@ -269,6 +269,10 @@ async function handlePin(req, res) {
   if (url === '/api/pin/set') {
     const { hash } = body;
     if (!hash) { res.writeHead(400); res.end('{}'); return; }
+    // First-run only. Once a PIN exists, replacing it needs a valid session:
+    // without this anyone could overwrite the PIN and be handed an owner token.
+    const existing = await pool.query("SELECT 1 FROM settings WHERE key='owner_pin_hash'");
+    if (existing.rows.length && !requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
     await pool.query(
       "INSERT INTO settings (key,value) VALUES ('owner_pin_hash',$1) ON CONFLICT (key) DO UPDATE SET value=$1",
       [hash]
