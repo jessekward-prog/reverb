@@ -1998,8 +1998,11 @@ async function workChannel(channel) {
   console.log(`${channel}: reading…`);
   let rows = [];
   try { ({ rows } = await fetchChannel(channel, 40)); }
-  catch (e) { console.error(`${channel}: bridge —`, e.message); return []; }
-  if (!rows.length) { console.log(`${channel}: bridge returned no conversations`); return []; }
+  catch (e) { console.error(`${channel}: bridge —`, e.message); noteHealth(channel, `The bridge could not read it (${e.message})`); return []; }
+  // A signed-in inbox is never empty, so zero rows is a dark source, not a
+  // quiet day. Without this the watchdog only ever knew about email.
+  if (!rows.length) { console.log(`${channel}: bridge returned no conversations`); noteHealth(channel, 'It returned no conversations'); return []; }
+  noteHealth(channel, 'ok');
 
   // Drop system notices, then anything duplicated by name+last line.
   const seen = new Set();
