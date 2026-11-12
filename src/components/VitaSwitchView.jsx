@@ -21,6 +21,8 @@ export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSwee
   const [data, setData] = useState({ categories: [], actions: [], scannedAt: null });
   const [phase, setPhase] = useState('loading');
   const [sweep, setSweep] = useState(null);   // {step} while a full pass runs, then {note}
+  const [src, setSrc]     = useState(null);   // which sources can actually be read
+  const [showSrc, setShowSrc] = useState(false);
 
   const load = useCallback((quiet = false) => {
     if (!quiet) setPhase('loading');
@@ -34,6 +36,15 @@ export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSwee
   }, [auth, onLockout]);
 
   useEffect(() => { load(); }, [load]);
+
+  // A signed-out tab empties every list while the app itself looks perfectly
+  // healthy. Check on open, so "is this working?" is answered before he trusts
+  // what is on the screen rather than after he notices a quiet day.
+  const checkSources = useCallback(() => {
+    fetch('/api/sources', { headers: authHeaders(auth?.token) })
+      .then(r => r.json()).then(setSrc).catch(() => setSrc({ ok: false, error: 'could not check' }));
+  }, [auth]);
+  useEffect(() => { checkSources(); }, [checkSources]);
 
   // "Refresh all data": re-read every source, look for times newly agreed, and
   // check the calendar for what has since been booked. It is minutes of work,
@@ -109,6 +120,20 @@ export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSwee
           <span style={{ color: C.amber }}>vita</span> switch
         </div>
         <span style={{ flex: 1 }} />
+        {src && (
+          <button type="button" onClick={() => setShowSrc(v => !v)}
+            style={{ appearance: 'none', cursor: 'pointer', background: 'none',
+                     border: `1px solid ${src.ok ? C.border : C.amber}`, borderRadius: 6,
+                     display: 'flex', alignItems: 'center', gap: 7, padding: '6px 10px',
+                     minHeight: 32, fontFamily: FONT.mono, fontSize: FS.label,
+                     letterSpacing: '.08em', textTransform: 'uppercase',
+                     color: src.ok ? C.text3 : C.amber, whiteSpace: 'nowrap' }}>
+            <span style={{ width: 7, height: 7, borderRadius: 2,
+                           background: src.ok ? '#3d6b4a' : C.amber }} />
+            {src.ok ? 'all sources live'
+                    : `${(src.needsAttention || []).length || '?'} source${(src.needsAttention || []).length === 1 ? '' : 's'} down`}
+          </button>
+        )}
         <button type="button" onClick={refreshAll} disabled={!!sweep?.step}
           style={{ appearance: 'none', cursor: sweep?.step ? 'default' : 'pointer',
                    fontFamily: FONT.mono, fontSize: FS.label, letterSpacing: '.1em',
@@ -130,6 +155,25 @@ export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSwee
           ))}
         </nav>
       </header>
+
+      {showSrc && src && (
+        <div style={{ position: 'relative', zIndex: 2, padding: `0 ${SP[4]}px ${SP[2]}px`,
+                      fontFamily: FONT.mono, fontSize: FS.meta, color: C.text2,
+                      display: 'flex', flexWrap: 'wrap', gap: SP[3] }}>
+          {src.error
+            ? <span style={{ color: C.amber }}>{src.error}</span>
+            : Object.entries(src.sources || {}).map(([k, v]) => (
+                <span key={k} style={{ color: v.state === 'ok' ? C.text3 : C.amber }}>
+                  {k}: {v.state}
+                </span>
+              ))}
+          {!src.ok && !src.error && (
+            <span style={{ color: C.text3, textTransform: 'none' }}>
+              run <code>./login.sh</code> on the tower to sign back in
+            </span>
+          )}
+        </div>
+      )}
 
       {sweep?.note && (
         <div style={{ position: 'relative', zIndex: 2, padding: `0 ${SP[4]}px ${SP[2]}px`,

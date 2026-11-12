@@ -909,6 +909,26 @@ async function reconcileOpenCommitments() {
   return { booked, unsure, blind };
 }
 
+// Which sources can actually be read, straight from the bridge. A signed-out
+// tab is the failure that empties every list while the app looks fine, so it
+// has to be answerable at a glance rather than discovered when a day's work
+// quietly goes missing.
+async function handleSources(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  try {
+    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/sources`, {
+      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+      signal: AbortSignal.timeout(240000),
+    });
+    const body = r.ok ? await r.json() : { ok: false, error: `bridge status ${r.status}` };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(body));
+  } catch (e) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: `bridge unreachable: ${e.message}` }));
+  }
+}
+
 // Verify instead of trusting. Every band row is derived from state that can be
 // re-checked, so a refresh re-reads the sources and lets the rows that are
 // genuinely done fall away on the evidence rather than on a button press. The
@@ -2988,6 +3008,7 @@ createServer(async (req, res) => {
     if (req.method === 'GET'  && u === '/api/contacts') return await handleContacts(req, res);
     if (req.method === 'POST' && u === '/api/contacts/signal') return await handleContactSignal(req, res);
     if (req.method === 'POST' && u === '/api/contacts/mute')   return await handleContactMute(req, res);
+    if (req.method === 'GET'  && u === '/api/sources')         return await handleSources(req, res);
     if (req.method === 'POST' && u === '/api/actions/done')    return await handleActionDone(req, res);
     if (req.method === 'POST' && u === '/api/actions/refresh') return await handleActionsRefresh(req, res);
     if (u === '/api/refresh-all' && (req.method === 'POST' || req.method === 'GET')) return await handleRefreshAll(req, res);
