@@ -105,3 +105,26 @@ export function extractAddress(text) {
   const hit = m[0].replace(/\s+/g, ' ').trim().replace(/[.,;]$/, '');
   return hit.length >= 10 && hit.length <= 120 ? hit : null;
 }
+
+const MISSED_CALL_RE = /\b(?:called\.\s*No\s+Voicemail\s+message\s+was\s+left|free\s+call\s+147|missed\s+(?:a\s+)?call)\b/i;
+const CALLBACK_RE = /\b(?:give\s+(?:me|us)\s+a\s+(?:buzz|call|ring|bell)|buzz\s+(?:me|us|back|if|when|asap|later|today|tonight|tomorrow)|call\s+(?:me|us|back|plz|pls|please|if\s+(?:you\s+)?can|when\s+(?:you\s+)?(?:can|get\s+a\s+chance|free)|asap)|(?:can|could|will)\s+you\s+(?:call|buzz|ring)|ring\s+(?:me|us|back)|tried\s+(?:calling|to\s+call))\b|^buzz[.!?]*$|^call(?:\s+(?:plz|pls|please))?[.!?]*$/i;
+
+export function isCallSignal(text) {
+  const s = String(text || '').replace(/\s+/g, ' ').trim();
+  return !!s && (MISSED_CALL_RE.test(s) || CALLBACK_RE.test(s));
+}
+
+// Detect missed calls or buzz/call-back requests that have no visible outbound reply
+// after them (Reverb sees SMS/text messages, not phone calls).
+export function hasUnrepliedCall(snippet, messages) {
+  if (Array.isArray(messages) && messages.length) {
+    let lastOut = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i]?.outbound) { lastOut = i; break; }
+    }
+    const trailing = messages.slice(lastOut + 1);
+    if (!trailing.length) return false;
+    return trailing.some(m => isCallSignal(m?.text)) || isCallSignal(snippet);
+  }
+  return isCallSignal(snippet);
+}

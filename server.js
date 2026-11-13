@@ -15,7 +15,7 @@ import {
 } from './src/lib/tools.js';
 import { parseExtraction, reconcileStatus, projectCommitments, ymd, msgLine, resolveWhen } from './src/lib/commitments.js';
 import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules,
-         extractAddress, phoneLast9 } from './src/lib/contacts.js';
+         extractAddress, phoneLast9, hasUnrepliedCall } from './src/lib/contacts.js';
 
 const { Pool } = pg;
 
@@ -1330,7 +1330,10 @@ const AUTOMATED_SNIPPET = /\b(verification code|security code|is your\b.{0,20}\b
 // itself. A bare "Reply to <name>" told you nothing you could act on; the
 // message does. The id hashes from|snippet, not text, so retitling an item
 // does not resurrect something already dismissed.
+const callFlagTitle = who => `${who} tried to call and I can't see a reply`;
+
 function replyTitle(kind, who, snippet) {
+  if (hasUnrepliedCall(snippet)) return callFlagTitle(who);
   if (kind === 'sms' || kind === 'meta') return `Reply to ${who}`;
   const line = String(snippet || '').replace(/\s+/g, ' ').trim();
   return line ? `${who}: ${line.slice(0, 120)}` : `Reply to ${who}`;
@@ -1456,7 +1459,10 @@ async function briefConversations(items) {
   const pairs = [];
   for (const t of convo) {
     const th = findThread(t.from);
-    if (th && (th.messages || []).length > 1) pairs.push({ item: t, thread: th });
+    if (th && (th.messages || []).length > 1) {
+      if (hasUnrepliedCall(t.snippet, th.messages)) t.text = callFlagTitle(t.from);
+      pairs.push({ item: t, thread: th });
+    }
   }
   if (!pairs.length) {
     console.error(`briefs: none of ${convo.length} conversations matched a thread`);
@@ -1481,6 +1487,8 @@ The brief is 2-4 short sentences written TO Jesse as "you", in plain spoken Engl
 - what was most recently proposed or agreed
 - what is still missing (a time, a date, a price, a confirmation)
 - the single next thing worth doing
+
+Carrier alerts ("... called. No Voicemail message was left ... free call 147") mean they tried to call, and "buzz" / "buzz if can" / "call plz" means they are asking for a phone call. Reverb can only see text messages — not phone calls — so when they tried to call or asked for a buzz/call with no text reply after it, lead plainly with that (e.g. they tried to call and you can't see a reply in texts) before noting any earlier context.
 
 Tone to match: "You and this client have been going back and forth for a couple of weeks about installing a new oven. You asked about Tuesday next week, they agreed but haven't given you a time. Worth pinning that down, then it can go on the calendar."
 
@@ -1679,7 +1687,7 @@ Write a short brief, 3-5 sentences of plain English, covering only what the mate
 - what has already been settled or agreed (quote figures, dates and addresses exactly as they appear)
 - what is still open, and the single next thing he should do
 
-Do not invent details. If something important is missing - no price, no date, no address - say plainly that it is missing. No headings, no bullet points, no preamble.`;
+Carrier notices ("called. No Voicemail message was left") mean they tried to call, and "buzz" / "buzz if can" / "call plz" means they want a phone call. Note plainly when a call/buzz request has no visible text reply after it (phone calls aren't visible here). Do not invent details. If something important is missing - no price, no date, no address - say plainly that it is missing. No headings, no bullet points, no preamble.`;
 
   try {
     const detail = String(await askModel(prompt, 900) || '').trim();
@@ -2633,18 +2641,22 @@ async function nextActions() {
       const days = Math.floor(hours / 24);
       const asked = String(w.snippet || '').replace(/\s+/g, ' ').trim();
       if (isEnder(asked)) continue;
+      const callFlag = hasUnrepliedCall(asked);
       out.push({
         id: `owed-${w.kind}-${who.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
         kind: 'reply-owed',
+        badge: callFlag ? 'callback · no reply seen' : null,
         fact: `${w.kind}:${at}`,
         // Below a client at the same age - work leads - but it still climbs,
         // so someone left a week gets to the top on their own.
-        urgency: Math.min(8, 5 + Math.floor(days / 2)),
+        urgency: Math.min(8, (callFlag ? 6 : 5) + Math.floor(days / 2)),
         at,
-        title: who,
+        title: callFlag ? callFlagTitle(who) : who,
         person: { name: who, phone: null, address: null, via: null },
         work: asked ? asked.slice(0, 220) : null,
-        detail: `Sent the last message ${days >= 1 ? `${days} day${days === 1 ? '' : 's'} ago` : 'yesterday'} on ${w.kind}${w.unread ? ', still unread' : ''}. You have not answered.`,
+        detail: callFlag
+          ? `${days >= 1 ? `${days} day${days === 1 ? '' : 's'} ago` : 'Yesterday'} on ${w.kind}${w.unread ? ', still unread' : ''}. Reverb only sees texts, not phone calls.`
+          : `Sent the last message ${days >= 1 ? `${days} day${days === 1 ? '' : 's'} ago` : 'yesterday'} on ${w.kind}${w.unread ? ', still unread' : ''}. You have not answered.`,
         cta: null,
       });
     }

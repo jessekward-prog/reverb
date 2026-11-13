@@ -167,7 +167,7 @@ export default function ActionBand({ actions = [], auth, onCleared }) {
           >
             <div style={{ fontFamily: FONT.mono, fontSize: FS.label, letterSpacing: '.08em',
                           textTransform: 'uppercase', color: C.amber }}>
-              {LABEL[a.kind] || a.kind}
+              {a.badge || LABEL[a.kind] || a.kind}
             </div>
 
             {/* A commitment row is a contact card: who, how to reach them,

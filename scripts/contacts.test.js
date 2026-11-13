@@ -47,3 +47,28 @@ assert.strictEqual(extractAddress('call me on 0400 111 222'), null);
 // Matched on the last 9 digits, so any AU formatting resolves to one contact.
 assert.strictEqual(phoneLast9('+61 400 111 222'), phoneLast9('0400 111 222'));
 assert.strictEqual(phoneLast9('321'), null);
+
+// ── callback / missed-call flagging ─────────────────────────
+import { isCallSignal, hasUnrepliedCall } from '../src/lib/contacts.js';
+
+assert.ok(isCallSignal('Buzz if can'));
+assert.ok(isCallSignal('Buzz'));
+assert.ok(isCallSignal('Give us a buzz when you get a chance'));
+assert.ok(isCallSignal('Call plz'));
+assert.ok(isCallSignal('61400111222 called. No Voicemail message was left. For more information on this feature, free call 147 from your mobile phone.'));
+assert.ok(!isCallSignal('The buzzer on the gate is stuck'));
+assert.ok(!isCallSignal('Yes Tuesday next week is good for us'));
+assert.ok(!isCallSignal('Call it 450 all up'));
+
+const callThread = [
+  { text: '61400111222 called. No Voicemail message was left. For more information on this feature, free call 147 from your mobile phone.', outbound: false },
+  { text: 'Call plz', outbound: false },
+  { text: 'All good', outbound: true },
+  { text: 'Buzz if can', outbound: false },
+];
+assert.ok(hasUnrepliedCall('Buzz if can', callThread));
+assert.ok(!hasUnrepliedCall('Sounds good', [...callThread, { text: 'Called you back', outbound: true }]));
+assert.ok(hasUnrepliedCall('Any luck?', [
+  { text: '61400111222 called. No Voicemail message was left. For more information on this feature, free call 147 from your mobile phone.', outbound: false },
+  { text: 'Any luck?', outbound: false },
+]));
