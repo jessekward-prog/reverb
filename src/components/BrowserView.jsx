@@ -118,9 +118,9 @@ export default function BrowserView({ auth, onLockout, ...nav }) {
           </div>
           <div className="rv-head-side">
             <div className="rv-head-nav" style={{ background: EDGE, border: `1px solid ${EDGE}` }}>
-              <button type="button" style={tabBtn(false)} onClick={() => nav.onOpenTasks?.()}>to-do</button>
+              <button type="button" style={tabBtn(false)} onClick={() => nav.onOpenHome?.()}>vita switch</button>
+              <button type="button" style={tabBtn(true)}>browser</button>
               <button type="button" style={tabBtn(false)} onClick={() => nav.onOpenChat?.()}>chat</button>
-              <button type="button" style={tabBtn(false)} onClick={() => nav.onOpenWork?.()}>work</button>
             </div>
           </div>
         </div>
@@ -157,7 +157,7 @@ export default function BrowserView({ auth, onLockout, ...nav }) {
             onWheel={onWheel}
             draggable={false}
             style={{ width: fit ? '100%' : (vp.w ? `${vp.w}px` : '100%'), maxWidth: fit ? '100%' : 'none',
-                     height: 'auto', display: 'block', cursor: 'crosshair', userSelect: 'none',
+                     height: 'auto', display: gotFrame ? 'block' : 'none', cursor: 'crosshair', userSelect: 'none',
                      imageRendering: 'auto', flex: 'none' }}
           />
           {status !== 'live' && !gotFrame && (

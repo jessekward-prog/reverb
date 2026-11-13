@@ -4,6 +4,7 @@ import { authHeaders } from '../api.js';
 import { C, FS, FONT, SP } from '../lib/design.js';
 import TriPane from './TriPane.jsx';
 import TopicStrip from './TopicStrip.jsx';
+import { PeopleDrawer, RulesDrawer } from './TriageDrawers.jsx';
 
 // The whole day on one page. Nothing to press to make it current: it loads,
 // then refreshes itself quietly, because being asked to regenerate a list is
@@ -11,18 +12,19 @@ import TopicStrip from './TopicStrip.jsx';
 const REFRESH_MS = 5 * 60 * 1000;
 
 const PILL = [
-  ['chat', 'chat'], ['sweep', 'sweep'], ['texts', 'texts'], ['browser', 'browser'],
+  ['browser', 'browser'], ['chat', 'chat'],
 ];
 
-export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSweep,
-                                         onOpenTexts, onOpenBrowser, onDraftReply,
-                                         topics, onView }) {
-  const go = { chat: onOpenChat, sweep: onOpenSweep, texts: onOpenTexts, browser: onOpenBrowser };
+export default function VitaSwitchView({ auth, onLockout, onOpenBrowser, onOpenChat,
+                                         onDraftReply, topics, onView }) {
+  const go = { browser: onOpenBrowser, chat: onOpenChat };
   const [data, setData] = useState({ categories: [], actions: [], scannedAt: null });
   const [phase, setPhase] = useState('loading');
   const [sweep, setSweep] = useState(null);   // {step} while a full pass runs, then {note}
   const [src, setSrc]     = useState(null);   // which sources can actually be read
   const [showSrc, setShowSrc] = useState(false);
+  const [peopleOpen, setPeopleOpen] = useState(false);
+  const [rulesOpen, setRulesOpen]   = useState(false);
 
   const load = useCallback((quiet = false) => {
     if (!quiet) setPhase('loading');
@@ -134,6 +136,20 @@ export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSwee
                     : `${(src.needsAttention || []).length || '?'} source${(src.needsAttention || []).length === 1 ? '' : 's'} down`}
           </button>
         )}
+        <button type="button" onClick={() => setPeopleOpen(true)}
+          style={{ appearance: 'none', cursor: 'pointer', fontFamily: FONT.mono, fontSize: FS.label,
+                   letterSpacing: '.1em', textTransform: 'uppercase', padding: '7px 10px', minHeight: 32,
+                   border: `1px solid ${C.border}`, background: 'transparent', color: C.text3,
+                   whiteSpace: 'nowrap' }}>
+          people
+        </button>
+        <button type="button" onClick={() => setRulesOpen(true)}
+          style={{ appearance: 'none', cursor: 'pointer', fontFamily: FONT.mono, fontSize: FS.label,
+                   letterSpacing: '.1em', textTransform: 'uppercase', padding: '7px 10px', minHeight: 32,
+                   border: `1px solid ${C.border}`, background: 'transparent', color: C.text3,
+                   whiteSpace: 'nowrap' }}>
+          rules
+        </button>
         <button type="button" onClick={refreshAll} disabled={!!sweep?.step}
           style={{ appearance: 'none', cursor: sweep?.step ? 'default' : 'pointer',
                    fontFamily: FONT.mono, fontSize: FS.label, letterSpacing: '.1em',
@@ -196,6 +212,8 @@ export default function VitaSwitchView({ auth, onLockout, onOpenChat, onOpenSwee
                      auth={auth} onDone={finish} onOpenBrowser={onOpenBrowser}
                      onOpenChat={onDraftReply} />}
       </main>
+      <PeopleDrawer open={peopleOpen} auth={auth} onLockout={onLockout} onClose={() => setPeopleOpen(false)} />
+      <RulesDrawer open={rulesOpen} auth={auth} onLockout={onLockout} onClose={() => setRulesOpen(false)} />
     </div>
   );
 }

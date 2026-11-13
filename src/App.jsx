@@ -3,11 +3,6 @@ import PinGate from './components/PinGate.jsx';
 import NavRail from './components/NavRail.jsx';
 import VitaSwitchView from './components/VitaSwitchView.jsx';
 import ChatView from './components/ChatView.jsx';
-import SweepView from './components/SweepView.jsx';
-import TasksView from './components/TasksView.jsx';
-import WorkView from './components/WorkView.jsx';
-import LifeView from './components/LifeView.jsx';
-import TextsView from './components/TextsView.jsx';
 import BrowserView from './components/BrowserView.jsx';
 import TopicView from './components/TopicView.jsx';
 import { getStoredAuth, saveAuth, clearStoredAuth, authHeaders } from './api.js';
@@ -16,9 +11,7 @@ export default function App() {
   const [stage, setStage]     = useState('loading'); // 'loading' | 'pin' | 'chat'
   const [pinMode, setPinMode] = useState('enter');   // 'setup' | 'enter'
   const [auth, setAuth]       = useState({ token: null, role: null });
-  // 'home' | 'tasks' | 'chat' | 'sweep' | 'work' | 'life' | 'texts' | 'browser'
-  // home is the Vita Switch page: work, the feed and life all at once, which is
-  // what you land on. The single-report tabs stay for looking at one half.
+  // 'home' | 'browser' | 'chat' | 'topic:<slug>'
   const [view, setView]       = useState('home');
   const [draftPrompt, setDraftPrompt] = useState(null);
   const [outstanding, setOutstanding] = useState(0); // items chased 2+ days, for the rail badge
@@ -95,24 +88,15 @@ export default function App() {
   // doesn't use are harmless. Collected here so the shell wraps once instead of
   // the nav rail being bolted onto five near-identical returns.
   const nav = {
-    onOpenChat:  () => setView('chat'),
-    onOpenSweep: () => setView('sweep'),
-    onOpenTasks: () => setView('tasks'),
-    onOpenWork:  () => setView('work'),
-    onOpenLife:  () => setView('life'),
-    onOpenTexts: () => setView('texts'),
+    onOpenHome:    () => setView('home'),
     onOpenBrowser: () => setView('browser'),
+    onOpenChat:    () => setView('chat'),
     onView: setView,
     topics,
   };
 
   let content;
   if (view === 'home')         content = <VitaSwitchView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
-  else if (view === 'sweep')        content = <SweepView auth={auth} onLockout={handleLockout} {...nav} />;
-  else if (view === 'tasks')   content = <TasksView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
-  else if (view === 'work')    content = <WorkView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
-  else if (view === 'life')    content = <LifeView auth={auth} onLockout={handleLockout} {...nav} onDraftReply={stageDraft} />;
-  else if (view === 'texts')   content = <TextsView auth={auth} onLockout={handleLockout} {...nav} />;
   else if (view === 'browser') content = <BrowserView auth={auth} onLockout={handleLockout} {...nav} />;
   else if (view.startsWith('topic:'))
     content = <TopicView key={view} slug={view.slice(6)} auth={auth} onLockout={handleLockout}

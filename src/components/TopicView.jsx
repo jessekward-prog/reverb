@@ -39,7 +39,7 @@ const ago = iso => {
   return `${Math.floor(s / 86400)}d ago`;
 };
 
-export default function TopicView({ slug, auth, onLockout, onOpenTasks, onOpenChat, onTopicsChanged }) {
+export default function TopicView({ slug, auth, onLockout, onOpenHome, onOpenBrowser, onOpenChat, onTopicsChanged }) {
   const [phase, setPhase] = useState('loading');
   const [topic, setTopic] = useState(null);
   const [editing, setEdit] = useState(null);
@@ -80,7 +80,7 @@ export default function TopicView({ slug, auth, onLockout, onOpenTasks, onOpenCh
     if (!window.confirm(`Delete the "${topic?.label}" tab and everything filed under it?`)) return;
     setBusy('deleting');
     fetch(`/api/topics/${slug}`, { method: 'DELETE', headers: head })
-      .then(() => { onTopicsChanged?.(); onOpenTasks?.(); })
+      .then(() => { onTopicsChanged?.(); onOpenHome?.(); })
       .finally(() => setBusy(null));
   }
 
@@ -114,7 +114,8 @@ export default function TopicView({ slug, auth, onLockout, onOpenTasks, onOpenCh
             </div>
           </div>
           <div className="rv-head-nav" style={{ background: EDGE, border: `1px solid ${EDGE}` }}>
-            <button type="button" style={navBtn(false)} onClick={() => onOpenTasks?.()}>to-do</button>
+            <button type="button" style={navBtn(false)} onClick={() => onOpenHome?.()}>vita switch</button>
+            <button type="button" style={navBtn(false)} onClick={() => onOpenBrowser?.()}>browser</button>
             <button type="button" style={navBtn(false)} onClick={() => onOpenChat?.()}>chat</button>
             <button type="button" style={navBtn(true)}>this tab</button>
           </div>

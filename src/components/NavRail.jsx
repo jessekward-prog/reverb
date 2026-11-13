@@ -7,14 +7,9 @@ import { authHeaders } from '../api.js';
 // Hidden below 1024px by .nav-rail's `hidden lg:flex` (see style.css); the
 // per-view pill is hidden ABOVE 1024px, so exactly one is visible at any width.
 const ITEMS = [
-  { key: 'home',  label: 'vita switch', hint: 'everything at once' },
-  { key: 'tasks', label: 'to-do', hint: 'the list' },
-  { key: 'work',  label: 'work',  hint: 'business report' },
-  { key: 'life',  label: 'life',  hint: 'personal report' },
-  { key: 'sweep', label: 'sweep', hint: 'pull + generate' },
-  { key: 'texts', label: 'texts', hint: 'message threads' },
-  { key: 'browser', label: 'browser', hint: 'live logged-in tabs' },
-  { key: 'chat',  label: 'chat',  hint: 'ask vita or switch' },
+  { key: 'home',    label: 'vita switch', hint: 'everything at once' },
+  { key: 'browser', label: 'browser',     hint: 'live logged-in tabs' },
+  { key: 'chat',    label: 'chat',        hint: 'ask vita or switch' },
 ];
 
 function Row({ item, active, onClick, outstanding, unread }) {
@@ -35,9 +30,9 @@ function Row({ item, active, onClick, outstanding, unread }) {
     >
       <span style={{ color: active ? AMBER : 'rgba(232,232,228,.3)', width: 8 }}>{active ? '▸' : ''}</span>
       <span style={{ flex: 1 }}>{item.label}</span>
-      {/* the chase nudge rides on the championed to-do tab — the one list that
+      {/* the chase nudge rides on the home tab — the one list that
           pushes you to clear what's been sitting */}
-      {((item.key === 'home' || item.key === 'tasks') && outstanding > 0) || unread > 0 ? (
+      {(item.key === 'home' && outstanding > 0) || unread > 0 ? (
         <span style={{
           flex: 'none', minWidth: 18, textAlign: 'center', fontSize: 10,
           color: AMBER, border: `1px solid ${AMBER}`, padding: '1px 5px', letterSpacing: 0,
