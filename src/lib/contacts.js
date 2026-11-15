@@ -238,7 +238,190 @@ export function extractQuoteAmount(text) {
   return m[0].replace(/\s+/g, ' ').trim();
 }
 
-export function canonicalPersonKey({ kind, from, phone, email, name } = {}, directory = {}) {
+const STREET_TYPE_MAP = {
+  st: 'street', street: 'street',
+  rd: 'road', road: 'road',
+  dr: 'drive', drive: 'drive',
+  av: 'avenue', ave: 'avenue', avenue: 'avenue',
+  ct: 'court', crt: 'court', court: 'court',
+  pl: 'place', place: 'place',
+  cr: 'crescent', cres: 'crescent', crescent: 'crescent',
+  bvd: 'boulevard', blvd: 'boulevard', boulevard: 'boulevard',
+  hwy: 'highway', highway: 'highway',
+  ln: 'lane', lane: 'lane',
+  cl: 'close', close: 'close',
+  tce: 'terrace', terrace: 'terrace',
+  pde: 'parade', parade: 'parade',
+  cct: 'circuit', circuit: 'circuit',
+  gr: 'grove', grove: 'grove',
+  wy: 'way', way: 'way',
+};
+
+const ADDR_KEY_RE = /\b(\d{1,5}[a-z]?(?:\/\d{1,5})?)\s+((?:[a-z][a-z'\-]*\s+){1,4})(street|st|road|rd|drive|dr|avenue|ave|av|court|ct|crt|place|pl|crescent|cres|cr|boulevard|blvd|bvd|highway|hwy|lane|ln|close|cl|terrace|tce|parade|pde|circuit|cct|grove|gr|way|wy)\b/i;
+
+export function normalizeAddressKey(addr) {
+  const raw = String(addr || '').replace(/\s+/g, ' ').trim();
+  if (!raw) return null;
+  const m = raw.match(ADDR_KEY_RE);
+  if (!m) return null;
+  const num = m[1].toLowerCase();
+  const street = m[2].trim().replace(/\s+/g, ' ').toLowerCase();
+  const type = STREET_TYPE_MAP[m[3].toLowerCase()] || m[3].toLowerCase();
+  return `${num} ${street} ${type}`;
+}
+
+const GEELONG_SUBURBS = [
+  'Armstrong Creek', 'Bannockburn', 'Barwon Heads', 'Batesford',
+  'Bell Park', 'Bell Post Hill', 'Belmont', 'Breakwater', 'Charlemont',
+  'Clifton Springs', 'Corio', 'Curlewis', 'Drysdale', 'East Geelong',
+  'Fyansford', 'Geelong West', 'Geelong', 'Grovedale', 'Hamlyn Heights',
+  'Herne Hill', 'Highton', 'Indented Head', 'Inverleigh', 'Jan Juc',
+  'Lara', 'Leopold', 'Lovely Banks', 'Manifold Heights', 'Marshall',
+  'Moolap', 'Moriac', 'Mount Duneed', 'Newcomb', 'Newtown',
+  'North Geelong', 'Norlane', 'Ocean Grove', 'Point Lonsdale', 'Portarlington',
+  'Queenscliff', 'South Geelong', 'St Albans Park', 'St Leonards', 'Thomson',
+  'Torquay', 'Wallington', 'Wandana Heights', 'Waurn Ponds', 'West Geelong',
+  'Whittington', 'Winchelsea', 'Anglesea',
+].sort((a, b) => b.length - a.length);
+
+const GEELONG_SUBURB_CANON = new Map(GEELONG_SUBURBS.map(s => [s.toLowerCase(), s]));
+const GEELONG_SUBURB_RE = new RegExp(`\\b(${GEELONG_SUBURBS.map(s => s.replace(/\s+/g, '\\s+')).join('|')})\\b`, 'i');
+
+export function extractSuburb(text) {
+  const m = String(text || '').match(GEELONG_SUBURB_RE);
+  if (!m) return null;
+  const key = m[1].replace(/\s+/g, ' ').trim().toLowerCase();
+  return GEELONG_SUBURB_CANON.get(key) || m[1].replace(/\s+/g, ' ').trim();
+}
+
+const TRADE_PART_PATTERNS = [
+  /\b(?:customer|client)[- ]supplied\b/gi,
+  /\b\d+\s*(?:x\s*)?(?:ceiling\s+fans?|fans?|downlights?|lights?|pendants?|smoke\s+alarms?|power\s*points?|gpos?|switches|dimmers?|data\s+points?|sensors?)\b/gi,
+  /\b(?:switchboard|rcd|safety\s+switch|oven|cooktop|rangehood|exhaust\s+fan|split\s+system|isolator|hot\s+water|ev\s+charger|starlink)\b/gi,
+];
+const JOB_LINK_RE = /switchcraft\.cmdward\.xyz\/jobs\/(\d+)/gi;
+const INVOICED_OR_PAID_RE = /\b(?:invoice\s*#?\d+|paid\s+in\s+full|remittance|payment\s+received|eft\s+transfer)\b/i;
+
+export function extractTradeSignals(text) {
+  const src = String(text || '');
+  const jobIds = [];
+  for (const m of src.matchAll(JOB_LINK_RE)) {
+    const id = Number(m[1]);
+    if (Number.isInteger(id) && id > 0 && !jobIds.includes(id)) jobIds.push(id);
+  }
+  const parts = [];
+  const seenParts = new Set();
+  for (const re of TRADE_PART_PATTERNS) {
+    for (const m of src.matchAll(re)) {
+      const val = m[0].replace(/\s+/g, ' ').trim();
+      const key = val.toLowerCase();
+      if (val && !seenParts.has(key)) {
+        seenParts.add(key);
+        parts.push(val);
+      }
+    }
+  }
+  return {
+    jobIds,
+    parts,
+    quote: extractQuoteAmount(src),
+    suburb: extractSuburb(src),
+    invoicedOrPaid: INVOICED_OR_PAID_RE.test(src),
+  };
+}
+
+const localDateStr = v => {
+  if (!v) return '';
+  if (v instanceof Date && !Number.isNaN(+v)) {
+    const pad = n => String(n).padStart(2, '0');
+    return `${v.getFullYear()}-${pad(v.getMonth() + 1)}-${pad(v.getDate())}`;
+  }
+  return String(v).slice(0, 10);
+};
+
+export function deriveDeterministicStage({ messages = [], commitments = [], events = [], jobStatus = null, today = '' } = {}) {
+  const todayStr = today || localDateStr(new Date());
+  const msgText = m => String(m?.text ?? m?.body ?? '');
+
+  const validEvents = (events || [])
+    .map(e => ({ ...e, _date: localDateStr(e?.date) }))
+    .filter(e => /^\d{4}-\d{2}-\d{2}$/.test(e._date));
+
+  const upcoming = validEvents
+    .filter(e => e._date >= todayStr)
+    .sort((a, b) => a._date.localeCompare(b._date) || String(a.time || '').localeCompare(String(b.time || '')));
+  if (upcoming.length) {
+    const ev = upcoming[0];
+    return {
+      stage: `Booked (${ev._date}${ev.time ? ' ' + ev.time : ''})`,
+      nextStep: `Attend booked job on ${ev._date}${ev.time ? ' at ' + ev.time : ''}`,
+    };
+  }
+
+  const past = validEvents
+    .filter(e => e._date < todayStr)
+    .sort((a, b) => b._date.localeCompare(a._date));
+  if (past.length) {
+    const ev = past[0];
+    const hasInvoiceOrPaid = (messages || []).some(m => {
+      const mAt = localDateStr(m?.at ?? m?.msg_at);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(mAt) && mAt < ev._date) return false;
+      return INVOICED_OR_PAID_RE.test(msgText(m));
+    }) || (jobStatus && /invoic|paid|complet/i.test(String(jobStatus)));
+    if (!hasInvoiceOrPaid) {
+      return {
+        stage: `Completed (${ev._date}) · check invoicing`,
+        nextStep: 'Confirm job completion and send invoice if not yet billed',
+      };
+    }
+  }
+
+  const openList = commitments || [];
+  const unbooked = openList.find(c => c?.status === 'unbooked');
+  if (unbooked) {
+    const wd = localDateStr(unbooked.when_date);
+    return {
+      stage: `Agreed · needs calendar booking${wd ? ' (' + wd + ')' : ''}`,
+      nextStep: 'Book the agreed day and time in the Work calendar',
+    };
+  }
+  const needsConfirm = openList.find(c => c?.status === 'needs_confirm');
+  if (needsConfirm) {
+    return {
+      stage: 'Time discussed · needs confirmation',
+      nextStep: 'Confirm the exact day and time with the client',
+    };
+  }
+
+  const msgs = Array.isArray(messages) ? messages : [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (!msgs[i]?.outbound) continue;
+    const t = msgText(msgs[i]);
+    if (extractQuoteAmount(t) || /switchcraft\.cmdward\.xyz\/jobs\/\d+/i.test(t)) {
+      const clientReplied = msgs.slice(i + 1).some(m => !m?.outbound);
+      return clientReplied
+        ? { stage: 'Quoted · client replied', nextStep: 'Reply to client and lock in a booking time' }
+        : { stage: 'Quoted · awaiting client reply', nextStep: 'Wait for client response or follow up on quote' };
+    }
+  }
+
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i]?.outbound) continue;
+    if (extractContactIntro(msgText(msgs[i])).isDetailsDrop) {
+      if (!msgs.slice(i + 1).some(m => m?.outbound)) {
+        return {
+          stage: 'New client sent contact details',
+          nextStep: 'Reply or call back to discuss the job and book a time',
+        };
+      }
+      break;
+    }
+  }
+
+  return { stage: null, nextStep: null };
+}
+
+export function canonicalPersonKey({ kind, from, phone, email, name, address } = {}, directory = {}) {
   const last9 = phoneLast9(phone) || (kind === 'sms' ? phoneLast9(from) : null) || phoneLast9(from);
   if (last9) return directory.byPhone?.[last9] || `phone:${last9}`;
 
@@ -246,6 +429,9 @@ export function canonicalPersonKey({ kind, from, phone, email, name } = {}, dire
     ? normalizeIdentifier('email', email)
     : ((kind === 'email' || kind === 'bizemail') ? normalizeIdentifier(kind, from) : '');
   if (rawEmail && rawEmail.includes('@')) return directory.byEmail?.[rawEmail] || `email:${rawEmail}`;
+
+  const addrKey = normalizeAddressKey(address || extractAddress(from));
+  if (addrKey && directory.byAddress?.[addrKey]) return directory.byAddress[addrKey];
 
   const rawName = String(name || from || '').trim().toLowerCase().replace(/\s+/g, ' ');
   if (rawName && directory.byName?.[rawName]) return directory.byName[rawName];
@@ -290,7 +476,7 @@ export function mergeDossierFields(existing = {}, incoming = {}) {
   if (exAddr && existing.address_source === 'switch-craft' && incoming.address_source !== 'switch-craft') {
     address = exAddr;
     address_source = 'switch-craft';
-  } else if (inAddr) {
+  } else if (inAddr && !(exAddr && normalizeAddressKey(exAddr) && !normalizeAddressKey(inAddr) && incoming.address_source !== 'manual')) {
     address = inAddr;
     address_source = incoming.address_source || existing.address_source || 'model';
   } else if (exAddr) {
@@ -341,18 +527,71 @@ const DOSSIER_LINE_KEYS = {
   SUMMARY: 'summary_notes',
 };
 
-export function parseDossierResponse(raw, existing = {}) {
+export function parseDossierResponse(raw, existing = {}, sourceCorpus = '') {
   const incoming = {};
   for (const line of String(raw || '').split('\n')) {
     const m = line.match(/^\s*(?:[-*]|\d+[.)])?\s*\*{0,2}([A-Z_]+)\*{0,2}\s*(?:::|:)\s*(.*)$/);
     if (!m) continue;
-    const field = DOSSIER_LINE_KEYS[m[1].toUpperCase()];
+    const key = m[1].toUpperCase();
+    if (key === 'EVIDENCE') continue;
+    const field = DOSSIER_LINE_KEYS[key];
     if (!field) continue;
     const val = cleanDossierValue(m[2]);
     if (!val) continue;
     incoming[field] = val;
     if (field === 'address') incoming.address_source = 'model';
   }
+
+  const corpusStr = String(sourceCorpus || '').trim();
+  if (corpusStr) {
+    const corpusLow = corpusStr.toLowerCase();
+    const corpusDigits = corpusLow.replace(/,/g, '');
+
+    if (incoming.address) {
+      const inKey = normalizeAddressKey(incoming.address);
+      const corpKey = normalizeAddressKey(extractAddress(corpusStr));
+      let addrOk = false;
+      if (inKey) {
+        if (corpKey && corpKey === inKey) {
+          addrOk = true;
+        } else {
+          const [num, st] = inKey.split(/\s+/);
+          const numEsc = num.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          addrOk = new RegExp(`\\b${numEsc}\\b`).test(corpusLow) && (!st || corpusLow.includes(st));
+        }
+      } else {
+        const words = incoming.address.toLowerCase().split(/\s+/).map(w => w.replace(/[^a-z]/g, '')).filter(w => w.length >= 3);
+        addrOk = corpusLow.includes(incoming.address.toLowerCase()) || (words.length > 0 && words.every(w => corpusLow.includes(w)));
+      }
+      if (!addrOk) {
+        delete incoming.address;
+        delete incoming.address_source;
+        const detAddr = extractAddress(corpusStr);
+        if (detAddr) {
+          incoming.address = detAddr;
+          incoming.address_source = 'chat';
+        }
+      }
+    }
+
+    if (incoming.quote_estimate) {
+      const nums = incoming.quote_estimate.match(/\d[\d,]*/g) || [];
+      if (nums.length && !nums.some(n => corpusDigits.includes(n.replace(/,/g, '')))) {
+        delete incoming.quote_estimate;
+        const detQuote = extractQuoteAmount(corpusStr);
+        if (detQuote) incoming.quote_estimate = detQuote;
+      }
+    }
+
+    if (incoming.display_name) {
+      const words = incoming.display_name.toLowerCase().split(/\s+/).map(w => w.replace(/[^a-z'\-]/g, '')).filter(w => w.length >= 3);
+      const exNameLow = String(existing.display_name || '').toLowerCase();
+      if (words.length && !words.some(w => corpusLow.includes(w) || exNameLow.includes(w))) {
+        delete incoming.display_name;
+      }
+    }
+  }
+
   return mergeDossierFields(existing, incoming);
 }
 

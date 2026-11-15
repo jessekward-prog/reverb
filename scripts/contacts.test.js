@@ -189,3 +189,103 @@ const block = formatDossierBlock(parsed);
 assert.ok(block.includes('Name: Mark Brown') && block.includes('Quote: $850 plus gst') && block.includes('Parts: 6-pole RCBOs'));
 assert.strictEqual(formatDossierBlock({}), '');
 console.log('dossier helpers: all assertions passed');
+
+// ── Tier 1 address key, suburb, trade signals, stage & gating ──
+import {
+  normalizeAddressKey,
+  extractSuburb,
+  extractTradeSignals,
+  deriveDeterministicStage,
+} from '../src/lib/contacts.js';
+
+assert.strictEqual(normalizeAddressKey('16 Sample St, East Geelong VIC 3219'), '16 sample street');
+assert.strictEqual(normalizeAddressKey('6 burgundy dr Waurn Ponds'), '6 burgundy drive');
+assert.strictEqual(normalizeAddressKey('just in Highton'), null);
+
+const addrDir = {
+  byPhone: { '400111222': 'phone:400111222' },
+  byAddress: { '6 sample drive': 'phone:400111222' },
+};
+assert.strictEqual(
+  canonicalPersonKey({ kind: 'email', from: 'Jane Smith', address: '6 Sample Dr Waurn Ponds' }, addrDir),
+  'phone:400111222'
+);
+
+assert.strictEqual(extractSuburb('Job is in East Geelong next week'), 'East Geelong');
+assert.strictEqual(extractSuburb('Over in Waurn Ponds near the shops'), 'Waurn Ponds');
+assert.strictEqual(extractSuburb('No location mentioned'), null);
+
+const sig = extractTradeSignals('Customer supplied 2 ceiling fans and a switchboard upgrade https://switchcraft.cmdward.xyz/jobs/32 for $300 plus gst in Highton');
+assert.deepStrictEqual(sig.jobIds, [32]);
+assert.strictEqual(sig.quote, '$300 plus gst');
+assert.strictEqual(sig.suburb, 'Highton');
+assert.ok(sig.parts.some(p => /customer supplied/i.test(p)));
+assert.ok(sig.parts.some(p => /2 ceiling fans/i.test(p)));
+assert.ok(sig.parts.some(p => /switchboard/i.test(p)));
+assert.strictEqual(sig.invoicedOrPaid, false);
+
+// Deterministic stage machine priority checks
+assert.strictEqual(
+  deriveDeterministicStage({
+    today: '2026-11-16',
+    events: [{ date: '2026-11-20', time: '09:00', text: 'Ceiling fans' }],
+    commitments: [{ status: 'unbooked', when_date: '2026-11-18' }],
+  }).stage,
+  'Booked (2026-11-20 09:00)'
+);
+assert.strictEqual(
+  deriveDeterministicStage({
+    today: '2026-11-16',
+    events: [{ date: '2026-11-12', time: '10:00', text: 'Powerpoints' }],
+    messages: [{ outbound: true, text: 'All done today, thanks', at: '2026-11-12T12:00' }],
+  }).stage,
+  'Completed (2026-11-12) · check invoicing'
+);
+assert.strictEqual(
+  deriveDeterministicStage({
+    today: '2026-11-16',
+    commitments: [{ status: 'unbooked', when_date: '2026-11-19' }],
+  }).stage,
+  'Agreed · needs calendar booking (2026-11-19)'
+);
+assert.strictEqual(
+  deriveDeterministicStage({
+    today: '2026-11-16',
+    messages: [
+      { outbound: false, text: 'Can you quote 2 fans?' },
+      { outbound: true, text: "You'll be looking at $300 plus gst :)" },
+    ],
+  }).stage,
+  'Quoted · awaiting client reply'
+);
+assert.strictEqual(
+  deriveDeterministicStage({
+    today: '2026-11-16',
+    messages: [
+      { outbound: false, text: "Hi it's Jane Smith\n6 Sample Drive Waurn Ponds\n0400111222" },
+    ],
+  }).stage,
+  'New client sent contact details'
+);
+
+// Grounding gate rejects hallucinated name/quote/address and falls back to corpus facts
+const gated = parseDossierResponse(`
+EVIDENCE :: Hi it's Jane Smith at 6 Sample Drive Waurn Ponds, $300 plus gst
+NAME :: Invented Person
+ADDRESS :: 99 Hallucinated Road, Fakeville
+QUOTE :: $999
+SCOPE :: Replace 2 ceiling fans
+`, { person_key: 'phone:400111222' }, "them: Hi it's Jane Smith at 6 Sample Drive Waurn Ponds\nme: Looking at $300 plus gst");
+assert.strictEqual(gated.display_name, null);
+assert.strictEqual(gated.address, '6 Sample Drive Waurn Ponds');
+assert.strictEqual(gated.quote_estimate, '$300 plus gst');
+assert.strictEqual(gated.work_scope, 'Replace 2 ceiling fans');
+
+// Street address is not overwritten by a bare suburb
+const keptStreet = mergeDossierFields(
+  { person_key: 'phone:400111222', address: '6 Sample Drive Waurn Ponds', address_source: 'chat' },
+  { address: 'Waurn Ponds', address_source: 'chat' }
+);
+assert.strictEqual(keptStreet.address, '6 Sample Drive Waurn Ponds');
+
+console.log('tier1 & gating: all assertions passed');

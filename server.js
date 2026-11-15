@@ -17,7 +17,8 @@ import { parseExtraction, reconcileStatus, projectCommitments, ymd, msgLine, res
 import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules,
          extractAddress, extractContactIntro, phoneLast9, hasUnrepliedCall,
          extractQuoteAmount, canonicalPersonKey, cleanDossierValue, mergeDossierFields,
-         parseDossierResponse, formatDossierBlock } from './src/lib/contacts.js';
+         parseDossierResponse, formatDossierBlock,
+         normalizeAddressKey, extractSuburb, extractTradeSignals, deriveDeterministicStage } from './src/lib/contacts.js';
 import { enrichReplyOwed, jobUrl, looksLikePhone, bookingWindow, calendarDraftUrl } from './src/lib/actionMeta.js';
 
 const { Pool } = pg;
@@ -1666,7 +1667,7 @@ async function briefConversations(items) {
   if (!convo.length) return items;
 
   let threads = [];
-  try { threads = await fetchThreads(20); }
+  try { threads = await fetchThreads(35); }
   catch (e) { console.error('briefs: bridge unreachable —', e.message); }
 
   const digits = v => String(v || '').replace(/\D/g, '');
@@ -1707,16 +1708,22 @@ async function briefConversations(items) {
     return items;
   }
 
-  const listing = pairs.map((p, i) => {
-    const lines = p.msgs.slice(-14)
-      .map(m => `    ${m.outbound ? 'you' : 'them'}: ${String(m.text || '').replace(/\s+/g, ' ').slice(0, 200)}`)
-      .join('\n');
-    const fallbackLine = `    latest (${p.item.kind}): ${String(p.item.snippet || '').replace(/\s+/g, ' ').slice(0, 200)}`;
-    return `${i}. ${p.label}${p.dBlock ? `\n   Known dossier: ${p.dBlock}` : ''}\n${lines || fallbackLine}`;
-  }).join('\n\n');
-
+  const CHUNK = 8;
   const now = new Date();
-  const prompt = `Today is ${now.toLocaleDateString('en-AU', { weekday: 'long' })} ${ymd(now)}. Below are text conversations and stored client dossiers between Jesse, an electrician ("you"), and other people.
+  const todayLabel = `${now.toLocaleDateString('en-AU', { weekday: 'long' })} ${ymd(now)}`;
+  let written = 0;
+
+  for (let start = 0; start < pairs.length; start += CHUNK) {
+    const chunk = pairs.slice(start, start + CHUNK);
+    const listing = chunk.map((p, i) => {
+      const lines = p.msgs.slice(-14)
+        .map(m => `    ${m.outbound ? 'you' : 'them'}: ${String(m.text || '').replace(/\s+/g, ' ').slice(0, 200)}`)
+        .join('\n');
+      const fallbackLine = `    latest (${p.item.kind}): ${String(p.item.snippet || '').replace(/\s+/g, ' ').slice(0, 200)}`;
+      return `${i}. ${p.label}${p.dBlock ? `\n   Known dossier: ${p.dBlock}` : ''}\n${lines || fallbackLine}`;
+    }).join('\n\n');
+
+    const prompt = `Today is ${todayLabel}. Below are text conversations and stored client dossiers between Jesse, an electrician ("you"), and other people.
 
 For EACH numbered conversation write ONE line, exactly:
 <number> :: <brief>
@@ -1736,27 +1743,27 @@ Ground every word in the messages and dossiers shown. Never state a job, name, d
 CONVERSATIONS:
 ${listing}`;
 
-  let raw = '';
-  try { raw = await askModel(prompt, 2200); }
-  catch (e) { console.error('briefs: model call failed —', e.message); return items; }
-  if (!raw.trim()) { console.error('briefs: model returned empty content'); return items; }
+    let raw = '';
+    try { raw = await askModel(prompt, 1600); }
+    catch (e) { console.error('briefs: model call failed —', e.message); continue; }
+    if (!raw.trim()) { console.error('briefs: model returned empty content'); continue; }
 
-  let written = 0;
-  for (const line of String(raw).split('\n')) {
-    // The model answers "0. Some Name :: ..." - it numbers with a full stop
-    // and repeats the thread name before the separator, even when told not to.
-    // Take the leading index, then everything after the first "::".
-    const m = line.match(/^\s*(\d+)\s*[.)]?\s*(.*)$/);
-    if (!m) continue;
-    const sep = m[2].indexOf('::');
-    if (sep === -1) continue;
-    const p = pairs[Number(m[1])];
-    if (!p) continue;
-    const text = m[2].slice(sep + 2).trim();
-    if (text.length > 20) {
-      p.item.brief = text.slice(0, 600);
-      await pool.query('UPDATE item_archive SET brief = $1 WHERE item_id = $2', [p.item.brief, workItemId(p.item)]).catch(() => {});
-      written++;
+    for (const line of String(raw).split('\n')) {
+      // The model answers "0. Some Name :: ..." - it numbers with a full stop
+      // and repeats the thread name before the separator, even when told not to.
+      // Take the leading index, then everything after the first "::".
+      const m = line.match(/^\s*(\d+)\s*[.)]?\s*(.*)$/);
+      if (!m) continue;
+      const sep = m[2].indexOf('::');
+      if (sep === -1) continue;
+      const p = chunk[Number(m[1])];
+      if (!p) continue;
+      const text = m[2].slice(sep + 2).trim();
+      if (text.length > 20) {
+        p.item.brief = text.slice(0, 600);
+        await pool.query('UPDATE item_archive SET brief = $1 WHERE item_id = $2', [p.item.brief, workItemId(p.item)]).catch(() => {});
+        written++;
+      }
     }
   }
   console.log(`briefs: ${written} written for ${pairs.length} matched threads (${convo.length} conversations)`);
@@ -2253,7 +2260,7 @@ ${convos}`;
 // a job that was talked away drops itself instead of becoming a phantom.
 async function refreshCommitments() {
   let threads;
-  try { threads = await fetchThreads(20); }
+  try { threads = await fetchThreads(35); }
   catch (err) { console.error('commitments: bridge unreachable —', err.message); return { ok: false, reason: err.message }; }
   if (!threads.length) return { ok: false, reason: 'no threads' };
 
@@ -2423,10 +2430,14 @@ async function workChannel(channel) {
   });
   if (!rows.length) { console.log(`${channel}: nothing but system notices`); return []; }
 
-  const listing = rows.map((r, i) =>
-    `${i}. ${r.name} :: ${String(r.snippet || '').replace(/\s+/g, ' ').slice(0, 160)}`).join('\n');
+  const CHUNK = 8;
+  const work = [];
+  for (let start = 0; start < rows.length; start += CHUNK) {
+    const chunk = rows.slice(start, start + CHUNK);
+    const listing = chunk.map((r, i) =>
+      `${i}. ${r.name} :: ${String(r.snippet || '').replace(/\s+/g, ' ').slice(0, 160)}`).join('\n');
 
-  const prompt = `Jesse is an electrician. Below are the latest lines from his personal ${channel === 'whatsapp' ? 'WhatsApp' : 'Messenger'} conversations.
+    const prompt = `Jesse is an electrician. Below are the latest lines from his personal ${channel === 'whatsapp' ? 'WhatsApp' : 'Messenger'} conversations.
 
 Say which are about his ELECTRICAL WORK: a quote or estimate, a job or callout, booking a visit, materials or parts, a site or address, an invoice or payment for work, or a tradesman arranging work with him.
 
@@ -2441,13 +2452,14 @@ If none are about work, answer: none
 
 ${listing}`;
 
-  let raw = '';
-  try { raw = await askModel(prompt, 400); }
-  catch (e) { console.error(`${channel}: model —`, e.message); return []; }
+    let raw = '';
+    try { raw = await askModel(prompt, 300); }
+    catch (e) { console.error(`${channel}: model —`, e.message); continue; }
 
-  const picked = new Set((raw.match(/\d+/g) || []).map(Number));
-  if (/\bnone\b/i.test(raw) && !picked.size) return [];
-  const work = rows.filter((_, i) => picked.has(i));
+    const picked = new Set((raw.match(/\d+/g) || []).map(Number));
+    if (/\bnone\b/i.test(raw) && !picked.size) continue;
+    work.push(...chunk.filter((_, i) => picked.has(i)));
+  }
   console.log(`${channel}: ${work.length} of ${rows.length} conversations read as work`);
   return work;
 }
@@ -2680,6 +2692,11 @@ function registerDossierInDir(d, dir) {
     ? normalizeIdentifier('email', d.email)
     : (d.person_key.startsWith('email:') ? d.person_key.slice(6) : '');
   if (em && em.includes('@')) dir.byEmail[em] = d.person_key;
+  const addrKey = normalizeAddressKey(d.address);
+  if (addrKey && (!dir.byAddress?.[addrKey] || d.person_key.startsWith('phone:'))) {
+    if (!dir.byAddress) dir.byAddress = {};
+    dir.byAddress[addrKey] = d.person_key;
+  }
   const nm = String(d.display_name || '').trim().toLowerCase().replace(/\s+/g, ' ');
   if (nm && /[a-z]/i.test(nm) && (!dir.byName[nm] || d.person_key.startsWith('phone:'))) {
     dir.byName[nm] = d.person_key;
@@ -2687,26 +2704,29 @@ function registerDossierInDir(d, dir) {
 }
 
 async function loadPersonDirectory() {
-  const dir = { byPhone: {}, byName: {}, byEmail: {}, byKey: new Map() };
+  const dir = { byPhone: {}, byName: {}, byEmail: {}, byAddress: {}, byKey: new Map() };
   const [{ rows: dossierRows }, { rows: contactRows }] = await Promise.all([
     pool.query('SELECT * FROM person_dossiers'),
-    pool.query('SELECT kind, identifier, display_name FROM contacts'),
+    pool.query('SELECT kind, identifier, display_name, address FROM contacts'),
   ]);
   for (const d of dossierRows) registerDossierInDir(d, dir);
   for (const c of contactRows) {
     const nm = String(c.display_name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const addrKey = normalizeAddressKey(c.address);
     if (c.kind === 'sms') {
       const p9 = phoneLast9(c.identifier);
       if (!p9) continue;
       const pk = dir.byPhone[p9] || `phone:${p9}`;
       dir.byPhone[p9] = pk;
       if (nm && /[a-z]/i.test(nm) && !dir.byName[nm]) dir.byName[nm] = pk;
+      if (addrKey && !dir.byAddress[addrKey]) dir.byAddress[addrKey] = pk;
     } else if (c.kind === 'email' || c.kind === 'bizemail') {
       const em = normalizeIdentifier(c.kind, c.identifier);
       if (!em.includes('@')) continue;
       const pk = dir.byEmail[em] || `email:${em}`;
       dir.byEmail[em] = pk;
       if (nm && /[a-z]/i.test(nm) && !dir.byName[nm]) dir.byName[nm] = pk;
+      if (addrKey && !dir.byAddress[addrKey]) dir.byAddress[addrKey] = pk;
     }
   }
   return dir;
@@ -2725,6 +2745,7 @@ function lookupDossierInDir(whoOrItem, directory) {
       phone: whoOrItem.phone,
       email,
       name: name || whoOrItem.displayName,
+      address: whoOrItem.address,
     }, directory);
     return directory.byKey.get(key) || null;
   }
@@ -2766,19 +2787,29 @@ async function upsertPersonDossier(personKey, incoming, directory, { sourceHash 
   }
   let merged = mergeDossierFields(existing, { ...incoming, person_key: personKey });
 
-  if (personKey.startsWith('phone:') && merged.display_name) {
-    const nameKey = `name:${merged.display_name.toLowerCase().replace(/\s+/g, ' ').trim()}`;
-    let nameRow = directory?.byKey?.get(nameKey) || null;
-    if (!nameRow) {
-      const { rows } = await pool.query('SELECT * FROM person_dossiers WHERE person_key = $1', [nameKey]);
-      nameRow = rows[0] || null;
+  if (personKey.startsWith('phone:')) {
+    const absorbKeys = new Set();
+    if (merged.display_name) {
+      absorbKeys.add(`name:${merged.display_name.toLowerCase().replace(/\s+/g, ' ').trim()}`);
     }
-    if (nameRow) {
-      merged = mergeDossierFields(nameRow, { ...merged, person_key: personKey });
-      await pool.query('UPDATE item_archive SET person_key = $1 WHERE person_key = $2', [personKey, nameKey]);
-      await pool.query('UPDATE message_archive SET person_key = $1 WHERE person_key = $2', [personKey, nameKey]);
-      await pool.query('DELETE FROM person_dossiers WHERE person_key = $1', [nameKey]);
-      directory?.byKey?.delete(nameKey);
+    const addrKey = normalizeAddressKey(merged.address);
+    if (addrKey && directory?.byKey) {
+      for (const [k, row] of directory.byKey) {
+        if (k.startsWith('name:') && normalizeAddressKey(row.address) === addrKey) absorbKeys.add(k);
+      }
+    }
+    for (const oldKey of absorbKeys) {
+      let oldRow = directory?.byKey?.get(oldKey) || null;
+      if (!oldRow) {
+        const { rows } = await pool.query('SELECT * FROM person_dossiers WHERE person_key = $1', [oldKey]);
+        oldRow = rows[0] || null;
+      }
+      if (!oldRow) continue;
+      merged = mergeDossierFields(oldRow, { ...merged, person_key: personKey });
+      await pool.query('UPDATE item_archive SET person_key = $1 WHERE person_key = $2', [personKey, oldKey]);
+      await pool.query('UPDATE message_archive SET person_key = $1 WHERE person_key = $2', [personKey, oldKey]);
+      await pool.query('DELETE FROM person_dossiers WHERE person_key = $1', [oldKey]);
+      directory?.byKey?.delete(oldKey);
     }
   }
 
@@ -2828,7 +2859,7 @@ async function archiveItemsAndThreads(items = [], threads = []) {
   // Pass 1: register Switch Craft job links first so name<->phone matches resolve cleanly.
   for (const t of items) {
     if (t.kind !== 'job') continue;
-    const pKey = canonicalPersonKey({ kind: t.kind, from: t.from, phone: t.phone, name: t.from }, directory);
+    const pKey = canonicalPersonKey({ kind: t.kind, from: t.from, phone: t.phone, name: t.from, address: t.address }, directory);
     const quote = extractQuoteAmount(`${t.snippet || ''} ${t.lastNote?.message || ''}`);
     await upsertPersonDossier(pKey, {
       display_name: t.from,
@@ -2849,8 +2880,42 @@ async function archiveItemsAndThreads(items = [], threads = []) {
   for (const th of threads) {
     if (!th?.name) continue;
     const isPhone = !!phoneLast9(th.name);
-    const pKey = canonicalPersonKey({ kind: 'sms', from: th.name, name: th.name }, directory);
     const msgs = Array.isArray(th.messages) ? th.messages : [];
+    let foundAddr = null;
+    let foundQuote = null;
+    let foundIntro = null;
+    let introIdx = -1;
+    let foundSuburb = null;
+    const foundJobIds = new Set();
+    const foundParts = [];
+    const seenPartKeys = new Set();
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const msg = msgs[i];
+      const txt = msg?.text || '';
+      if (!foundAddr) foundAddr = extractAddress(txt);
+      if (!foundQuote) foundQuote = extractQuoteAmount(txt);
+      const sig = extractTradeSignals(txt);
+      for (const jid of sig.jobIds) foundJobIds.add(jid);
+      if (!foundSuburb && sig.suburb) foundSuburb = sig.suburb;
+      for (const p of sig.parts) {
+        const pk = p.toLowerCase();
+        if (!seenPartKeys.has(pk)) { seenPartKeys.add(pk); foundParts.push(p); }
+      }
+      if (!foundIntro && !msg?.outbound) {
+        const intro = extractContactIntro(txt);
+        if (intro.name || intro.email || intro.isDetailsDrop) {
+          foundIntro = intro;
+          introIdx = i;
+        }
+      }
+    }
+    const resolvedAddr = foundAddr || foundIntro?.address || null;
+    const pKey = canonicalPersonKey({
+      kind: 'sms',
+      from: th.name,
+      name: foundIntro?.name || th.name,
+      address: resolvedAddr,
+    }, directory);
     for (const m of msgs) {
       await insertArchivedMessage({
         personKey: pKey,
@@ -2862,34 +2927,19 @@ async function archiveItemsAndThreads(items = [], threads = []) {
         body: m.text || '',
       }).catch(() => {});
     }
-    let foundAddr = null;
-    let foundQuote = null;
-    let foundIntro = null;
-    let introIdx = -1;
-    for (let i = msgs.length - 1; i >= 0; i--) {
-      const msg = msgs[i];
-      if (!foundAddr) foundAddr = extractAddress(msg?.text);
-      if (!foundQuote) foundQuote = extractQuoteAmount(msg?.text);
-      if (!foundIntro && !msg?.outbound) {
-        const intro = extractContactIntro(msg?.text);
-        if (intro.name || intro.email || intro.isDetailsDrop) {
-          foundIntro = intro;
-          introIdx = i;
-        }
-      }
-      if (foundAddr && foundQuote && foundIntro) break;
-    }
     const existingDossier = directory?.byKey?.get(pKey);
     const introUnreplied = !!(foundIntro?.isDetailsDrop && introIdx >= 0 && !msgs.slice(introIdx + 1).some(m => m?.outbound));
-    const resolvedAddr = foundAddr || foundIntro?.address || null;
+    const finalAddr = resolvedAddr || (!existingDossier?.address ? foundSuburb : null);
     await upsertPersonDossier(pKey, {
       display_name: foundIntro?.name || (isPhone ? null : th.name),
       phone: isPhone ? th.name : null,
       email: foundIntro?.email || null,
       channels: ['sms'],
-      address: resolvedAddr,
-      address_source: resolvedAddr ? 'chat' : null,
+      job_ids: [...foundJobIds],
+      address: finalAddr,
+      address_source: finalAddr ? 'chat' : null,
       quote_estimate: foundQuote,
+      parts_materials: !existingDossier?.parts_materials && foundParts.length ? foundParts.join(', ') : null,
       ...(introUnreplied && !existingDossier?.current_stage ? {
         current_stage: 'New client sent contact details',
         open_next_step: 'Reply or call back to discuss the job and book a time',
@@ -2902,7 +2952,7 @@ async function archiveItemsAndThreads(items = [], threads = []) {
   for (const t of items) {
     if (t.kind === 'cal') continue;
     const { email, name } = extractEmailIdentity(t.kind, t.from);
-    const pKey = canonicalPersonKey({ kind: t.kind, from: t.from, phone: t.phone, email, name }, directory);
+    const pKey = canonicalPersonKey({ kind: t.kind, from: t.from, phone: t.phone, email, name, address: t.address }, directory);
     const itemId = workItemId(t);
     const meta = {
       tasks: t.tasks || null,
@@ -2960,11 +3010,12 @@ async function archiveItemsAndThreads(items = [], threads = []) {
     if (t.kind !== 'job') {
       const combined = `${t.subject || ''} ${t.snippet || ''}`;
       const intro = extractContactIntro(combined);
-      const addr = intro.address || extractAddress(combined);
-      const quote = extractQuoteAmount(combined);
+      const signals = extractTradeSignals(combined);
+      const existingDossier = directory?.byKey?.get(pKey);
+      const addr = intro.address || extractAddress(combined) || (!existingDossier?.address ? (t.address || signals.suburb) : null);
+      const quote = signals.quote;
       const resolvedEmail = email || intro.email || null;
       const resolvedName = name || intro.name || (!phoneLast9(t.from) && !email ? t.from : null);
-      const existingDossier = directory?.byKey?.get(pKey);
       if (t.kind === 'sms' && phoneLast9(t.from) && (intro.name || intro.address)) {
         await rememberContact({
           phone: t.from,
@@ -2978,9 +3029,11 @@ async function archiveItemsAndThreads(items = [], threads = []) {
         phone: t.phone || (t.kind === 'sms' && phoneLast9(t.from) ? t.from : null),
         email: resolvedEmail,
         channels: [t.kind],
+        job_ids: signals.jobIds,
         address: addr,
         address_source: addr ? 'chat' : null,
         quote_estimate: quote,
+        parts_materials: !existingDossier?.parts_materials && signals.parts.length ? signals.parts.join(', ') : null,
         ...(intro.isDetailsDrop && !existingDossier?.current_stage ? {
           current_stage: 'New client sent contact details',
           open_next_step: 'Reply or call back to discuss the job and book a time',
@@ -3000,36 +3053,85 @@ async function archiveItemsAndThreads(items = [], threads = []) {
   return directory;
 }
 
+const CAL_FIRST_STOP = new Set(['jesse', 'jude', 'peyton', 'work', 'home', 'job', 'jobs', 'call', 'quote', 'test', 'info', 'help', 'client']);
+const SCOPE_STOP = new Set(['with', 'that', 'this', 'from', 'your', 'will', 'have', 'need', 'needs', 'work', 'jobs', 'quote', 'client', 'reply']);
+const escapeRe = s => String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+function matchPersonEventsAndCommitments(existing = {}, events = [], commitments = []) {
+  const last9 = phoneLast9(existing.phone) || (String(existing.person_key || '').startsWith('phone:') ? existing.person_key.slice(6) : null);
+  const addrKey = normalizeAddressKey(existing.address);
+  const fullName = String(existing.display_name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const nameParts = fullName.split(' ').filter(w => w.length >= 3);
+  const scopeWords = String(existing.work_scope || '').toLowerCase().split(/\W+/).filter(w => w.length >= 4 && !SCOPE_STOP.has(w));
+
+  const matchedCommitments = (commitments || []).filter(c => {
+    const whoDigits = String(c.who || '').replace(/\D/g, '');
+    const whoLow = String(c.who || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    if (last9 && whoDigits.includes(last9)) return true;
+    if (fullName && (whoLow === fullName || (fullName.length >= 5 && whoLow.includes(fullName)))) return true;
+    return nameParts.length >= 2 && nameParts.every(w => whoLow.includes(w));
+  });
+
+  const matchedEvents = (events || []).filter(ev => {
+    const hay = `${ev.text || ''} ${ev.location || ''}`.toLowerCase();
+    if (last9 && hay.replace(/\D/g, '').includes(last9)) return true;
+    const evAddrKey = normalizeAddressKey(hay);
+    if (addrKey && evAddrKey && addrKey === evAddrKey) return true;
+    if (fullName && fullName.length >= 5 && hay.includes(fullName)) return true;
+    const first = nameParts[0];
+    if (!first || first.length < 4 || CAL_FIRST_STOP.has(first)) return false;
+    if (!new RegExp(`\\b${escapeRe(first)}(?:\\b|'s)`, 'i').test(hay)) return false;
+    return Boolean(
+      evAddrKey
+      || (nameParts[1] && new RegExp(`\\b${escapeRe(nameParts[1])}\\b`, 'i').test(hay))
+      || scopeWords.some(w => hay.includes(w))
+      || /\b(?:property|fan|fans|light|lights|switchboard|gpo|oven|quote)\b/i.test(hay)
+    );
+  });
+
+  return { matchedEvents, matchedCommitments };
+}
+
 async function refreshDossiers({ maxContacts = 8 } = {}) {
-  const { rows: candidates } = await pool.query(`
-    SELECT k.person_key,
-           MAX(k.latest) AS latest_at,
-           pd.source_hash,
-           string_agg(k.sig, '|' ORDER BY k.sig) AS cur_sig
-      FROM (
-        SELECT person_key, last_seen_at AS latest,
-               'i:' || item_id || ':' || extract(epoch from last_seen_at)::bigint || ':' || coalesce(status, '') AS sig
-          FROM item_archive
-        UNION ALL
-        SELECT person_key, seen_at AS latest,
-               'm:' || id AS sig
-          FROM message_archive
-      ) k
-      LEFT JOIN person_dossiers pd ON pd.person_key = k.person_key
-     WHERE k.person_key <> 'unknown'
-     GROUP BY k.person_key, pd.source_hash
-     ORDER BY MAX(k.latest) DESC
-     LIMIT 60
-  `);
+  const [{ rows: candidates }, events, commitments] = await Promise.all([
+    pool.query(`
+      SELECT k.person_key,
+             MAX(k.latest) AS latest_at,
+             pd.source_hash,
+             string_agg(k.sig, '|' ORDER BY k.sig) AS cur_sig
+        FROM (
+          SELECT person_key, last_seen_at AS latest,
+                 'i:' || item_id || ':' || extract(epoch from last_seen_at)::bigint || ':' || coalesce(status, '') AS sig
+            FROM item_archive
+          UNION ALL
+          SELECT person_key, seen_at AS latest,
+                 'm:' || id AS sig
+            FROM message_archive
+        ) k
+        LEFT JOIN person_dossiers pd ON pd.person_key = k.person_key
+       WHERE k.person_key <> 'unknown'
+       GROUP BY k.person_key, pd.source_hash
+       ORDER BY MAX(k.latest) DESC
+       LIMIT 60
+    `),
+    fetchEvents().catch(() => []),
+    openCommitments().catch(() => []),
+  ]);
 
   const directory = await loadPersonDirectory();
+  const today = ymd(new Date());
   let updated = 0;
   for (const row of candidates) {
     if (updated >= maxContacts) break;
-    const currentHash = djb2(row.cur_sig || '');
+    const existing = directory.byKey.get(row.person_key) || { person_key: row.person_key, channels: [], job_ids: [] };
+    const { matchedEvents, matchedCommitments } = matchPersonEventsAndCommitments(existing, events, commitments);
+    const calCommitSig = [
+      matchedCommitments.map(c => `${c.status}:${c.when_date ? ymd(c.when_date) : ''}`).join(','),
+      matchedEvents.map(e => `${e.date}:${e.text}`).join(','),
+    ].join(';');
+    const currentHash = djb2(`v2|${row.cur_sig || ''}|${calCommitSig}`);
     if (row.source_hash === currentHash) continue;
 
-    const existing = directory.byKey.get(row.person_key) || { person_key: row.person_key, channels: [], job_ids: [] };
     const [{ rows: itemRows }, { rows: msgRows }] = await Promise.all([
       pool.query(
         `SELECT kind, title, when_text, status, subject, snippet, address, meta
@@ -3043,6 +3145,16 @@ async function refreshDossiers({ maxContacts = 8 } = {}) {
       ),
     ]);
 
+    const chronoMsgs = [...msgRows].reverse();
+    const jobStatus = itemRows.find(it => it.kind === 'job' && it.status)?.status || null;
+    const detStage = deriveDeterministicStage({
+      messages: chronoMsgs,
+      commitments: matchedCommitments,
+      events: matchedEvents,
+      jobStatus,
+      today,
+    });
+
     const dBlock = formatDossierBlock(existing);
     const itemsText = itemRows.map(it => {
       const m = it.meta || {};
@@ -3050,30 +3162,58 @@ async function refreshDossiers({ maxContacts = 8 } = {}) {
       const note = m.lastNote?.message ? `last note (${m.lastNote.author}): ${String(m.lastNote.message).slice(0, 180)}` : '';
       return `[${it.kind}${it.status ? `/${it.status}` : ''}] ${it.title || it.subject || ''}${it.when_text ? ` (${it.when_text})` : ''}${it.address ? ` @ ${it.address}` : ''}\n  ${it.snippet || ''}${todo ? `\n  checklist: ${todo}` : ''}${note ? `\n  ${note}` : ''}`.trim();
     }).join('\n');
-    const msgsText = msgRows.reverse()
+    const msgsText = chronoMsgs
       .map(m => `[${m.kind}${m.msg_at ? ` ${m.msg_at}` : ''}] ${m.outbound ? 'me' : 'them'}: ${String(m.body || '').replace(/\s+/g, ' ').slice(0, 220)}`)
       .join('\n');
+    const calText = matchedEvents
+      .map(ev => `[${ev.date}${ev.time ? ' ' + ev.time : ''}] ${ev.text || ''}${ev.location ? ' @ ' + ev.location : ''}`)
+      .join('\n');
+    const commText = matchedCommitments
+      .map(c => `[${c.status}${c.when_date ? ' ' + ymd(c.when_date) : ''}${c.when_time ? ' ' + c.when_time : ''}] ${c.what || ''}${c.quote ? ` — "${c.quote}"` : ''}`)
+      .join('\n');
 
-    if (!itemsText && !msgsText) continue;
+    if (!itemsText && !msgsText && !calText) continue;
 
-    const prompt = `You maintain an accurate client dossier for Jesse, an electrician in Geelong. Today is ${ymd(new Date())}.
-Merge what is ALREADY KNOWN with the archived items and messages below. Only record facts explicitly supported by the data — NEVER invent addresses, quotes, dates, or parts. Preserve accurate prior facts unless clearly superseded. Write NONE for any field with no information.
+    const signals = extractTradeSignals(`${itemsText}\n${msgsText}`);
+    const signalsText = [
+      signals.jobIds.length ? `Job IDs: ${signals.jobIds.map(id => `#${id}`).join(', ')}` : null,
+      signals.quote ? `Quote amount: ${signals.quote}` : null,
+      signals.parts.length ? `Parts/scope terms: ${signals.parts.join(', ')}` : null,
+      signals.suburb ? `Suburb: ${signals.suburb}` : null,
+      detStage.stage ? `Computed stage: ${detStage.stage}` : null,
+    ].filter(Boolean).join('\n');
 
-${dBlock ? `EXISTING DOSSIER:\n${dBlock}\n\n` : ''}${itemsText ? `ARCHIVED ITEMS / JOBS:\n${itemsText}\n\n` : ''}${msgsText ? `ARCHIVED MESSAGES:\n${msgsText}\n\n` : ''}Respond with ONLY these lines:
+    const prompt = `You maintain an accurate client dossier for Jesse, an electrician in Geelong. Today is ${today}.
+Merge what is ALREADY KNOWN with the archived items, messages, calendar bookings, and detected signals below. Only record facts explicitly supported by the data — NEVER invent addresses, quotes, dates, or parts. Preserve accurate prior facts unless clearly superseded. Write NONE for any field with no information.
+
+${dBlock ? `EXISTING DOSSIER:\n${dBlock}\n\n` : ''}${calText ? `CALENDAR BOOKINGS:\n${calText}\n\n` : ''}${commText ? `OPEN COMMITMENTS:\n${commText}\n\n` : ''}${signalsText ? `DETECTED SIGNALS:\n${signalsText}\n\n` : ''}${itemsText ? `ARCHIVED ITEMS / JOBS:\n${itemsText}\n\n` : ''}${msgsText ? `ARCHIVED MESSAGES:\n${msgsText}\n\n` : ''}Respond with ONLY these lines:
+EVIDENCE :: short verbatim quote from the messages/items/bookings above supporting your extraction
 NAME :: client/person name (NONE if only a bare phone number)
-ADDRESS :: street address (NONE if unknown)
+ADDRESS :: street address or suburb (NONE if unknown)
 SCOPE :: concise summary of the electrical work or topic
 QUOTE :: quoted/discussed price or estimate verbatim
 PARTS :: parts/materials needed or client-supplied items
 TIMES :: preferred days/times or agreed schedule
 ACCESS :: site access, keys, gate, tenant notes
-STAGE :: current status/stage (e.g. inquiry, quoted, agreed awaiting booking, scheduled, ongoing, awaiting payment)
+STAGE :: current status/stage (use Computed stage if given, else inquiry, quoted, agreed awaiting booking, scheduled, ongoing, awaiting payment)
 NEXT :: concrete next step for Jesse
 SUMMARY :: 1-2 sentence cumulative overview covering context + open questions`;
 
+    const sourceCorpus = [dBlock, itemsText, msgsText, calText, commText].filter(Boolean).join('\n');
+
     try {
-      const raw = await askModel(prompt, 700);
-      const parsed = parseDossierResponse(raw, existing);
+      const raw = await askModel(prompt, 750);
+      const parsed = parseDossierResponse(raw, existing, sourceCorpus);
+      if (signals.jobIds.length) {
+        parsed.job_ids = [...new Set([...(parsed.job_ids || []), ...signals.jobIds])].sort((a, b) => a - b);
+      }
+      if (!parsed.parts_materials && signals.parts.length) parsed.parts_materials = signals.parts.join(', ');
+      if (!parsed.address && signals.suburb) {
+        parsed.address = signals.suburb;
+        parsed.address_source = 'chat';
+      }
+      if (detStage.stage) parsed.current_stage = detStage.stage;
+      if (detStage.nextStep) parsed.open_next_step = detStage.nextStep;
       await upsertPersonDossier(row.person_key, parsed, directory, { sourceHash: currentHash });
       updated++;
     } catch (e) {
