@@ -28,39 +28,89 @@ export default function BrowserView({ auth, onLockout, ...nav }) {
   const imgRef = useRef(null);
   const frameRef = useRef(null);         // the <img> showing the current frame
   const vpRef = useRef({ w: 0, h: 0 });  // the tab's CSS viewport, for input mapping
-  const alive = useRef(true);
+  const onLockoutRef = useRef(onLockout);
+  onLockoutRef.current = onLockout;
+  const genRef = useRef(0);
+  const pollNowRef = useRef(() => {});
 
-  // Poll frames. Each frame is a JPEG blob; we swap the <img> src to it and read
-  // the tab's CSS viewport from the X-Viewport header so clicks map correctly.
-  const poll = useCallback(async () => {
-    try {
-      const r = await fetch(`/api/browser/frame?source=${source}`, { headers: authHeaders(auth?.token) });
-      if (r.status === 401) { onLockout?.(); return; }
-      if (!r.ok) { setStatus('waiting for the tab…'); return; }
-      const vp = (r.headers.get('x-viewport') || '0x0').split('x').map(Number);
-      vpRef.current = { w: vp[0] || 0, h: vp[1] || 0 };
-      setVp(prev => (prev.w === vpRef.current.w && prev.h === vpRef.current.h ? prev : vpRef.current));
-      const blob = await r.blob();
-      const url = URL.createObjectURL(blob);
-      if (frameRef.current) {
-        const old = frameRef.current.src;
-        frameRef.current.onload = () => old && URL.revokeObjectURL(old);
-        frameRef.current.src = url;
-      }
-      setGot(true);
-      setStatus('live');
-    } catch { setStatus('offline'); }
-  }, [source, auth, onLockout]);
-
+  // Poll frames per active source. Every effect owns an AbortController and generation
+  // token so rapid tab switches never leave older in-flight loops fighting over frameRef.
   useEffect(() => {
-    alive.current = true;
+    const gen = ++genRef.current;
+    const ctrl = new AbortController();
+    let timer;
+    let disposed = false;
+    let inFlight = null;
+    let rerun = false;
+
     setStatus('connecting');
     setGot(false);
-    let timer;
-    const loop = async () => { if (!alive.current) return; await poll(); timer = setTimeout(loop, 900); };
-    loop();
-    return () => { alive.current = false; clearTimeout(timer); };
-  }, [poll]);
+    vpRef.current = { w: 0, h: 0 };
+    if (frameRef.current) {
+      if (frameRef.current.src?.startsWith('blob:')) URL.revokeObjectURL(frameRef.current.src);
+      frameRef.current.removeAttribute('src');
+    }
+
+    const fetchFrame = async () => {
+      if (disposed || genRef.current !== gen) return;
+      try {
+        const r = await fetch(`/api/browser/frame?source=${source}`, {
+          headers: authHeaders(auth?.token),
+          signal: ctrl.signal,
+        });
+        if (disposed || genRef.current !== gen) return;
+        if (r.status === 401) { onLockoutRef.current?.(); return; }
+        if (!r.ok) { setStatus('waiting for the tab…'); return; }
+        const rawVp = (r.headers.get('x-viewport') || '0x0').split('x').map(Number);
+        const nextVp = { w: rawVp[0] || 0, h: rawVp[1] || 0 };
+        vpRef.current = nextVp;
+        setVp(prev => (prev.w === nextVp.w && prev.h === nextVp.h ? prev : nextVp));
+        const blob = await r.blob();
+        if (disposed || genRef.current !== gen) return;
+        const url = URL.createObjectURL(blob);
+        const img = frameRef.current;
+        if (!img) { URL.revokeObjectURL(url); return; }
+        const old = img.src;
+        img.onload = () => { if (old && old.startsWith('blob:')) URL.revokeObjectURL(old); };
+        img.onerror = () => URL.revokeObjectURL(url);
+        img.src = url;
+        setGot(true);
+        setStatus('live');
+      } catch (e) {
+        if (e?.name === 'AbortError' || disposed || genRef.current !== gen) return;
+        setStatus('offline');
+      }
+    };
+
+    const tick = (fromInput = false) => {
+      if (disposed || genRef.current !== gen) return;
+      if (inFlight) {
+        if (fromInput) rerun = true;
+        return;
+      }
+      clearTimeout(timer);
+      rerun = false;
+      inFlight = fetchFrame().finally(() => {
+        inFlight = null;
+        if (disposed || genRef.current !== gen) return;
+        timer = setTimeout(() => tick(false), rerun ? 0 : 900);
+      });
+    };
+
+    pollNowRef.current = () => tick(true);
+    tick(false);
+
+    return () => {
+      disposed = true;
+      genRef.current++;
+      clearTimeout(timer);
+      ctrl.abort();
+      if (frameRef.current?.src?.startsWith('blob:')) {
+        URL.revokeObjectURL(frameRef.current.src);
+        frameRef.current.removeAttribute('src');
+      }
+    };
+  }, [source, auth?.token]);
 
   // Map a pointer event on the scaled <img> back to the tab's CSS coordinates.
   const toTab = (e) => {
@@ -78,8 +128,8 @@ export default function BrowserView({ auth, onLockout, ...nav }) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
       body: JSON.stringify({ source, ...payload }),
-    }).then(() => poll()).catch(() => {});
-  }, [source, auth, poll]);
+    }).then(() => pollNowRef.current?.()).catch(() => {});
+  }, [source, auth?.token]);
 
   const onClick = (e) => { const p = toTab(e); if (p) send({ kind: 'click', ...p }); };
   const onWheel = (e) => { const p = toTab(e); if (p) send({ kind: 'wheel', ...p, dy: e.deltaY }); };

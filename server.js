@@ -1266,9 +1266,13 @@ async function handleBrowserFrame(req, res) {
   const label = new URL(req.url, 'http://x').searchParams.get('source');
   if (!BROWSER_SOURCES.includes(label)) { res.writeHead(404); res.end('{}'); return; }
   const source = SOURCE_ALIAS[label] || label;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 25000);
+  res.on('close', () => { if (!res.writableEnded) ctrl.abort(); });
   try {
     const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/frame?source=${source}`, {
       headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+      signal: ctrl.signal,
     });
     if (!r.ok) { res.writeHead(502); res.end('{}'); return; }
     const buf = Buffer.from(await r.arrayBuffer());
@@ -1278,6 +1282,7 @@ async function handleBrowserFrame(req, res) {
     });
     res.end(buf);
   } catch (e) { res.writeHead(502); res.end(JSON.stringify({ error: e.message })); }
+  finally { clearTimeout(timer); }
 }
 
 async function handleBrowserInput(req, res) {

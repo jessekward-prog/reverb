@@ -58,12 +58,12 @@ export default function App() {
     setStage('chat');
   }
 
-  function handleLockout() {
+  const handleLockout = React.useCallback(() => {
     clearStoredAuth();
     setAuth({ token: null, role: null });
     setPinMode('enter');
     setStage('pin');
-  }
+  }, []);
 
   // Stages a drafted-reply prompt and switches to chat — the user reviews and
   // sends it themselves; reverb never sends messages on your behalf. Also the
