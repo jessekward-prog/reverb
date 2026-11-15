@@ -72,3 +72,96 @@ assert.ok(hasUnrepliedCall('Any luck?', [
   { text: '61400111222 called. No Voicemail message was left. For more information on this feature, free call 147 from your mobile phone.', outbound: false },
   { text: 'Any luck?', outbound: false },
 ]));
+
+// ── progressive dossier & archive helpers ───────────────────
+import {
+  extractQuoteAmount,
+  canonicalPersonKey,
+  cleanDossierValue,
+  mergeDossierFields,
+  parseDossierResponse,
+  formatDossierBlock,
+} from '../src/lib/contacts.js';
+
+assert.strictEqual(extractQuoteAmount("you'll be looking at $300 plus gst :)"), '$300 plus gst');
+assert.strictEqual(extractQuoteAmount('Roughly $1,250.50 inc gst for the board'), '$1,250.50 inc gst');
+assert.strictEqual(extractQuoteAmount('That comes to 450 dollars all up'), '450 dollars all up');
+assert.strictEqual(extractQuoteAmount('Can you check on Thursday?'), null);
+
+const dir = {
+  byPhone: { '403253735': 'phone:403253735' },
+  byName: { 'judith robinson': 'phone:403253735' },
+  byEmail: { 'judith@example.com': 'phone:403253735' },
+};
+assert.strictEqual(canonicalPersonKey({ kind: 'sms', from: '+61 403 253 735' }, dir), 'phone:403253735');
+assert.strictEqual(canonicalPersonKey({ kind: 'job', from: 'Judith Robinson', phone: '0403 253 735' }, dir), 'phone:403253735');
+assert.strictEqual(canonicalPersonKey({ kind: 'email', from: 'Judith Robinson <judith@example.com>' }, dir), 'phone:403253735');
+assert.strictEqual(canonicalPersonKey({ kind: 'whatsapp', from: 'Judith Robinson' }, dir), 'phone:403253735');
+assert.strictEqual(canonicalPersonKey({ kind: 'email', from: 'Pat <pat@example.org>' }, dir), 'email:pat@example.org');
+assert.strictEqual(canonicalPersonKey({ kind: 'whatsapp', from: 'Unknown Tradie' }, dir), 'name:unknown tradie');
+
+assert.strictEqual(cleanDossierValue('NONE'), null);
+assert.strictEqual(cleanDossierValue('Not mentioned'), null);
+assert.strictEqual(cleanDossierValue('  Replace 2 ceiling fans  '), 'Replace 2 ceiling fans');
+
+// Existing Switch Craft address and prior extracted fields survive follow-up updates with NONE/model guesses
+const baseDossier = {
+  person_key: 'phone:403253735',
+  display_name: 'Judith Robinson',
+  phone: '0403 253 735',
+  address: '9 Pinecrest Drive, Highton VIC',
+  address_source: 'switch-craft',
+  channels: ['job'],
+  job_ids: [32],
+  work_scope: 'Replace 2 lights with customer-supplied ceiling fans',
+  quote_estimate: '$300 plus gst',
+  parts_materials: 'Customer supplies 2 ceiling fans',
+};
+const merged = mergeDossierFields(baseDossier, {
+  display_name: '0403253735',
+  address: '99 Other St',
+  address_source: 'model',
+  channels: ['sms'],
+  job_ids: [35],
+  work_scope: 'NONE',
+  quote_estimate: '',
+  parts_materials: 'unclear',
+  preferred_times: 'Friday mornings',
+  current_stage: 'Awaiting client day confirmation',
+});
+assert.strictEqual(merged.display_name, 'Judith Robinson');
+assert.strictEqual(merged.address, '9 Pinecrest Drive, Highton VIC');
+assert.strictEqual(merged.address_source, 'switch-craft');
+assert.deepStrictEqual(merged.channels, ['job', 'sms']);
+assert.deepStrictEqual(merged.job_ids, [32, 35]);
+assert.strictEqual(merged.work_scope, 'Replace 2 lights with customer-supplied ceiling fans');
+assert.strictEqual(merged.quote_estimate, '$300 plus gst');
+assert.strictEqual(merged.parts_materials, 'Customer supplies 2 ceiling fans');
+assert.strictEqual(merged.preferred_times, 'Friday mornings');
+
+// Prefer real lettered name when existing display_name was only digits
+const named = mergeDossierFields({ person_key: 'phone:400111222', display_name: '0400 111 222' }, { display_name: 'Mark Brown' });
+assert.strictEqual(named.display_name, 'Mark Brown');
+
+const parsed = parseDossierResponse(`
+- NAME :: Mark Brown
+- ADDRESS :: 14 Sample Rd, Lara VIC
+- SCOPE :: Upgrade switchboard and test RCDs
+- QUOTE :: $850 plus gst
+- PARTS :: NONE
+- TIMES :: After 3pm weekdays
+- ACCESS :: Key in letterbox
+- STAGE :: quoted
+- NEXT :: Follow up Thursday
+- SUMMARY :: Recurring rental client needing switchboard upgrade.
+`, { person_key: 'phone:400111222', parts_materials: '6-pole RCBOs' });
+assert.strictEqual(parsed.address, '14 Sample Rd, Lara VIC');
+assert.strictEqual(parsed.address_source, 'model');
+assert.strictEqual(parsed.parts_materials, '6-pole RCBOs');
+assert.strictEqual(parsed.access_notes, 'Key in letterbox');
+assert.strictEqual(parsed.open_next_step, 'Follow up Thursday');
+
+const block = formatDossierBlock(parsed);
+assert.ok(block.includes('Name: Mark Brown') && block.includes('Quote: $850 plus gst') && block.includes('Parts: 6-pole RCBOs'));
+assert.strictEqual(formatDossierBlock({}), '');
+console.log('dossier helpers: all assertions passed');

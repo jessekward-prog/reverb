@@ -184,6 +184,70 @@ function Facts({ t, showDescription }) {
   );
 }
 
+// Stored progressive client dossier + archived item history, rendered inside
+// expanded cards so everything known across channels is visible at a glance.
+function DossierFacts({ dossier, history = [], skipAddress, skipPhone }) {
+  const rows = dossier ? [
+    ['name', dossier.displayName],
+    ['phone', !skipPhone ? dossier.phone : null],
+    ['email', dossier.email],
+    ['address', !skipAddress ? dossier.address : null],
+    ['business', dossier.business],
+    ['jobs', Array.isArray(dossier.jobIds) && dossier.jobIds.length ? dossier.jobIds.map(id => `#${id}`).join(', ') : null],
+    ['channels', Array.isArray(dossier.channels) && dossier.channels.length ? dossier.channels.join(', ') : null],
+    ['scope', dossier.workScope],
+    ['quote', dossier.quoteEstimate],
+    ['parts', dossier.partsMaterials],
+    ['prefers', dossier.preferredTimes],
+    ['access', dossier.accessNotes],
+    ['stage', dossier.currentStage && String(dossier.currentStage).replace(/_/g, ' ')],
+    ['next', dossier.openNextStep],
+    ['notes', dossier.summaryNotes],
+  ].filter(([, v]) => v) : [];
+
+  const items = Array.isArray(history) ? history.slice(0, 5) : [];
+  if (!rows.length && !items.length) return null;
+
+  return (
+    <div style={{
+      borderTop: `1px solid ${SHELF.border}`, paddingTop: 8,
+      display: 'flex', flexDirection: 'column', gap: 8,
+    }}>
+      {rows.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+          <div style={{ fontSize: FS.label, letterSpacing: '.1em', textTransform: 'uppercase', color: C.amber }}>
+            client dossier
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '4px 10px', fontSize: FS.meta }}>
+            {rows.map(([k, v]) => (
+              <React.Fragment key={k}>
+                <div style={{ color: SHELF.text3, textTransform: 'uppercase', letterSpacing: '.08em' }}>{k}</div>
+                <div style={{ color: SHELF.text1, textTransform: 'none', textWrap: 'pretty', wordBreak: 'break-word' }}>{v}</div>
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
+      )}
+      {items.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ fontSize: FS.label, letterSpacing: '.1em', textTransform: 'uppercase', color: SHELF.text3 }}>
+            archived history ({history.length})
+          </div>
+          {items.map(h => (
+            <div key={h.item_id} style={{ fontSize: FS.meta, color: SHELF.text2, textTransform: 'none', lineHeight: 1.45 }}>
+              <span style={{ color: SHELF.text3, fontFamily: FONT.mono, fontSize: FS.label }}>
+                [{h.kind}{h.status ? `/${h.status}` : ''}]
+              </span>{' '}
+              <span>{h.title || h.subject || h.snippet || '(no detail)'}</span>
+              {h.when_text && <span style={{ color: SHELF.text3 }}> · {h.when_text}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // actions: [{ label, onPress, strong? }] - rendered as ShelfStation's quiet
 // text row along the card's foot.
 export default function ItemCard({
@@ -196,6 +260,11 @@ export default function ItemCard({
   const norm = v => String(v || '').toLowerCase().replace(/\s+/g, ' ').trim();
   const dup = norm(t.snippet) && (norm(t.text).includes(norm(t.snippet)) || norm(t.snippet).includes(norm(t.text)));
   const body = t.snippet && !dup && !t.brief ? t.snippet : null;
+  const dossier = entry?.dossier || t.dossier;
+  const history = entry?.history || [];
+  const isMsgKind = t.kind === 'sms' || t.kind === 'meta';
+  const showFacts = t.kind === 'job' || !entry || (!entry.loading && !entry.messages?.length && !isMsgKind);
+  const showBubbles = !!entry && (isMsgKind || (entry.messages?.length > 0));
 
   return (
     <div style={{
@@ -247,7 +316,7 @@ export default function ItemCard({
         )}
 
         {/* The facts grid below supersedes this one-liner when it is showing. */}
-        {!(expanded && !entry) && (
+        {!(expanded && showFacts) && (
         <div style={{ fontSize: FS.meta, textTransform: 'none',
                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           <span style={{ color: SHELF.text3 }}>{t.from}</span>
@@ -260,12 +329,15 @@ export default function ItemCard({
         )}
 
         {expanded
-          ? (entry
-              ? <Bubbles entry={entry} snippet={t.snippet} />
-              // No thread to read (a job, a calendar entry). Echoing the title
-              // back was useless, so show the facts the record actually has -
-              // plus the description only when it says more than the title.
-              : <Facts t={t} showDescription={!dup} />)
+          ? (
+            <>
+              {showFacts && <Facts t={t} showDescription={!dup} />}
+              {showBubbles && <Bubbles entry={entry} snippet={t.snippet} />}
+              <DossierFacts dossier={dossier} history={history}
+                            skipAddress={showFacts && !!t.address}
+                            skipPhone={showFacts && !!t.phone} />
+            </>
+          )
           : body && (
               <div style={{ fontSize: FS.body, lineHeight: 1.5, color: SHELF.text2,
                             textTransform: 'none', textWrap: 'pretty',

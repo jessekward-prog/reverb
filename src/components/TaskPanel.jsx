@@ -40,17 +40,26 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
   const head = authHeaders(auth?.token);
   const jsonHead = { 'Content-Type': 'application/json', ...head };
 
-  // The thread loads with the panel. Making it a second press was the whole
-  // problem: you open a card to find out what this is, and it tells you again
-  // that someone sent you a message.
+  // The thread, stored client dossier, and archived history load with the panel.
   useEffect(() => {
-    if (!READABLE.has(t.kind)) return;
+    if (!t.from || t.kind === 'cal') return;
     let live = true;
-    setEntry({ loading: true, messages: [] });
-    fetch(`/api/item/context?from=${encodeURIComponent(t.from)}`, { headers: head })
+    const qs = new URLSearchParams({
+      from: t.from,
+      ...(t.kind ? { kind: t.kind } : {}),
+      ...(phone ? { phone } : {}),
+      ...(t.displayName ? { name: t.displayName } : {}),
+    });
+    setEntry({ loading: true, messages: [], dossier: t.dossier || null, history: [] });
+    fetch(`/api/item/context?${qs}`, { headers: head })
       .then(r => (r.ok ? r.json() : { messages: [] }))
-      .then(d => live && setEntry({ loading: false, messages: d.messages || [] }))
-      .catch(() => live && setEntry({ loading: false, messages: [] }));
+      .then(d => live && setEntry({
+        loading: false,
+        messages: d.messages || [],
+        dossier: d.dossier || t.dossier || null,
+        history: d.history || [],
+      }))
+      .catch(() => live && setEntry({ loading: false, messages: [], dossier: t.dossier || null, history: [] }));
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [t.id]);
@@ -69,6 +78,7 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
   // A date out of whatever the item already knows, so the form opens on
   // something sensible rather than an empty box.
   function seedForm(why, draft) {
+    const d = entry?.dossier || t.dossier;
     const iso = String(t.when || '').match(/\d{4}-\d{2}-\d{2}/)?.[0] || ymdLocal(new Date());
     const hhmm = String(t.when || '').match(/\b([01]?\d|2[0-3]):([0-5]\d)\b/);
     setCalForm({
@@ -77,7 +87,8 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
         time: hhmm ? `${String(hhmm[1]).padStart(2, '0')}:${hhmm[2]}` : '09:00',
         durationMins: 60,
         title: String(t.text || '').slice(0, 120),
-        location: t.address || '',
+        location: t.address || d?.address || '',
+        parts: d?.partsMaterials || '',
         ...(draft || {}),
       },
       why: why || '',
@@ -92,7 +103,7 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
     if (!READABLE.has(t.kind)) { seedForm('nothing to read here — fill it in'); return; }
     setCal('reading the thread');
     fetch('/api/item/tocal', { method: 'POST', headers: jsonHead,
-      body: JSON.stringify({ from: t.from, text: t.text }) })
+      body: JSON.stringify({ from: t.from, kind: t.kind, phone, text: t.text }) })
       .then(r => r.json())
       .then(d => {
         setCal(null);

@@ -9,13 +9,15 @@ import {
   WAITING_TOOL, getWaitingReplies, UNBOOKED_JOBS_TOOL, getUnbookedJobs, DRAFT_TEXT_TOOL,
   SEARCH_EMAIL_TOOL, searchEmail,
   ADD_TO_CALENDAR_TOOL, TODO_TOOL, MARK_DONE_TOOL,
-  MUTE_SENDER_TOOL,
+  MUTE_SENDER_TOOL, LOOKUP_DOSSIER_TOOL,
   getRecentTexts, getRecentTextsBrief, getUpcomingEvents, getRecentEmails, getRecentBusinessEmails, getRecentNotifications, getSwitchcraftJobs,
   fetchThreads, fetchEvents, fetchCalendar, fetchChannel,
 } from './src/lib/tools.js';
 import { parseExtraction, reconcileStatus, projectCommitments, ymd, msgLine, resolveWhen } from './src/lib/commitments.js';
 import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules,
-         extractAddress, phoneLast9, hasUnrepliedCall } from './src/lib/contacts.js';
+         extractAddress, phoneLast9, hasUnrepliedCall,
+         extractQuoteAmount, canonicalPersonKey, cleanDossierValue, mergeDossierFields,
+         parseDossierResponse, formatDossierBlock } from './src/lib/contacts.js';
 import { enrichReplyOwed, jobUrl, looksLikePhone, bookingWindow, calendarDraftUrl } from './src/lib/actionMeta.js';
 
 const { Pool } = pg;
@@ -174,6 +176,64 @@ async function initDb() {
     -- commitment came from. The extractor's WHAT is a few words copied out of
     -- one line ("put them in"), which is not something you can turn up to.
     ALTER TABLE commitments ADD COLUMN IF NOT EXISTS detail TEXT;
+    -- Permanent archive of every surfaced item across channels, plus raw thread
+    -- messages and a progressively accumulated per-person dossier so context
+    -- never disappears when an inbox rolls over.
+    CREATE TABLE IF NOT EXISTS item_archive (
+      item_id       TEXT PRIMARY KEY,
+      person_key    TEXT NOT NULL,
+      kind          TEXT NOT NULL,
+      from_label    TEXT NOT NULL,
+      phone         TEXT,
+      email         TEXT,
+      address       TEXT,
+      subject       TEXT,
+      title         TEXT,
+      snippet       TEXT,
+      brief         TEXT,
+      when_text     TEXT,
+      status        TEXT,
+      job_id        INTEGER,
+      meta          JSONB NOT NULL DEFAULT '{}'::jsonb,
+      first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_item_archive_person ON item_archive (person_key, last_seen_at DESC);
+    CREATE TABLE IF NOT EXISTS message_archive (
+      id          SERIAL PRIMARY KEY,
+      person_key  TEXT NOT NULL,
+      thread_key  TEXT NOT NULL,
+      kind        TEXT NOT NULL,
+      sender_name TEXT,
+      outbound    BOOLEAN NOT NULL DEFAULT FALSE,
+      msg_at      TEXT NOT NULL DEFAULT '',
+      body        TEXT NOT NULL,
+      seen_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (thread_key, outbound, msg_at, body)
+    );
+    CREATE INDEX IF NOT EXISTS idx_message_archive_person ON message_archive (person_key, id ASC);
+    CREATE TABLE IF NOT EXISTS person_dossiers (
+      person_key      TEXT PRIMARY KEY,
+      display_name    TEXT,
+      phone           TEXT,
+      email           TEXT,
+      address         TEXT,
+      address_source  TEXT,
+      business        TEXT,
+      channels        TEXT[] NOT NULL DEFAULT '{}',
+      job_ids         INTEGER[] NOT NULL DEFAULT '{}',
+      work_scope      TEXT,
+      quote_estimate  TEXT,
+      parts_materials TEXT,
+      preferred_times TEXT,
+      access_notes    TEXT,
+      current_stage   TEXT,
+      open_next_step  TEXT,
+      summary_notes   TEXT,
+      source_hash     TEXT,
+      first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
 }
 
@@ -413,7 +473,7 @@ async function proxyModels(req, res) {
   }
 }
 
-const TOOLS = [DRAFT_TEXT_TOOL, ADD_TO_CALENDAR_TOOL, TODO_TOOL, MARK_DONE_TOOL, MUTE_SENDER_TOOL, SEARCH_EMAIL_TOOL, WAITING_TOOL, UNBOOKED_JOBS_TOOL, TEXTS_TOOL, SEARCH_TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
+const TOOLS = [DRAFT_TEXT_TOOL, ADD_TO_CALENDAR_TOOL, TODO_TOOL, MARK_DONE_TOOL, MUTE_SENDER_TOOL, LOOKUP_DOSSIER_TOOL, SEARCH_EMAIL_TOOL, WAITING_TOOL, UNBOOKED_JOBS_TOOL, TEXTS_TOOL, SEARCH_TEXTS_TOOL, CALENDAR_TOOL, EMAIL_TOOL, BUSINESS_EMAIL_TOOL, NOTIFICATIONS_TOOL, SWITCHCRAFT_JOBS_TOOL];
 
 // ── What the chat can do, not just read ───────────────────
 // The bot had every source and a send button but no way to finish anything:
@@ -589,6 +649,9 @@ async function proxyChat(req, res) {
       } else if (tc.function.name === 'get_switchcraft_jobs') {
         res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking Switch Craft jobs…' })}\n\n`);
         toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: (await getSwitchcraftJobs()).text });
+      } else if (tc.function.name === 'lookup_client_dossier') {
+        res.write(`data: ${JSON.stringify({ type: 'status', message: 'Checking stored client dossiers…' })}\n\n`);
+        toolMessages.push({ role: 'tool', tool_call_id: tc.id, content: await lookupDossierForChat(args) });
       }
     }
     const final = await fetch(`${LM_URL}/v1/chat/completions`, {
@@ -970,14 +1033,113 @@ async function handleContactSignal(req, res) {
   res.end('{"ok":true}');
 }
 
-// Contact list for the manual VIP/mute drawer.
+// Contact list + unified person dossiers for the People drawer.
 async function handleContacts(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
-  const { rows } = await pool.query(
-    'SELECT id, kind, identifier, display_name, tier, address, address_source, seen_count, replied_count, dismissed_count, last_seen_at FROM contacts ORDER BY seen_count DESC, last_seen_at DESC LIMIT 200'
+  const [directory, { rows: contactRows }, { rows: itemStats }, { rows: msgStats }] = await Promise.all([
+    loadPersonDirectory().catch(() => ({ byPhone: {}, byName: {}, byEmail: {}, byKey: new Map() })),
+    pool.query('SELECT id, kind, identifier, display_name, tier, address, address_source, seen_count, replied_count, dismissed_count, last_seen_at FROM contacts ORDER BY seen_count DESC, last_seen_at DESC LIMIT 200'),
+    pool.query('SELECT person_key, COUNT(*)::int AS cnt FROM item_archive GROUP BY person_key'),
+    pool.query('SELECT person_key, COUNT(*)::int AS cnt FROM message_archive GROUP BY person_key'),
+  ]);
+  const itemCounts = new Map(itemStats.map(r => [r.person_key, r.cnt]));
+  const msgCounts = new Map(msgStats.map(r => [r.person_key, r.cnt]));
+  const seenKeys = new Set();
+  const out = contactRows.map(c => {
+    const pKey = canonicalPersonKey({ kind: c.kind, from: c.identifier, name: c.display_name }, directory);
+    seenKeys.add(pKey);
+    const dRow = directory.byKey.get(pKey) || null;
+    return {
+      ...c,
+      personKey: pKey,
+      dossier: dRow ? toDossierDto(dRow) : null,
+      itemCount: itemCounts.get(pKey) || 0,
+      messageCount: msgCounts.get(pKey) || 0,
+    };
+  });
+  for (const [pKey, dRow] of directory.byKey.entries()) {
+    if (seenKeys.has(pKey)) continue;
+    out.push({
+      id: null,
+      kind: dRow.channels?.[0] || 'sms',
+      identifier: dRow.phone || dRow.email || dRow.display_name || pKey,
+      display_name: dRow.display_name || null,
+      tier: null,
+      address: dRow.address || null,
+      address_source: dRow.address_source || null,
+      seen_count: itemCounts.get(pKey) || 0,
+      replied_count: 0,
+      dismissed_count: 0,
+      last_seen_at: dRow.updated_at || dRow.first_seen_at || null,
+      personKey: pKey,
+      dossier: toDossierDto(dRow),
+      itemCount: itemCounts.get(pKey) || 0,
+      messageCount: msgCounts.get(pKey) || 0,
+    });
+  }
+  out.sort((a, b) => (b.itemCount + b.messageCount + (b.seen_count || 0)) - (a.itemCount + a.messageCount + (a.seen_count || 0)));
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(out.slice(0, 250)));
+}
+
+const DOSSIER_EDIT_MAP = {
+  displayName: 'display_name',
+  phone: 'phone',
+  email: 'email',
+  address: 'address',
+  business: 'business',
+  workScope: 'work_scope',
+  quoteEstimate: 'quote_estimate',
+  partsMaterials: 'parts_materials',
+  preferredTimes: 'preferred_times',
+  accessNotes: 'access_notes',
+  currentStage: 'current_stage',
+  openNextStep: 'open_next_step',
+  summaryNotes: 'summary_notes',
+};
+
+async function handleDossierPatch(req, res) {
+  if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
+  const body = JSON.parse(await readBody(req) || '{}');
+  const personKey = String(body.personKey || '').trim();
+  if (!personKey) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'personKey is required' }));
+    return;
+  }
+  const { rows: [existing] } = await pool.query('SELECT * FROM person_dossiers WHERE person_key = $1', [personKey]);
+  const next = existing ? { ...existing } : { person_key: personKey, channels: [], job_ids: [] };
+  for (const [camel, snake] of Object.entries(DOSSIER_EDIT_MAP)) {
+    if (body[camel] !== undefined) next[snake] = cleanDossierValue(body[camel]);
+    else if (body[snake] !== undefined) next[snake] = cleanDossierValue(body[snake]);
+  }
+  if (body.address !== undefined) next.address_source = next.address ? 'manual' : null;
+  const { rows: [saved] } = await pool.query(
+    `INSERT INTO person_dossiers (
+       person_key, display_name, phone, email, address, address_source, business,
+       channels, job_ids, work_scope, quote_estimate, parts_materials, preferred_times,
+       access_notes, current_stage, open_next_step, summary_notes, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,NOW())
+     ON CONFLICT (person_key) DO UPDATE SET
+       display_name=EXCLUDED.display_name, phone=EXCLUDED.phone, email=EXCLUDED.email,
+       address=EXCLUDED.address, address_source=EXCLUDED.address_source, business=EXCLUDED.business,
+       work_scope=EXCLUDED.work_scope, quote_estimate=EXCLUDED.quote_estimate,
+       parts_materials=EXCLUDED.parts_materials, preferred_times=EXCLUDED.preferred_times,
+       access_notes=EXCLUDED.access_notes, current_stage=EXCLUDED.current_stage,
+       open_next_step=EXCLUDED.open_next_step, summary_notes=EXCLUDED.summary_notes,
+       updated_at=NOW()
+     RETURNING *`,
+    [
+      personKey, next.display_name || null, next.phone || null, next.email || null,
+      next.address || null, next.address_source || null, next.business || null,
+      next.channels || [], next.job_ids || [],
+      next.work_scope || null, next.quote_estimate || null, next.parts_materials || null,
+      next.preferred_times || null, next.access_notes || null, next.current_stage || null,
+      next.open_next_step || null, next.summary_notes || null,
+    ]
   );
   res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(rows));
+  res.end(JSON.stringify({ ok: true, dossier: toDossierDto(saved) }));
 }
 
 async function handleContactTier(req, res, id) {
@@ -1061,7 +1223,8 @@ async function recordSurfaced(bucket, categories) {
 }
 
 async function buildCategorizedResponse(summary, categories, scannedAt) {
-  const [{ rows: doneRows }, { rows: seenRows }] = await Promise.all([
+  const [directory, { rows: doneRows }, { rows: seenRows }] = await Promise.all([
+    loadPersonDirectory().catch(() => null),
     pool.query('SELECT task_id FROM swept_done'),
     pool.query('SELECT task_id, first_seen_at FROM surfaced_items'),
   ]);
@@ -1075,7 +1238,19 @@ async function buildCategorizedResponse(summary, categories, scannedAt) {
         .map(t => {
           const id = workItemId(t);
           const href = t.href || (t.kind === 'job' ? jobUrl(process.env.SWITCHCRAFT_BASE_URL, t.jobId) : null);
-          return { ...t, id, ...(href ? { href } : {}), firstSeenAt: firstSeen.get(id) || scannedAt };
+          const dRow = directory ? lookupDossierInDir(t, directory) : null;
+          const dossier = dRow ? toDossierDto(dRow) : (t.dossier || null);
+          return {
+            ...t,
+            id,
+            ...(href ? { href } : {}),
+            ...(dRow?.person_key || t.personKey ? { personKey: dRow?.person_key || t.personKey } : {}),
+            ...(dossier ? { dossier } : {}),
+            address: t.address || dRow?.address || null,
+            phone: t.phone || dRow?.phone || null,
+            displayName: dRow?.display_name || t.displayName || null,
+            firstSeenAt: firstSeen.get(id) || scannedAt,
+          };
         })
         .filter(t => !doneSet.has(t.id)),
     }))
@@ -1436,6 +1611,7 @@ async function collectRawItems() {
     items.push({ kind: 'cal', from: ev.text,
                  snippet: `${ev.date}${ev.time ? ' ' + ev.time : ''}${ev.location ? ' @ ' + ev.location : ''}`,
                  when: `${ev.date}${ev.time ? ' ' + ev.time : ''}`, text: ev.text, hintBucket: 'life' });
+  await archiveItemsAndThreads(items).catch(e => console.error('archive items:', e.message));
   return annotateGrounded(items);
 }
 
@@ -1450,14 +1626,30 @@ async function collectGroundedItems() {
 // card says where things actually stand instead of quoting the last message.
 // One call covering every conversation on the report; grounded in the messages
 // only, and silently skipped if the bridge or the model is unavailable.
+const CONVO_KINDS = new Set(['sms', 'meta', 'whatsapp', 'messenger', 'email', 'bizemail']);
+
+function mergeThreadMessages(archived = [], live = []) {
+  const out = archived.map(m => ({ outbound: !!m.outbound, text: String(m.text || '') })).filter(m => m.text);
+  const seen = new Set(out.map(m => `${m.outbound ? 1 : 0}:${m.text.trim()}`));
+  for (const m of live || []) {
+    const text = String(m?.text || '');
+    if (!text.trim()) continue;
+    const key = `${m.outbound ? 1 : 0}:${text.trim()}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push({ outbound: !!m.outbound, text });
+    }
+  }
+  return out;
+}
+
 async function briefConversations(items) {
-  const convo = items.filter(t => t.kind === 'sms' || t.kind === 'meta');
+  const convo = items.filter(t => CONVO_KINDS.has(t.kind));
   if (!convo.length) return items;
 
   let threads = [];
   try { threads = await fetchThreads(20); }
-  catch (e) { console.error('briefs: bridge unreachable —', e.message); return items; }
-  if (!threads.length) { console.error('briefs: bridge returned no threads'); return items; }
+  catch (e) { console.error('briefs: bridge unreachable —', e.message); }
 
   const digits = v => String(v || '').replace(/\D/g, '');
   const findThread = from => {
@@ -1468,35 +1660,50 @@ async function briefConversations(items) {
         || threads.find(t => f.length > 2 && String(t.name || '').toLowerCase().includes(f));
   };
 
-  await learnFromThreads(threads).catch(e => console.error('directory:', e.message));
+  if (threads.length) {
+    await learnFromThreads(threads).catch(e => console.error('directory:', e.message));
+    await archiveItemsAndThreads(items, threads).catch(e => console.error('archive threads:', e.message));
+  }
+
+  const contexts = await Promise.all(
+    convo.map(t => (t.personKey && t.personKey !== 'unknown'
+      ? loadPersonContext(t.personKey).catch(() => ({ dossier: null, messages: [], history: [] }))
+      : Promise.resolve({ dossier: null, messages: [], history: [] })))
+  );
 
   const pairs = [];
-  for (const t of convo) {
-    const th = findThread(t.from);
-    if (th && (th.messages || []).length > 1) {
-      if (hasUnrepliedCall(t.snippet, th.messages)) t.text = callFlagTitle(t.from);
-      pairs.push({ item: t, thread: th });
+  for (let idx = 0; idx < convo.length; idx++) {
+    const t = convo[idx];
+    const ctx = contexts[idx];
+    const th = (t.kind === 'sms' || t.kind === 'meta') ? findThread(t.from) : null;
+    const msgs = mergeThreadMessages(ctx.messages, th?.messages || []);
+    if (th && hasUnrepliedCall(t.snippet, msgs)) t.text = callFlagTitle(t.from);
+    const dBlock = formatDossierBlock(t.dossier || ctx.dossier);
+    if (msgs.length > 1 || dBlock || ctx.history.length > 1) {
+      pairs.push({ item: t, thread: th, msgs, dBlock, label: th?.name || t.displayName || t.from });
     }
+    if (pairs.length >= 25) break;
   }
   if (!pairs.length) {
-    console.error(`briefs: none of ${convo.length} conversations matched a thread`);
+    console.error(`briefs: none of ${convo.length} conversations had multi-message or dossier context`);
     return items;
   }
 
   const listing = pairs.map((p, i) => {
-    const lines = (p.thread.messages || []).slice(-14)
+    const lines = p.msgs.slice(-14)
       .map(m => `    ${m.outbound ? 'you' : 'them'}: ${String(m.text || '').replace(/\s+/g, ' ').slice(0, 200)}`)
       .join('\n');
-    return `${i}. ${p.thread.name}\n${lines}`;
+    const fallbackLine = `    latest (${p.item.kind}): ${String(p.item.snippet || '').replace(/\s+/g, ' ').slice(0, 200)}`;
+    return `${i}. ${p.label}${p.dBlock ? `\n   Known dossier: ${p.dBlock}` : ''}\n${lines || fallbackLine}`;
   }).join('\n\n');
 
   const now = new Date();
-  const prompt = `Today is ${now.toLocaleDateString('en-AU', { weekday: 'long' })} ${ymd(now)}. Below are text conversations between Jesse, an electrician ("you"), and other people.
+  const prompt = `Today is ${now.toLocaleDateString('en-AU', { weekday: 'long' })} ${ymd(now)}. Below are text conversations and stored client dossiers between Jesse, an electrician ("you"), and other people.
 
 For EACH numbered conversation write ONE line, exactly:
 <number> :: <brief>
 
-The brief is 2-4 short sentences written TO Jesse as "you", in plain spoken English, like an assistant who has just read the thread back for him. Cover, only where the messages actually show it:
+The brief is 2-4 short sentences written TO Jesse as "you", in plain spoken English, like an assistant who has just read the thread back for him. Use the Known dossier (prior stored facts, address, quote, or Switch Craft job info) as background context, and prefer newer messages if anything changed. Cover, only where the messages or dossier actually show it:
 - what this has been about, and roughly how long it has been going on
 - what was most recently proposed or agreed
 - what is still missing (a time, a date, a price, a confirmation)
@@ -1506,7 +1713,7 @@ Carrier alerts ("... called. No Voicemail message was left ... free call 147") m
 
 Tone to match: "You and this client have been going back and forth for a couple of weeks about installing a new oven. You asked about Tuesday next week, they agreed but haven't given you a time. Worth pinning that down, then it can go on the calendar."
 
-Ground every word in the messages shown. Never state a job, name, date, price or promise that is not in the thread. Where something has not been said, say it is not clear rather than guessing. No greeting, no preamble, no markdown, no numbering beyond the required "<number> :: ".
+Ground every word in the messages and dossiers shown. Never state a job, name, date, price or promise that is not in the material. Where something has not been said, say it is not clear rather than guessing. No greeting, no preamble, no markdown, no numbering beyond the required "<number> :: ".
 
 CONVERSATIONS:
 ${listing}`;
@@ -1528,7 +1735,11 @@ ${listing}`;
     const p = pairs[Number(m[1])];
     if (!p) continue;
     const text = m[2].slice(sep + 2).trim();
-    if (text.length > 20) { p.item.brief = text.slice(0, 600); written++; }
+    if (text.length > 20) {
+      p.item.brief = text.slice(0, 600);
+      await pool.query('UPDATE item_archive SET brief = $1 WHERE item_id = $2', [p.item.brief, workItemId(p.item)]).catch(() => {});
+      written++;
+    }
   }
   console.log(`briefs: ${written} written for ${pairs.length} matched threads (${convo.length} conversations)`);
   return items;
@@ -1588,9 +1799,10 @@ function fallbackGroup(items) {
 async function groupGrounded(items) {
   if (!items.length) return { work: { summary: 'work looks clear', categories: [] }, life: { summary: 'things look quiet', categories: [] } };
   const age = t => t.daysOnList >= 1 ? `${t.daysOnList}d on list` : 'new';
-  const listing = items.map((t, i) =>
-    `${i}. [${t.kind}] ${t.from}${t.when ? ` (${t.when})` : ''} — ${t.text} · ${age(t)}${t.hintBucket ? ` (hint: ${t.hintBucket})` : ''}\n   "${String(t.snippet || '').slice(0, 120)}"`
-  ).join('\n');
+  const listing = items.map((t, i) => {
+    const dBlock = formatDossierBlock(t.dossier);
+    return `${i}. [${t.kind}] ${t.from}${t.when ? ` (${t.when})` : ''} — ${t.text} · ${age(t)}${t.hintBucket ? ` (hint: ${t.hintBucket})` : ''}${dBlock ? `\n   dossier: ${dBlock}` : ''}\n   "${String(t.snippet || '').slice(0, 120)}"`;
+  }).join('\n');
   const prompt = `Today's items, already gathered as FACTS. Do not invent, add, or reword any — only organise these exact items by their index:
 
 ${listing}
@@ -1623,20 +1835,92 @@ Respond with ONLY this JSON, no prose, no markdown:
   return { work: build('work'), life: build('life') };
 }
 
+async function loadMergedItemContext({ kind, from, phone, name, live = false, timeoutMs = 15000 }) {
+  const directory = await loadPersonDirectory().catch(() => ({ byPhone: {}, byName: {}, byEmail: {}, byKey: new Map() }));
+  const { email, name: parsedName } = extractEmailIdentity(kind, from);
+  const resolvedName = cleanDossierValue(name) || parsedName || (!phoneLast9(from) && !email ? from : null);
+  const pKey = canonicalPersonKey({ kind, from, phone, email, name: resolvedName }, directory);
+
+  let liveMsgs = [];
+  let threadName = from;
+  const queryContact = (kind === 'job' && looksLikePhone(phone)) ? phone : from;
+  const tryBridge = !kind || kind === 'sms' || kind === 'meta' || (kind === 'job' && looksLikePhone(phone));
+  if (tryBridge && queryContact && process.env.BRIDGE_BASE_URL) {
+    try {
+      const qs = `contact=${encodeURIComponent(queryContact)}&limit=1${live ? '&live=1' : ''}`;
+      const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?${qs}`, {
+        headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const { threads = [] } = r.ok ? await r.json() : {};
+      if (threads[0]?.messages?.length) {
+        threadName = threads[0].name || queryContact;
+        liveMsgs = threads[0].messages;
+        for (const m of liveMsgs) {
+          await insertArchivedMessage({
+            personKey: pKey,
+            threadKey: `sms:${threadName}`,
+            kind: 'sms',
+            senderName: m.outbound ? 'me' : threadName,
+            outbound: !!m.outbound,
+            msgAt: m.at || '',
+            body: m.text || '',
+          }).catch(() => {});
+        }
+        let addr = null;
+        let quote = null;
+        for (let i = liveMsgs.length - 1; i >= 0; i--) {
+          if (!addr) addr = extractAddress(liveMsgs[i]?.text);
+          if (!quote) quote = extractQuoteAmount(liveMsgs[i]?.text);
+          if (addr && quote) break;
+        }
+        await upsertPersonDossier(pKey, {
+          display_name: resolvedName,
+          phone: phone || (looksLikePhone(queryContact) ? queryContact : null),
+          email,
+          channels: ['sms'],
+          address: addr,
+          address_source: addr ? 'chat' : null,
+          quote_estimate: quote,
+        }, directory).catch(() => {});
+      }
+    } catch { /* fall back to archive */ }
+  }
+
+  const ctx = await loadPersonContext(pKey).catch(() => ({ dossier: null, messages: [], history: [] }));
+  const dossier = ctx.dossier || directory.byKey?.get(pKey) || null;
+  return {
+    directory,
+    personKey: pKey,
+    dossier,
+    dossierDto: dossier ? toDossierDto(dossier) : null,
+    messages: mergeThreadMessages(ctx.messages, liveMsgs),
+    history: ctx.history || [],
+  };
+}
+
 // Full thread behind a report item — "get context" so the user can see what a
-// one-line snippet ("👍 to '...'") is actually about.
+// one-line snippet ("👍 to '...'") is actually about, plus stored dossier & history.
 async function handleItemContext(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
-  const from = new URL(req.url, 'http://x').searchParams.get('from');
+  const u = new URL(req.url, 'http://x');
+  const from = u.searchParams.get('from');
   if (!from) { res.writeHead(400); res.end('{}'); return; }
   try {
-    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?contact=${encodeURIComponent(from)}&limit=1`, {
-      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+    const ctx = await loadMergedItemContext({
+      kind: u.searchParams.get('kind') || '',
+      from,
+      phone: u.searchParams.get('phone') || '',
+      name: u.searchParams.get('name') || '',
     });
-    const { threads = [] } = r.ok ? await r.json() : {};
-    const messages = (threads[0]?.messages || []).map(m => ({ outbound: !!m.outbound, text: m.text }));
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ from, messages }));
+    res.end(JSON.stringify({
+      from,
+      personKey: ctx.personKey,
+      dossier: ctx.dossierDto,
+      messages: ctx.messages,
+      history: ctx.history,
+    }));
   } catch (e) { res.writeHead(502); res.end(JSON.stringify({ error: e.message })); }
 }
 
@@ -1651,27 +1935,23 @@ async function handleItemContext(req, res) {
 // and when the summary isn't enough the only options used to be leaving the app
 // or regenerating the whole report. This expands one item on demand, grounded
 // in whatever that item actually has behind it: the full thread for a text, the
-// job record for a job. It never invents a fact it wasn't given - an empty
-// record says so instead of being padded out into prose.
+// job record for a job, plus stored client dossier. It never invents a fact it wasn't given.
 async function handleItemDetail(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
   const t = JSON.parse(await readBody(req));
   if (!t.from) { res.writeHead(400); res.end(JSON.stringify({ error: 'who?' })); return; }
 
-  let thread = '';
-  if (t.kind === 'sms' || t.kind === 'meta') {
-    try {
-      const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?contact=${encodeURIComponent(t.from)}&limit=1`, {
-        headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
-        signal: AbortSignal.timeout(20000),
-      });
-      const { threads = [] } = r.ok ? await r.json() : {};
-      thread = (threads[0]?.messages || [])
-        .map(m => `${m.outbound ? 'me' : 'them'}: ${m.text}`).join('\n');
-    } catch { /* fall back to the record below */ }
-  }
+  const ctx = await loadMergedItemContext({
+    kind: t.kind, from: t.from, phone: t.phone, name: t.displayName, timeoutMs: 20000,
+  });
+  const thread = ctx.messages.slice(-24)
+    .map(m => `${m.outbound ? 'me' : 'them'}: ${m.text}`).join('\n');
+  const dBlock = formatDossierBlock(ctx.dossier);
+  const historyLines = ctx.history.slice(0, 8)
+    .map(h => `- [${h.kind}${h.status ? `/${h.status}` : ''}] ${h.title || h.subject || h.snippet || ''}${h.when_text ? ` (${h.when_text})` : ''}`)
+    .join('\n');
 
-  const known = await lookupContact(t.from).catch(() => null);
+  const known = ctx.dossier || await lookupContact(t.from).catch(() => null);
   const todo = (t.tasks || []).filter(x => x && x.text)
     .map(x => `${x.done ? '[done]' : '[open]'} ${x.text}`).join('\n');
   const record = [
@@ -1679,7 +1959,7 @@ async function handleItemDetail(req, res) {
     t.status ? `Status: ${String(t.status).replace(/_/g, ' ')}` : null,
     t.when ? `Scheduled: ${t.when}${t.overdue ? ' (OVERDUE)' : ''}` : 'Scheduled: not booked',
     (t.address || known?.address) ? `Address: ${t.address || known.address}` : null,
-    t.phone ? `Phone: ${t.phone}` : null,
+    (t.phone || known?.phone) ? `Phone: ${t.phone || known.phone}` : null,
     t.preferredDays ? `Client prefers: ${t.preferredDays}` : null,
     t.timeline ? `Timeline: ${t.timeline}` : null,
     t.raised ? `Raised: ${String(t.raised).slice(0, 10)}` : null,
@@ -1694,7 +1974,7 @@ async function handleItemDetail(req, res) {
 Item: ${t.text || ''}
 Who: ${known?.display_name || t.from}
 Source: ${t.kind || 'unknown'}
-${thread ? `The full conversation:\n${thread}` : `The record:\n${record || '(nothing beyond the title)'}`}
+${dBlock ? `Stored client dossier:\n${dBlock}\n\n` : ''}${thread ? `The conversation (live + archived):\n${thread}` : `The record:\n${record || '(nothing beyond the title)'}`}${thread && record ? `\n\nItem record:\n${record}` : ''}${historyLines ? `\n\nPrior archived items for this client:\n${historyLines}` : ''}
 
 Write a short brief, 3-5 sentences of plain English, covering only what the material above actually supports:
 - what this is really about
@@ -1706,7 +1986,7 @@ Carrier notices ("called. No Voicemail message was left") mean they tried to cal
   try {
     const detail = String(await askModel(prompt, 900) || '').trim();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ detail, grounded: thread ? 'thread' : 'record' }));
+    res.end(JSON.stringify({ detail, grounded: thread ? 'thread' : (dBlock ? 'dossier' : 'record') }));
   } catch (e) {
     res.writeHead(200); res.end(JSON.stringify({ error: e.message }));
   }
@@ -1714,26 +1994,20 @@ Carrier notices ("called. No Voicemail message was left") mean they tried to cal
 
 async function handleItemDraft(req, res) {
   if (!requireAuth(req)) { res.writeHead(401); res.end('{}'); return; }
-  const { from, text, snippet, brief, kind } = JSON.parse(await readBody(req));
+  const { from, text, snippet, brief, kind, phone } = JSON.parse(await readBody(req));
   if (!from) { res.writeHead(400); res.end(JSON.stringify({ error: 'who?' })); return; }
 
-  let thread = '';
-  try {
-    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?contact=${encodeURIComponent(from)}&limit=1`, {
-      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
-      signal: AbortSignal.timeout(20000),
-    });
-    const { threads = [] } = r.ok ? await r.json() : {};
-    thread = (threads[0]?.messages || []).slice(-12)
-      .map(m => `${m.outbound ? 'me' : 'them'}: ${m.text}`).join('\n');
-  } catch { /* no thread for this channel - the snippet and brief still ground it */ }
+  const ctx = await loadMergedItemContext({ kind, from, phone, timeoutMs: 20000 });
+  const thread = ctx.messages.slice(-12)
+    .map(m => `${m.outbound ? 'me' : 'them'}: ${m.text}`).join('\n');
 
-  const known = await lookupContact(from).catch(() => null);
+  const known = ctx.dossier || await lookupContact(from).catch(() => null);
+  const dBlock = formatDossierBlock(ctx.dossier);
   const prompt = `You are drafting a reply that Jesse, a self-employed electrician in Geelong, will read and edit before sending. Write as him: plain, warm, short, no corporate phrasing, no emoji, Australian spelling.
 
 Who: ${known?.display_name || from}${known?.address ? ` (${known.address})` : ''}
 Channel: ${kind || 'sms'}
-${brief ? `Where it stands: ${brief}\n` : ''}${thread ? `The conversation so far:\n${thread}\n` : `Their last message: "${snippet || ''}"\n`}
+${dBlock ? `Stored client dossier: ${dBlock}\n` : ''}${brief ? `Where it stands: ${brief}\n` : ''}${thread ? `The conversation so far:\n${thread}\n` : `Their last message: "${snippet || ''}"\n`}
 What he needs to do: ${text || 'reply'}
 
 Write ONLY the message body, 1-3 sentences. No greeting line if the thread is already mid-conversation, no sign-off, no quotes around it, no preamble.`;
@@ -1830,8 +2104,10 @@ async function handleItemToCal(req, res) {
   // Manual path: you had the conversation on the phone, so there is nothing to
   // read and nothing to extract. The form sends the event straight through.
   if (body.date) {
-    const known = from ? await lookupContact(from).catch(() => null) : null;
-    const parts = String(body.parts || '').replace(/\s+/g, ' ').trim();
+    const directory = from ? await loadPersonDirectory().catch(() => null) : null;
+    const dRow = from ? lookupDossierInDir({ kind: body.kind, from, phone: body.phone }, directory) : null;
+    const known = dRow || (from ? await lookupContact(from).catch(() => null) : null);
+    const parts = String(body.parts !== undefined ? body.parts : (dRow?.parts_materials || '')).replace(/\s+/g, ' ').trim();
     // Parts go in the title, not only the notes: the month view shows the
     // title and nothing else, and the whole reason for asking is to see on
     // Sunday night what has to be picked up on Monday morning.
@@ -1870,12 +2146,9 @@ async function handleItemToCal(req, res) {
   }
 
   try {
-    // 1. context
-    const tr = await fetch(`${process.env.BRIDGE_BASE_URL}/api/threads?contact=${encodeURIComponent(from)}&limit=1&live=1`, {
-      headers: { 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
-    });
-    const { threads = [] } = tr.ok ? await tr.json() : {};
-    const convo = (threads[0]?.messages || [])
+    // 1. context (live + archived + dossier)
+    const ctx = await loadMergedItemContext({ kind: body.kind || 'sms', from, phone: body.phone, live: true, timeoutMs: 25000 });
+    const convo = ctx.messages.slice(-20)
       .map(m => `${m.outbound ? 'me' : 'them'}: ${m.text}`).join('\n');
     if (!convo) { res.writeHead(200); res.end(JSON.stringify({ error: 'no conversation found to read' })); return; }
 
@@ -1884,9 +2157,10 @@ async function handleItemToCal(req, res) {
     // before an event is written into the real calendar, so a UTC date would
     // book the job on the wrong day for anything done before 11am in AEDT.
     const today = ymd(new Date());
+    const dBlock = formatDossierBlock(ctx.dossier);
     const prompt = `Today is ${today}. This is a text conversation with ${from}:
 
-${convo}
+${dBlock ? `Stored client dossier:\n${dBlock}\n\n` : ''}${convo}
 
 Only if a specific job, appointment, or meeting has actually been AGREED by both sides (not an unanswered availability offer like "I'm free Friday if you are around"), extract it as JSON:
 {"found":true,"title":"short event title","date":"YYYY-MM-DD","time":"HH:MM 24h or empty if none","durationMins":60}
@@ -1900,10 +2174,11 @@ Resolve relative dates ("Friday", "Tuesday next week", "tomorrow") against today
     // Name and address from the directory, so the event says who and where
     // instead of a bare number with an empty location field. Anything the
     // thread itself mentions is learned here too, for next time.
-    const known = await lookupContact(from).catch(() => null);
+    const known = ctx.dossier || await lookupContact(from).catch(() => null);
     const inThread = extractAddress(convo);
     if (inThread && !known?.address) {
       await rememberContact({ phone: from, address: inThread, source: 'chat' }).catch(() => {});
+      await upsertPersonDossier(ctx.personKey, { address: inThread, address_source: 'chat' }, ctx.directory).catch(() => {});
     }
     const who = known?.display_name || from;
     const title = ev.title || text || `Job for ${who}`;
@@ -1918,6 +2193,7 @@ Resolve relative dates ("Friday", "Tuesday next week", "tomorrow") against today
       title, date: ev.date, time: ev.time || '09:00',
       durationMins: ev.durationMins || 60,
       location: known?.address || inThread || ev.location || '',
+      parts: cleanDossierValue(ctx.dossier?.parts_materials) || '',
     } }));
   } catch (e) { res.writeHead(502); res.end(JSON.stringify({ error: e.message })); }
 }
@@ -1927,12 +2203,14 @@ Resolve relative dates ("Friday", "Tuesday next week", "tomorrow") against today
 // verbatim; the day is resolved deterministically in commitments.js, and the
 // calendar decides "booked". Line output, not JSON — gemma is unreliable at
 // strict JSON (see Agentic-LM-Pipeline-Pattern).
-function commitmentPrompt(threads, today, weekday) {
+function commitmentPrompt(threads, today, weekday, directory = null) {
   const convos = threads.map(t => {
+    const d = directory ? lookupDossierInDir(t.name, directory) : null;
+    const dBlock = formatDossierBlock(d);
     const lines = (t.messages || []).slice(-12)
       .map(m => `  ${msgLine(m)}`)
       .join('\n');
-    return `— ${t.name} —\n${lines}`;
+    return `— ${t.name} —${dBlock ? `\n  [Dossier: ${dBlock}]` : ''}\n${lines}`;
   }).join('\n\n');
 
   return `Today is ${weekday} ${today}. Below are recent text conversations. "me" is Jesse, an electrician; "them" is the customer.
@@ -1961,13 +2239,16 @@ async function refreshCommitments() {
   catch (err) { console.error('commitments: bridge unreachable —', err.message); return { ok: false, reason: err.message }; }
   if (!threads.length) return { ok: false, reason: 'no threads' };
 
+  const directory = await archiveItemsAndThreads([], threads)
+    .catch(() => loadPersonDirectory().catch(() => null));
+
   const now = new Date();
   // ymd, not toISOString: weekday below is local, so before 11am in AEDT a UTC
   // date would make the prompt contradict itself ("Today is Thursday 2026-11-04").
   const today = ymd(now);
   const weekday = now.toLocaleDateString('en-AU', { weekday: 'long' });
 
-  const raw = await askModel(commitmentPrompt(threads, today, weekday), 1600);
+  const raw = await askModel(commitmentPrompt(threads, today, weekday, directory), 1600);
   const offered = String(raw || '').split('\n').filter(l => l.includes('::')).length;
   const extracted = parseExtraction(raw, threads, now);
   if (!extracted.length) {
@@ -1987,7 +2268,7 @@ async function refreshCommitments() {
     );
   }
 
-  await describeCommitments(threads);
+  await describeCommitments(threads, directory);
 
   // Only supersede within the threads actually scanned — a thread that has
   // simply dropped out of the index's recent window must not cancel its jobs.
@@ -2017,7 +2298,7 @@ async function refreshCommitments() {
 // conversation rather than the one line the extractor copied. Only for rows
 // that have none yet and are still unbooked, so this is a handful of calls on
 // the tick a new job appears and none at all on every other tick.
-async function describeCommitments(threads) {
+async function describeCommitments(threads, directory = null) {
   const { rows } = await pool.query(
     `SELECT id, who, what, quote, source_thread FROM commitments
       WHERE detail IS NULL AND status = 'unbooked' ORDER BY first_seen_at DESC LIMIT 6`);
@@ -2026,15 +2307,19 @@ async function describeCommitments(threads) {
   let written = 0;
   for (const r of rows) {
     const t = byName.get(r.source_thread);
-    const convo = (t?.messages || []).slice(-14)
+    const d = directory ? (lookupDossierInDir(r.who, directory) || lookupDossierInDir(r.source_thread, directory)) : null;
+    const ctx = d ? await loadPersonContext(d.person_key).catch(() => ({ messages: [] })) : { messages: [] };
+    const msgs = mergeThreadMessages(ctx.messages, t?.messages || []);
+    const convo = msgs.slice(-14)
       .map(m => `${m.outbound ? 'me' : 'them'}: ${String(m.text || '').replace(/\s+/g, ' ').slice(0, 300)}`)
       .join('\n');
-    if (!convo) continue;
+    const dBlock = formatDossierBlock(d);
+    if (!convo && !dBlock) continue;
     const prompt = `This is a text conversation between Jesse (an electrician, "me") and a customer ("them").
 
-${convo}
+${dBlock ? `Client dossier: ${dBlock}\n\n` : ''}${convo}
 
-In ONE sentence, say what the JOB is: the actual electrical work, where it is, and anything agreed about it. Write it the way you would write a line in a diary, so he knows what he is turning up to do. Do not mention the texting, do not greet, do not add advice. If the conversation never says what the work is, reply with exactly: UNCLEAR`;
+In ONE sentence, say what the JOB is: the actual electrical work, where it is, and anything agreed about it. Write it the way you would write a line in a diary, so he knows what he is turning up to do. Do not mention the texting, do not greet, do not add advice. If the material never says what the work is, reply with exactly: UNCLEAR`;
     let line = String(await askModel(prompt, 200) || '').replace(/\s+/g, ' ').trim().replace(/^["']|["']$/g, '');
     if (!line || /^unclear\b/i.test(line)) line = '';
     // Empty string, not NULL, when the thread never says what the work is -
@@ -2167,6 +2452,27 @@ async function resolveRecipient(to) {
   return { name: raw || null, number: null, address: known?.address || null };
 }
 
+async function archiveOutboundSent({ channel, threadLabel, who, number, text }) {
+  const dir = await loadPersonDirectory();
+  const label = threadLabel || who || number;
+  const pKey = canonicalPersonKey({ kind: channel, from: label, phone: number, name: who }, dir);
+  await insertArchivedMessage({
+    personKey: pKey,
+    threadKey: `${channel}:${label}`,
+    kind: channel,
+    senderName: 'me',
+    outbound: true,
+    msgAt: new Date().toISOString().slice(0, 16),
+    body: text,
+  });
+  await upsertPersonDossier(pKey, {
+    display_name: who || null,
+    phone: number || null,
+    channels: [channel],
+    current_stage: 'replied',
+  }, dir);
+}
+
 // The only place a message actually leaves. Requires the owner token AND is
 // only ever called by the send button in the chat - the model cannot reach it.
 async function handleTextSend(req, res) {
@@ -2202,6 +2508,7 @@ async function handleTextSend(req, res) {
       const d = await r.json().catch(() => ({}));
       if (d.sent) {
         console.log(`sent via ${channel} to ${d.thread}`);
+        await archiveOutboundSent({ channel, threadLabel: d.thread, who, number, text }).catch(() => {});
         res.writeHead(200); res.end(JSON.stringify({ ok: true, via: channel, thread: d.thread })); return;
       }
       lastErr = d.error || (r.status === 404 ? `no ${channel} thread matching "${contact}"` : 'send rejected');
@@ -2227,6 +2534,9 @@ async function handleTextSend(req, res) {
     const r = await fetch(`${process.env.MACRODROID_WEBHOOK_URL}?phone=${encodeURIComponent(number)}&message=${encodeURIComponent(text)}`,
                           { signal: AbortSignal.timeout(15000) });
     console.log(`text sent via webhook (${text.length} chars): ${r.status}`);
+    if (r.ok) {
+      await archiveOutboundSent({ channel: 'sms', threadLabel: who || number, who, number, text }).catch(() => {});
+    }
     res.writeHead(200); res.end(JSON.stringify({ ok: r.ok, via: 'webhook' }));
   } catch (e) {
     console.error('webhook send failed:', e.message);
@@ -2303,6 +2613,460 @@ async function learnFromThreads(threads = []) {
       break;
     }
   }
+}
+
+// ── Progressive person dossiers & permanent archive ───────
+function toDossierDto(d) {
+  if (!d) return null;
+  return {
+    personKey: d.person_key,
+    displayName: d.display_name || null,
+    phone: d.phone || null,
+    email: d.email || null,
+    address: d.address || null,
+    addressSource: d.address_source || null,
+    business: d.business || null,
+    channels: Array.isArray(d.channels) ? d.channels : [],
+    jobIds: Array.isArray(d.job_ids) ? d.job_ids : [],
+    workScope: d.work_scope || null,
+    quoteEstimate: d.quote_estimate || null,
+    partsMaterials: d.parts_materials || null,
+    preferredTimes: d.preferred_times || null,
+    accessNotes: d.access_notes || null,
+    currentStage: d.current_stage || null,
+    openNextStep: d.open_next_step || null,
+    summaryNotes: d.summary_notes || null,
+    updatedAt: d.updated_at || null,
+  };
+}
+
+function extractEmailIdentity(kind, from) {
+  const s = String(from || '').trim();
+  if (kind !== 'email' && kind !== 'bizemail' && !s.includes('@')) return { email: null, name: null };
+  const m = s.match(/^([^<]+)<([^>]+)>/);
+  const email = m ? m[2].trim().toLowerCase() : (s.includes('@') ? normalizeIdentifier('email', s) : null);
+  const name = m ? m[1].replace(/["']/g, '').trim() : null;
+  return { email, name };
+}
+
+function registerDossierInDir(d, dir) {
+  if (!d?.person_key) return;
+  dir.byKey.set(d.person_key, d);
+  const last9 = phoneLast9(d.phone) || (d.person_key.startsWith('phone:') ? d.person_key.slice(6) : null);
+  if (last9) dir.byPhone[last9] = d.person_key;
+  const em = d.email
+    ? normalizeIdentifier('email', d.email)
+    : (d.person_key.startsWith('email:') ? d.person_key.slice(6) : '');
+  if (em && em.includes('@')) dir.byEmail[em] = d.person_key;
+  const nm = String(d.display_name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (nm && /[a-z]/i.test(nm) && (!dir.byName[nm] || d.person_key.startsWith('phone:'))) {
+    dir.byName[nm] = d.person_key;
+  }
+}
+
+async function loadPersonDirectory() {
+  const dir = { byPhone: {}, byName: {}, byEmail: {}, byKey: new Map() };
+  const [{ rows: dossierRows }, { rows: contactRows }] = await Promise.all([
+    pool.query('SELECT * FROM person_dossiers'),
+    pool.query('SELECT kind, identifier, display_name FROM contacts'),
+  ]);
+  for (const d of dossierRows) registerDossierInDir(d, dir);
+  for (const c of contactRows) {
+    const nm = String(c.display_name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    if (c.kind === 'sms') {
+      const p9 = phoneLast9(c.identifier);
+      if (!p9) continue;
+      const pk = dir.byPhone[p9] || `phone:${p9}`;
+      dir.byPhone[p9] = pk;
+      if (nm && /[a-z]/i.test(nm) && !dir.byName[nm]) dir.byName[nm] = pk;
+    } else if (c.kind === 'email' || c.kind === 'bizemail') {
+      const em = normalizeIdentifier(c.kind, c.identifier);
+      if (!em.includes('@')) continue;
+      const pk = dir.byEmail[em] || `email:${em}`;
+      dir.byEmail[em] = pk;
+      if (nm && /[a-z]/i.test(nm) && !dir.byName[nm]) dir.byName[nm] = pk;
+    }
+  }
+  return dir;
+}
+
+function lookupDossierInDir(whoOrItem, directory) {
+  if (!directory?.byKey) return null;
+  if (whoOrItem && typeof whoOrItem === 'object') {
+    if (whoOrItem.personKey && directory.byKey.has(whoOrItem.personKey)) {
+      return directory.byKey.get(whoOrItem.personKey);
+    }
+    const { email, name } = extractEmailIdentity(whoOrItem.kind, whoOrItem.from);
+    const key = canonicalPersonKey({
+      kind: whoOrItem.kind,
+      from: whoOrItem.from,
+      phone: whoOrItem.phone,
+      email,
+      name: name || whoOrItem.displayName,
+    }, directory);
+    return directory.byKey.get(key) || null;
+  }
+  const key = canonicalPersonKey({ from: String(whoOrItem || '') }, directory);
+  return directory.byKey.get(key) || null;
+}
+
+async function loadPersonContext(personKey) {
+  if (!personKey || personKey === 'unknown') return { dossier: null, messages: [], history: [] };
+  const [{ rows: [dossier] }, { rows: msgRows }, { rows: history }] = await Promise.all([
+    pool.query('SELECT * FROM person_dossiers WHERE person_key = $1', [personKey]),
+    pool.query(
+      `SELECT id, thread_key, kind, sender_name, outbound, msg_at, body, seen_at
+         FROM message_archive WHERE person_key = $1 ORDER BY id DESC LIMIT 50`,
+      [personKey]
+    ),
+    pool.query(
+      `SELECT item_id, kind, from_label, phone, email, address, subject, title, snippet, brief, when_text, status, job_id, first_seen_at, last_seen_at
+         FROM item_archive WHERE person_key = $1 ORDER BY last_seen_at DESC LIMIT 15`,
+      [personKey]
+    ),
+  ]);
+  const messages = msgRows.reverse().map(m => ({
+    outbound: !!m.outbound,
+    text: m.body,
+    at: m.msg_at || null,
+    kind: m.kind,
+    seenAt: m.seen_at,
+  }));
+  return { dossier: dossier || null, messages, history };
+}
+
+async function upsertPersonDossier(personKey, incoming, directory, { sourceHash = null } = {}) {
+  if (!personKey || personKey === 'unknown') return null;
+  let existing = directory?.byKey?.get(personKey) || null;
+  if (!existing) {
+    const { rows } = await pool.query('SELECT * FROM person_dossiers WHERE person_key = $1', [personKey]);
+    existing = rows[0] || { person_key: personKey, channels: [], job_ids: [] };
+  }
+  let merged = mergeDossierFields(existing, { ...incoming, person_key: personKey });
+
+  if (personKey.startsWith('phone:') && merged.display_name) {
+    const nameKey = `name:${merged.display_name.toLowerCase().replace(/\s+/g, ' ').trim()}`;
+    let nameRow = directory?.byKey?.get(nameKey) || null;
+    if (!nameRow) {
+      const { rows } = await pool.query('SELECT * FROM person_dossiers WHERE person_key = $1', [nameKey]);
+      nameRow = rows[0] || null;
+    }
+    if (nameRow) {
+      merged = mergeDossierFields(nameRow, { ...merged, person_key: personKey });
+      await pool.query('UPDATE item_archive SET person_key = $1 WHERE person_key = $2', [personKey, nameKey]);
+      await pool.query('UPDATE message_archive SET person_key = $1 WHERE person_key = $2', [personKey, nameKey]);
+      await pool.query('DELETE FROM person_dossiers WHERE person_key = $1', [nameKey]);
+      directory?.byKey?.delete(nameKey);
+    }
+  }
+
+  const { rows: [saved] } = await pool.query(
+    `INSERT INTO person_dossiers (
+       person_key, display_name, phone, email, address, address_source, business,
+       channels, job_ids, work_scope, quote_estimate, parts_materials, preferred_times,
+       access_notes, current_stage, open_next_step, summary_notes, source_hash, updated_at
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW())
+     ON CONFLICT (person_key) DO UPDATE SET
+       display_name=EXCLUDED.display_name, phone=EXCLUDED.phone, email=EXCLUDED.email,
+       address=EXCLUDED.address, address_source=EXCLUDED.address_source, business=EXCLUDED.business,
+       channels=EXCLUDED.channels, job_ids=EXCLUDED.job_ids, work_scope=EXCLUDED.work_scope,
+       quote_estimate=EXCLUDED.quote_estimate, parts_materials=EXCLUDED.parts_materials,
+       preferred_times=EXCLUDED.preferred_times, access_notes=EXCLUDED.access_notes,
+       current_stage=EXCLUDED.current_stage, open_next_step=EXCLUDED.open_next_step,
+       summary_notes=EXCLUDED.summary_notes,
+       source_hash=COALESCE($18, person_dossiers.source_hash),
+       updated_at=NOW()
+     RETURNING *`,
+    [
+      personKey, merged.display_name, merged.phone, merged.email,
+      merged.address, merged.address_source, merged.business,
+      merged.channels, merged.job_ids, merged.work_scope, merged.quote_estimate,
+      merged.parts_materials, merged.preferred_times, merged.access_notes,
+      merged.current_stage, merged.open_next_step, merged.summary_notes, sourceHash,
+    ]
+  );
+  if (saved && directory) registerDossierInDir(saved, directory);
+  return saved;
+}
+
+async function insertArchivedMessage({ personKey, threadKey, kind, senderName, outbound, msgAt, body }) {
+  const cleanBody = String(body || '').trim().slice(0, 1800);
+  if (!personKey || !threadKey || !cleanBody) return;
+  await pool.query(
+    `INSERT INTO message_archive (person_key, thread_key, kind, sender_name, outbound, msg_at, body)
+     VALUES ($1,$2,$3,$4,$5,$6,$7)
+     ON CONFLICT (thread_key, outbound, msg_at, body) DO NOTHING`,
+    [personKey, threadKey, kind || 'sms', senderName || null, !!outbound, String(msgAt || ''), cleanBody]
+  );
+}
+
+async function archiveItemsAndThreads(items = [], threads = []) {
+  const directory = await loadPersonDirectory();
+
+  // Pass 1: register Switch Craft job links first so name<->phone matches resolve cleanly.
+  for (const t of items) {
+    if (t.kind !== 'job') continue;
+    const pKey = canonicalPersonKey({ kind: t.kind, from: t.from, phone: t.phone, name: t.from }, directory);
+    const quote = extractQuoteAmount(`${t.snippet || ''} ${t.lastNote?.message || ''}`);
+    await upsertPersonDossier(pKey, {
+      display_name: t.from,
+      phone: t.phone || null,
+      address: t.address || null,
+      address_source: t.address ? 'switch-craft' : null,
+      business: t.business || null,
+      job_ids: t.jobId ? [t.jobId] : [],
+      preferred_times: t.preferredDays || t.timeline || null,
+      work_scope: t.text || t.snippet || null,
+      quote_estimate: quote,
+      current_stage: t.status || null,
+      channels: ['job'],
+    }, directory).catch(e => console.error('archive job dossier:', e.message));
+  }
+
+  // Pass 2: store full scraped SMS threads and deterministic extractions.
+  for (const th of threads) {
+    if (!th?.name) continue;
+    const isPhone = !!phoneLast9(th.name);
+    const pKey = canonicalPersonKey({ kind: 'sms', from: th.name, name: th.name }, directory);
+    const msgs = Array.isArray(th.messages) ? th.messages : [];
+    for (const m of msgs) {
+      await insertArchivedMessage({
+        personKey: pKey,
+        threadKey: `sms:${th.name}`,
+        kind: 'sms',
+        senderName: m.outbound ? 'me' : th.name,
+        outbound: !!m.outbound,
+        msgAt: m.at || '',
+        body: m.text || '',
+      }).catch(() => {});
+    }
+    let foundAddr = null;
+    let foundQuote = null;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (!foundAddr) foundAddr = extractAddress(msgs[i]?.text);
+      if (!foundQuote) foundQuote = extractQuoteAmount(msgs[i]?.text);
+      if (foundAddr && foundQuote) break;
+    }
+    await upsertPersonDossier(pKey, {
+      display_name: isPhone ? null : th.name,
+      phone: isPhone ? th.name : null,
+      channels: ['sms'],
+      address: foundAddr,
+      address_source: foundAddr ? 'chat' : null,
+      quote_estimate: foundQuote,
+    }, directory).catch(e => console.error('archive thread dossier:', e.message));
+  }
+
+  // Pass 3: store every surfaced item permanently & enrich item objects in memory.
+  const MSG_KINDS = new Set(['sms', 'whatsapp', 'messenger', 'meta', 'email', 'bizemail']);
+  for (const t of items) {
+    if (t.kind === 'cal') continue;
+    const { email, name } = extractEmailIdentity(t.kind, t.from);
+    const pKey = canonicalPersonKey({ kind: t.kind, from: t.from, phone: t.phone, email, name }, directory);
+    const itemId = workItemId(t);
+    const meta = {
+      tasks: t.tasks || null,
+      lastNote: t.lastNote || null,
+      photos: t.photos || null,
+      preferredDays: t.preferredDays || null,
+      timeline: t.timeline || null,
+      business: t.business || null,
+      raised: t.raised || null,
+      overdue: !!t.overdue,
+      href: t.href || null,
+      noteCount: t.noteCount || 0,
+      photoCount: t.photoCount || 0,
+      displayName: t.displayName || null,
+    };
+    await pool.query(
+      `INSERT INTO item_archive (
+         item_id, person_key, kind, from_label, phone, email, address,
+         subject, title, snippet, brief, when_text, status, job_id, meta
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+       ON CONFLICT (item_id) DO UPDATE SET
+         person_key=EXCLUDED.person_key,
+         phone=COALESCE(EXCLUDED.phone, item_archive.phone),
+         email=COALESCE(EXCLUDED.email, item_archive.email),
+         address=COALESCE(EXCLUDED.address, item_archive.address),
+         subject=COALESCE(EXCLUDED.subject, item_archive.subject),
+         title=COALESCE(EXCLUDED.title, item_archive.title),
+         snippet=COALESCE(EXCLUDED.snippet, item_archive.snippet),
+         brief=COALESCE(item_archive.brief, EXCLUDED.brief),
+         when_text=COALESCE(EXCLUDED.when_text, item_archive.when_text),
+         status=COALESCE(EXCLUDED.status, item_archive.status),
+         job_id=COALESCE(EXCLUDED.job_id, item_archive.job_id),
+         meta=EXCLUDED.meta,
+         last_seen_at=NOW()`,
+      [
+        itemId, pKey, t.kind, String(t.from || ''), t.phone || null, email || null,
+        t.address || null, t.subject || null, t.text || null, t.snippet || null,
+        t.brief || null, t.when || null, t.status || null, t.jobId || null,
+        JSON.stringify(meta),
+      ]
+    ).catch(e => console.error('archive item:', e.message));
+
+    if (MSG_KINDS.has(t.kind) && t.snippet) {
+      await insertArchivedMessage({
+        personKey: pKey,
+        threadKey: `${t.kind}:${t.from}`,
+        kind: t.kind,
+        senderName: t.from,
+        outbound: false,
+        msgAt: t.when || '',
+        body: t.subject ? `${t.subject} — ${t.snippet}` : t.snippet,
+      }).catch(() => {});
+    }
+
+    if (t.kind !== 'job') {
+      const combined = `${t.subject || ''} ${t.snippet || ''}`;
+      const addr = extractAddress(combined);
+      const quote = extractQuoteAmount(combined);
+      await upsertPersonDossier(pKey, {
+        display_name: name || (!phoneLast9(t.from) && !email ? t.from : null),
+        phone: t.phone || (t.kind === 'sms' && phoneLast9(t.from) ? t.from : null),
+        email,
+        channels: [t.kind],
+        address: addr,
+        address_source: addr ? 'chat' : null,
+        quote_estimate: quote,
+      }, directory).catch(e => console.error('archive item dossier:', e.message));
+    }
+
+    const dRow = directory.byKey.get(pKey) || null;
+    t.personKey = pKey;
+    t.dossier = dRow ? toDossierDto(dRow) : null;
+    if (dRow) {
+      t.address = t.address || dRow.address || null;
+      t.phone = t.phone || dRow.phone || null;
+      t.displayName = dRow.display_name || t.displayName || null;
+    }
+  }
+  return directory;
+}
+
+async function refreshDossiers({ maxContacts = 8 } = {}) {
+  const { rows: candidates } = await pool.query(`
+    SELECT k.person_key,
+           MAX(k.latest) AS latest_at,
+           pd.source_hash,
+           string_agg(k.sig, '|' ORDER BY k.sig) AS cur_sig
+      FROM (
+        SELECT person_key, last_seen_at AS latest,
+               'i:' || item_id || ':' || extract(epoch from last_seen_at)::bigint || ':' || coalesce(status, '') AS sig
+          FROM item_archive
+        UNION ALL
+        SELECT person_key, seen_at AS latest,
+               'm:' || id AS sig
+          FROM message_archive
+      ) k
+      LEFT JOIN person_dossiers pd ON pd.person_key = k.person_key
+     WHERE k.person_key <> 'unknown'
+     GROUP BY k.person_key, pd.source_hash
+     ORDER BY MAX(k.latest) DESC
+     LIMIT 60
+  `);
+
+  const directory = await loadPersonDirectory();
+  let updated = 0;
+  for (const row of candidates) {
+    if (updated >= maxContacts) break;
+    const currentHash = djb2(row.cur_sig || '');
+    if (row.source_hash === currentHash) continue;
+
+    const existing = directory.byKey.get(row.person_key) || { person_key: row.person_key, channels: [], job_ids: [] };
+    const [{ rows: itemRows }, { rows: msgRows }] = await Promise.all([
+      pool.query(
+        `SELECT kind, title, when_text, status, subject, snippet, address, meta
+           FROM item_archive WHERE person_key = $1 ORDER BY last_seen_at DESC LIMIT 10`,
+        [row.person_key]
+      ),
+      pool.query(
+        `SELECT kind, outbound, msg_at, body
+           FROM message_archive WHERE person_key = $1 ORDER BY id DESC LIMIT 25`,
+        [row.person_key]
+      ),
+    ]);
+
+    const dBlock = formatDossierBlock(existing);
+    const itemsText = itemRows.map(it => {
+      const m = it.meta || {};
+      const todo = Array.isArray(m.tasks) ? m.tasks.filter(x => x?.text).map(x => `${x.done ? '[done]' : '[open]'} ${x.text}`).join('; ') : '';
+      const note = m.lastNote?.message ? `last note (${m.lastNote.author}): ${String(m.lastNote.message).slice(0, 180)}` : '';
+      return `[${it.kind}${it.status ? `/${it.status}` : ''}] ${it.title || it.subject || ''}${it.when_text ? ` (${it.when_text})` : ''}${it.address ? ` @ ${it.address}` : ''}\n  ${it.snippet || ''}${todo ? `\n  checklist: ${todo}` : ''}${note ? `\n  ${note}` : ''}`.trim();
+    }).join('\n');
+    const msgsText = msgRows.reverse()
+      .map(m => `[${m.kind}${m.msg_at ? ` ${m.msg_at}` : ''}] ${m.outbound ? 'me' : 'them'}: ${String(m.body || '').replace(/\s+/g, ' ').slice(0, 220)}`)
+      .join('\n');
+
+    if (!itemsText && !msgsText) continue;
+
+    const prompt = `You maintain an accurate client dossier for Jesse, an electrician in Geelong. Today is ${ymd(new Date())}.
+Merge what is ALREADY KNOWN with the archived items and messages below. Only record facts explicitly supported by the data — NEVER invent addresses, quotes, dates, or parts. Preserve accurate prior facts unless clearly superseded. Write NONE for any field with no information.
+
+${dBlock ? `EXISTING DOSSIER:\n${dBlock}\n\n` : ''}${itemsText ? `ARCHIVED ITEMS / JOBS:\n${itemsText}\n\n` : ''}${msgsText ? `ARCHIVED MESSAGES:\n${msgsText}\n\n` : ''}Respond with ONLY these lines:
+NAME :: client/person name (NONE if only a bare phone number)
+ADDRESS :: street address (NONE if unknown)
+SCOPE :: concise summary of the electrical work or topic
+QUOTE :: quoted/discussed price or estimate verbatim
+PARTS :: parts/materials needed or client-supplied items
+TIMES :: preferred days/times or agreed schedule
+ACCESS :: site access, keys, gate, tenant notes
+STAGE :: current status/stage (e.g. inquiry, quoted, agreed awaiting booking, scheduled, ongoing, awaiting payment)
+NEXT :: concrete next step for Jesse
+SUMMARY :: 1-2 sentence cumulative overview covering context + open questions`;
+
+    try {
+      const raw = await askModel(prompt, 700);
+      const parsed = parseDossierResponse(raw, existing);
+      await upsertPersonDossier(row.person_key, parsed, directory, { sourceHash: currentHash });
+      updated++;
+    } catch (e) {
+      console.error(`dossier refresh (${row.person_key}):`, e.message);
+    }
+  }
+  if (updated) console.log(`dossiers: ${updated} updated`);
+  return { updated, scanned: candidates.length };
+}
+
+async function lookupDossierForChat({ query } = {}) {
+  const q = String(query || '').trim();
+  if (!q) return 'Give a client name, phone number, address, or keyword to look up.';
+  const like = `%${q}%`;
+  const last9 = phoneLast9(q);
+  const { rows } = await pool.query(
+    `SELECT DISTINCT pd.*
+       FROM person_dossiers pd
+       LEFT JOIN item_archive ia ON ia.person_key = pd.person_key
+       LEFT JOIN message_archive ma ON ma.person_key = pd.person_key
+      WHERE pd.display_name ILIKE $1 OR pd.phone ILIKE $1 OR pd.email ILIKE $1
+         OR pd.address ILIKE $1 OR pd.business ILIKE $1 OR pd.work_scope ILIKE $1
+         OR pd.quote_estimate ILIKE $1 OR pd.parts_materials ILIKE $1
+         OR pd.summary_notes ILIKE $1 OR pd.person_key ILIKE $1
+         OR ia.title ILIKE $1 OR ia.snippet ILIKE $1 OR ia.subject ILIKE $1
+         OR ma.body ILIKE $1
+         OR ($2::text IS NOT NULL AND right(regexp_replace(coalesce(pd.phone, ''), '\\D', '', 'g'), 9) = $2)
+      ORDER BY pd.updated_at DESC
+      LIMIT 5`,
+    [like, last9]
+  );
+  if (!rows.length) return `No stored client dossier or archived messages matched "${q}".`;
+  const blocks = [];
+  for (const d of rows) {
+    const { history, messages } = await loadPersonContext(d.person_key);
+    const dLine = formatDossierBlock(d) || d.person_key;
+    const hLines = history.slice(0, 6).map(h =>
+      `  - [${h.kind}${h.status ? `/${h.status}` : ''}] ${h.title || h.subject || h.snippet || ''}${h.when_text ? ` (${h.when_text})` : ''}`
+    ).join('\n');
+    const mLines = messages.slice(-10).map(m =>
+      `  - ${m.outbound ? 'me' : 'them'}: ${String(m.text || '').replace(/\s+/g, ' ').slice(0, 180)}`
+    ).join('\n');
+    blocks.push([
+      `DOSSIER: ${dLine}`,
+      hLines ? `RECENT ARCHIVED ITEMS:\n${hLines}` : null,
+      mLines ? `ARCHIVED MESSAGES:\n${mLines}` : null,
+    ].filter(Boolean).join('\n'));
+  }
+  return blocks.join('\n\n---\n\n');
 }
 
 // What each browser source last reported. A signed-out tab or an expired
@@ -2514,10 +3278,12 @@ async function nextActions() {
 
   // Whether the calendar can be read at all, so the rows below can say "not in
   // the calendar" only when that has actually been checked.
-  const [calDark, workCalId] = await Promise.all([
+  const [calDark, workCalId, directory] = await Promise.all([
     calendarUnreadable(await fetchCalendar().catch(() => ({}))),
     getWorkCalendarId().catch(() => null),
+    loadPersonDirectory().catch(() => null),
   ]);
+  const dossierFor = whoOrItem => (directory ? lookupDossierInDir(whoOrItem, directory) : null);
 
   // Agreed in a message, absent from the calendar.
   try {
@@ -2528,7 +3294,8 @@ async function nextActions() {
       const when = r.when_date ? ymd(r.when_date) : null;
       const known = await lookupContact(r.who).catch(() => null);
       const job = jobFor(r.who);
-      const who = known?.display_name || job?.identifier || r.who;
+      const dRow = dossierFor(r.who) || dossierFor(r.source_thread);
+      const who = dRow?.display_name || known?.display_name || job?.identifier || r.who;
       const said = String(r.what || '').trim();
       // In order of how much it actually tells him about the job. detail is
       // the sentence written off the whole thread and is almost always the
@@ -2537,10 +3304,11 @@ async function nextActions() {
       const work = String(r.detail || '').trim()
                  || ((said && !THIN_WHAT.test(said) && said.length > 6) ? said : '')
                  || (job ? jobWork(job) : '')
+                 || cleanDossierValue(dRow?.work_scope)
                  || String(r.quote || '').replace(/\s+/g, ' ').trim().slice(0, 160)
                  || 'work agreed over text';
-      const place = known?.address || job?.address || null;
-      const phone = phoneLast9(r.who) ? r.who : (job?.phone || null);
+      const place = known?.address || job?.address || dRow?.address || null;
+      const phone = phoneLast9(r.who) ? r.who : (job?.phone || dRow?.phone || null);
       out.push({
         id: `book-${r.id}`, kind: 'book',
         // Re-based. These used to sit at 2-4, which was top of the band when
@@ -2552,6 +3320,7 @@ async function nextActions() {
         urgency: !when ? 5 : when <= today ? 8 : when <= ymd(new Date(Date.now() + 2 * 86400000)) ? 7 : 6,
         at: when ? new Date(`${when}T00:00:00`).getTime() : 0,
         fact: `${r.id}:${when || ''}`,
+        dossier: dRow ? toDossierDto(dRow) : null,
         // The row is a contact card: who, how to reach them, where, and what
         // the job is. A title that was only the extracted phrase told him
         // neither who it was nor what he would be doing.
@@ -2578,6 +3347,7 @@ async function nextActions() {
           title: `${work} — ${who}`.slice(0, 180),
           date: when || today, time: r.when_time || '09:00',
           location: place || '', kind: 'sms', from: r.who,
+          parts: cleanDossierValue(dRow?.parts_materials) || '',
         },
         phone: phone || null,
         reply: (phone || r.who) ? {
@@ -2596,18 +3366,24 @@ async function nextActions() {
   // and climb as they age, because a client left hanging is the only thing on
   // this list that costs work. Both are computed from timestamps, so neither
   // can nag about something that was already answered.
-  const person = j => ({
-    name: j.identifier,
-    phone: j.phone || null,
-    address: j.address || null,
-    via: null,
-  });
+  const person = j => {
+    const dRow = dossierFor({ kind: 'job', from: j.identifier, phone: j.phone });
+    return {
+      name: j.identifier,
+      phone: j.phone || dRow?.phone || null,
+      address: j.address || dRow?.address || null,
+      via: null,
+    };
+  };
   const jobExtras = (j, snippet, allowBook = true) => {
     const text = jobWork(j) || j.jobType || j.identifier;
+    const dRow = dossierFor({ kind: 'job', from: j.identifier, phone: j.phone });
+    const phone = j.phone || dRow?.phone || null;
     return {
-      phone: j.phone || null,
-      reply: looksLikePhone(j.phone) ? {
-        channel: 'sms', to: j.phone, name: j.identifier, kind: 'job',
+      phone,
+      dossier: dRow ? toDossierDto(dRow) : null,
+      reply: looksLikePhone(phone) ? {
+        channel: 'sms', to: phone, name: j.identifier, kind: 'job',
         text, snippet: snippet || text,
       } : null,
       ...(allowBook ? {
@@ -2615,7 +3391,8 @@ async function nextActions() {
           title: `${text} — ${j.identifier}`.slice(0, 180),
           date: j.scheduledDate || today,
           time: j.scheduledTime || '09:00',
-          location: j.address || '', kind: 'job', from: j.identifier,
+          location: j.address || dRow?.address || '', kind: 'job', from: j.identifier,
+          parts: cleanDossierValue(dRow?.parts_materials) || '',
         },
       } : {}),
       chat: { kind: 'job', from: j.identifier, snippet: snippet || text },
@@ -2699,6 +3476,7 @@ async function nextActions() {
         href, cta: 'open the job',
       });
     } else if (ongoing && (past || !j.scheduledDate)) {
+      const dRow = dossierFor({ kind: 'job', from: j.identifier, phone: j.phone });
       out.push({
         id: `next-${j.id}`, kind: 'next-visit', urgency: 6,
         fact: `${j.id}:${j.status}:${j.scheduledDate || ''}`,
@@ -2712,7 +3490,8 @@ async function nextActions() {
         book: {
           title: `${jobWork(j) || j.jobType || 'Next visit'} — ${j.identifier}`.slice(0, 180),
           date: today, time: j.scheduledTime || '09:00',
-          location: j.address || '', kind: 'job', from: j.identifier,
+          location: j.address || dRow?.address || '', kind: 'job', from: j.identifier,
+          parts: cleanDossierValue(dRow?.parts_materials) || '',
         },
         ...jobExtras(j, jobWork(j) || j.when, false),
         href, cta: 'open the job',
@@ -2757,7 +3536,9 @@ async function nextActions() {
       if (isEnder(asked)) continue;
       const known = await lookupContact(w.identifier || who).catch(() => null);
       const job = jobFor(w.identifier || who);
-      const displayWho = known?.display_name || job?.identifier || who;
+      const dRow = dossierFor({ kind: w.kind, from: w.identifier || who, name: who });
+      const mergedKnown = dRow ? { ...(known || {}), display_name: known?.display_name || dRow.display_name, address: known?.address || dRow.address } : known;
+      const displayWho = mergedKnown?.display_name || job?.identifier || who;
       if (covered.has(displayWho.toLowerCase())) continue;
       const callFlag = hasUnrepliedCall(asked);
       const meta = enrichReplyOwed({
@@ -2767,15 +3548,19 @@ async function nextActions() {
         title: callFlag ? callFlagTitle(displayWho) : displayWho,
         asked,
         today,
-        known,
+        known: mergedKnown,
         job,
         extractedAddress: extractAddress(asked),
       });
+      if (meta.book && dRow?.parts_materials && !meta.book.parts) {
+        meta.book.parts = cleanDossierValue(dRow.parts_materials) || '';
+      }
       out.push({
         id: `owed-${w.kind}-${who.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
         kind: 'reply-owed',
         badge: callFlag ? 'callback · no reply seen' : null,
         fact: `${w.kind}:${at}`,
+        dossier: dRow ? toDossierDto(dRow) : null,
         // Below a client at the same age - work leads - but it still climbs,
         // so someone left a week gets to the top on their own.
         urgency: Math.min(8, (callFlag ? 6 : 5) + Math.floor(days / 2)),
@@ -3012,6 +3797,7 @@ async function autoTick() {
     const hash = itemsHash(raw);
     if (hash === lastItemHash) {
       console.log(`auto: ${raw.length} items, unchanged`);
+      await refreshDossiers({ maxContacts: 4 }).catch(e => console.error('auto dossiers:', e.message));
       return;
     }
     const first = lastItemHash === null;
@@ -3020,6 +3806,7 @@ async function autoTick() {
     console.log(`auto: ${raw.length} items, ${first ? 'first run' : 'changed'} - reports rebuilt`);
     const led = await refreshCommitments();
     console.log('auto commitments:', JSON.stringify(led));
+    await refreshDossiers({ maxContacts: 8 }).catch(e => console.error('auto dossiers:', e.message));
   } catch (e) {
     // Leave lastItemHash alone on failure so the next tick retries instead of
     // treating a half-finished pass as the current state.
@@ -3060,10 +3847,14 @@ async function runFullRefresh() {
     step('checking the calendar for what is already booked');
     const { booked, unsure, blind } = await reconcileOpenCommitments();
 
+    step('updating client dossiers');
+    const dossiers = await refreshDossiers({ maxContacts: 12 }).catch(e => ({ error: e.message }));
+
     refreshJob.result = {
       items: raw.length,
       found: led.found ?? 0, superseded: led.superseded ?? 0,
       booked, unsure, blind,
+      dossiersUpdated: dossiers.updated ?? 0,
       actions: (await nextActions().catch(() => [])).length,
     };
   } catch (e) {
@@ -3154,6 +3945,7 @@ createServer(async (req, res) => {
     if (u === '/api/refresh-all' && (req.method === 'POST' || req.method === 'GET')) return await handleRefreshAll(req, res);
     const contactMatch = u.match(/^\/api\/contacts\/(\d+)$/);
     if (req.method === 'PATCH' && contactMatch) return await handleContactTier(req, res, contactMatch[1]);
+    if (req.method === 'PATCH' && u === '/api/dossiers') return await handleDossierPatch(req, res);
     if (u === '/api/rules') return await handleRules(req, res);
     const ruleMatch = u.match(/^\/api\/rules\/(\d+)$/);
     if (req.method === 'DELETE' && ruleMatch) return await handleRuleDelete(req, res, ruleMatch[1]);

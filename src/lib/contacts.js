@@ -128,3 +128,153 @@ export function hasUnrepliedCall(snippet, messages) {
   }
   return isCallSignal(snippet);
 }
+
+// ── Progressive person dossier & archive helpers ────────────
+const QUOTE_RE = /(?:\$\s?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?(?:\s*(?:\+|plus|inc|incl|ex|excl)?\s*gst|\s*all\s*up|\s*each)?|\b\d{2,5}\s*dollars?(?:\s*(?:plus|\+)\s*gst|\s*all\s*up)?\b)/i;
+
+export function extractQuoteAmount(text) {
+  const m = String(text || '').match(QUOTE_RE);
+  if (!m) return null;
+  return m[0].replace(/\s+/g, ' ').trim();
+}
+
+export function canonicalPersonKey({ kind, from, phone, email, name } = {}, directory = {}) {
+  const last9 = phoneLast9(phone) || (kind === 'sms' ? phoneLast9(from) : null) || phoneLast9(from);
+  if (last9) return directory.byPhone?.[last9] || `phone:${last9}`;
+
+  const rawEmail = email
+    ? normalizeIdentifier('email', email)
+    : ((kind === 'email' || kind === 'bizemail') ? normalizeIdentifier(kind, from) : '');
+  if (rawEmail && rawEmail.includes('@')) return directory.byEmail?.[rawEmail] || `email:${rawEmail}`;
+
+  const rawName = String(name || from || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  if (rawName && directory.byName?.[rawName]) return directory.byName[rawName];
+  return rawName ? `name:${rawName}` : 'unknown';
+}
+
+const PLACEHOLDER_RE = /^(none|null|n\/a|unknown|unclear|not\s+(?:mentioned|specified|provided|clear|applicable)|—|-|\?)$/i;
+
+export function cleanDossierValue(val) {
+  if (val === undefined || val === null) return null;
+  const s = String(val).replace(/\s+/g, ' ').trim();
+  if (!s || PLACEHOLDER_RE.test(s)) return null;
+  return s;
+}
+
+const DOSSIER_TEXT_FIELDS = [
+  'work_scope',
+  'quote_estimate',
+  'parts_materials',
+  'preferred_times',
+  'access_notes',
+  'current_stage',
+  'open_next_step',
+  'summary_notes',
+];
+
+export function mergeDossierFields(existing = {}, incoming = {}) {
+  const exName = cleanDossierValue(existing.display_name);
+  const inName = cleanDossierValue(incoming.display_name);
+  const exHasLetters = !!(exName && /[a-z]/i.test(exName));
+  const inHasLetters = !!(inName && /[a-z]/i.test(inName));
+
+  let display_name = null;
+  if (exHasLetters && !inHasLetters) display_name = exName;
+  else if (inHasLetters) display_name = inName;
+  else display_name = inName || exName || null;
+
+  const exAddr = cleanDossierValue(existing.address);
+  const inAddr = cleanDossierValue(incoming.address);
+  let address = null;
+  let address_source = null;
+  if (exAddr && existing.address_source === 'switch-craft' && incoming.address_source !== 'switch-craft') {
+    address = exAddr;
+    address_source = 'switch-craft';
+  } else if (inAddr) {
+    address = inAddr;
+    address_source = incoming.address_source || existing.address_source || 'model';
+  } else if (exAddr) {
+    address = exAddr;
+    address_source = existing.address_source || null;
+  }
+
+  const channels = [...new Set(
+    [...(existing.channels || []), ...(incoming.channels || [])]
+      .filter(Boolean)
+      .map(c => String(c).toLowerCase())
+  )].sort();
+
+  const job_ids = [...new Set(
+    [...(existing.job_ids || []), ...(incoming.job_ids || [])]
+      .map(Number)
+      .filter(n => Number.isInteger(n) && n > 0)
+  )].sort((a, b) => a - b);
+
+  const merged = {
+    person_key: incoming.person_key || existing.person_key || null,
+    display_name,
+    phone: cleanDossierValue(incoming.phone) || cleanDossierValue(existing.phone) || null,
+    email: cleanDossierValue(incoming.email) || cleanDossierValue(existing.email) || null,
+    address,
+    address_source,
+    business: cleanDossierValue(incoming.business) || cleanDossierValue(existing.business) || null,
+    channels,
+    job_ids,
+  };
+
+  for (const field of DOSSIER_TEXT_FIELDS) {
+    merged[field] = cleanDossierValue(incoming[field]) || cleanDossierValue(existing[field]) || null;
+  }
+  return merged;
+}
+
+const DOSSIER_LINE_KEYS = {
+  NAME: 'display_name',
+  ADDRESS: 'address',
+  SCOPE: 'work_scope',
+  QUOTE: 'quote_estimate',
+  PARTS: 'parts_materials',
+  TIMES: 'preferred_times',
+  ACCESS: 'access_notes',
+  STAGE: 'current_stage',
+  NEXT: 'open_next_step',
+  SUMMARY: 'summary_notes',
+};
+
+export function parseDossierResponse(raw, existing = {}) {
+  const incoming = {};
+  for (const line of String(raw || '').split('\n')) {
+    const m = line.match(/^\s*(?:[-*]|\d+[.)])?\s*\*{0,2}([A-Z_]+)\*{0,2}\s*(?:::|:)\s*(.*)$/);
+    if (!m) continue;
+    const field = DOSSIER_LINE_KEYS[m[1].toUpperCase()];
+    if (!field) continue;
+    const val = cleanDossierValue(m[2]);
+    if (!val) continue;
+    incoming[field] = val;
+    if (field === 'address') incoming.address_source = 'model';
+  }
+  return mergeDossierFields(existing, incoming);
+}
+
+export function formatDossierBlock(d) {
+  if (!d || typeof d !== 'object') return '';
+  const get = (snake, camel) => cleanDossierValue(d[snake] ?? d[camel]);
+  const jobIds = Array.isArray(d.job_ids) ? d.job_ids : (Array.isArray(d.jobIds) ? d.jobIds : []);
+  const parts = [
+    get('display_name', 'displayName') && `Name: ${get('display_name', 'displayName')}`,
+    get('phone', 'phone') && `Phone: ${get('phone', 'phone')}`,
+    get('email', 'email') && `Email: ${get('email', 'email')}`,
+    get('address', 'address') && `Address: ${get('address', 'address')}`,
+    get('business', 'business') && `Business: ${get('business', 'business')}`,
+    jobIds.length && `Jobs: ${jobIds.map(id => `#${id}`).join(', ')}`,
+    get('work_scope', 'workScope') && `Scope: ${get('work_scope', 'workScope')}`,
+    get('quote_estimate', 'quoteEstimate') && `Quote: ${get('quote_estimate', 'quoteEstimate')}`,
+    get('parts_materials', 'partsMaterials') && `Parts: ${get('parts_materials', 'partsMaterials')}`,
+    get('preferred_times', 'preferredTimes') && `Preferred times: ${get('preferred_times', 'preferredTimes')}`,
+    get('access_notes', 'accessNotes') && `Access: ${get('access_notes', 'accessNotes')}`,
+    get('current_stage', 'currentStage') && `Stage: ${get('current_stage', 'currentStage')}`,
+    get('open_next_step', 'openNextStep') && `Next step: ${get('open_next_step', 'openNextStep')}`,
+    get('summary_notes', 'summaryNotes') && `Notes: ${get('summary_notes', 'summaryNotes')}`,
+  ].filter(Boolean);
+  return parts.length ? `[${parts.join(' | ')}]` : '';
+}

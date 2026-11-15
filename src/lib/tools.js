@@ -695,3 +695,18 @@ export const MUTE_SENDER_TOOL = {
     },
   },
 };
+
+export const LOOKUP_DOSSIER_TOOL = {
+  type: 'function',
+  function: {
+    name: 'lookup_client_dossier',
+    description: "Look up Reverb's permanent accumulated client dossier and archived message/job history by name, phone number, address, job scope, or keyword. Use this whenever answering questions about a client, past quotes, parts required, site address, access notes, or what happened across channels before — it holds everything progressively saved across SMS, emails, Messenger, WhatsApp, and Switch Craft jobs even after old messages scroll out of the inbox.",
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Client name, phone number, suburb/street address, job type, or keyword.' },
+      },
+      required: ['query'],
+    },
+  },
+};
