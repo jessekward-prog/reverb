@@ -2189,6 +2189,8 @@ async function handleTextSend(req, res) {
   for (const c of [who, number]) {
     if (c && !candidates.some(x => norm(x) === norm(c))) candidates.push(c);
   }
+  console.log(`text/send ${channel} -> [${candidates.join(', ')}]`);
+  let lastErr = '';
   for (const contact of candidates) {
     try {
       const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/send`, {
@@ -2197,14 +2199,16 @@ async function handleTextSend(req, res) {
         body: JSON.stringify({ channel, contact, text, send: true }),
         signal: AbortSignal.timeout(120000),
       });
-      const d = await r.json();
+      const d = await r.json().catch(() => ({}));
       if (d.sent) {
         console.log(`sent via ${channel} to ${d.thread}`);
         res.writeHead(200); res.end(JSON.stringify({ ok: true, via: channel, thread: d.thread })); return;
       }
+      lastErr = d.error || (r.status === 404 ? `no ${channel} thread matching "${contact}"` : 'send rejected');
       console.error(`${channel} send did not go through:`, d.error || JSON.stringify(d));
       if (r.status !== 404) break;
     } catch (e) {
+      lastErr = e.message;
       console.error(`${channel} send failed:`, e.message);
       break;
     }
@@ -2212,8 +2216,11 @@ async function handleTextSend(req, res) {
 
   // Fallback: the MacroDroid webhook switch-craft uses. Needs a real number.
   if (channel !== 'sms' || !process.env.MACRODROID_WEBHOOK_URL || !number || !phoneLast9(number)) {
+    const error = lastErr
+      ? `could not send through Messages (${lastErr})`
+      : 'could not send through Messages, and no webhook fallback is configured';
     res.writeHead(200);
-    res.end(JSON.stringify({ error: 'could not send through Messages, and no webhook fallback is configured' }));
+    res.end(JSON.stringify({ error }));
     return;
   }
   try {

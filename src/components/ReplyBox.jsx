@@ -66,7 +66,10 @@ export default function ReplyBox({
       headers: jsonHead,
       body: JSON.stringify({ to: to || name, name: name || to, message, channel }),
     })
-      .then(r => r.json())
+      .then(async r => {
+        if (r.status === 401) return { error: 'session locked — unlock with your PIN first' };
+        return r.json().catch(() => ({ error: `unexpected response (${r.status})` }));
+      })
       .then(d => {
         if (!d.ok) {
           setNote(d.error || 'it did not go through — the thread may not be open');
