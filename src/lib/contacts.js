@@ -274,7 +274,7 @@ const GEELONG_SUBURBS = [
   'Armstrong Creek', 'Bannockburn', 'Barwon Heads', 'Batesford',
   'Bell Park', 'Bell Post Hill', 'Belmont', 'Breakwater', 'Charlemont',
   'Clifton Springs', 'Corio', 'Curlewis', 'Drysdale', 'East Geelong',
-  'Fyansford', 'Geelong West', 'Geelong', 'Grovedale', 'Hamlyn Heights',
+  'Fyansford', 'Geelong West', 'Grovedale', 'Hamlyn Heights',
   'Herne Hill', 'Highton', 'Indented Head', 'Inverleigh', 'Jan Juc',
   'Lara', 'Leopold', 'Lovely Banks', 'Manifold Heights', 'Marshall',
   'Moolap', 'Moriac', 'Mount Duneed', 'Newcomb', 'Newtown',
@@ -458,9 +458,15 @@ const DOSSIER_TEXT_FIELDS = [
   'summary_notes',
 ];
 
+const SELF_NAME_RE = /^(?:jesse(?:\s+k?ward)?|switch\s*craft(?:\s+electrics)?|me|you)$/i;
+const cleanPersonName = val => {
+  const s = cleanDossierValue(val);
+  return s && !SELF_NAME_RE.test(s) ? s : null;
+};
+
 export function mergeDossierFields(existing = {}, incoming = {}) {
-  const exName = cleanDossierValue(existing.display_name);
-  const inName = cleanDossierValue(incoming.display_name);
+  const exName = cleanPersonName(existing.display_name);
+  const inName = cleanPersonName(incoming.display_name);
   const exHasLetters = !!(exName && /[a-z]/i.test(exName));
   const inHasLetters = !!(inName && /[a-z]/i.test(inName));
 
@@ -584,10 +590,14 @@ export function parseDossierResponse(raw, existing = {}, sourceCorpus = '') {
     }
 
     if (incoming.display_name) {
-      const words = incoming.display_name.toLowerCase().split(/\s+/).map(w => w.replace(/[^a-z'\-]/g, '')).filter(w => w.length >= 3);
-      const exNameLow = String(existing.display_name || '').toLowerCase();
-      if (words.length && !words.some(w => corpusLow.includes(w) || exNameLow.includes(w))) {
+      if (!cleanPersonName(incoming.display_name)) {
         delete incoming.display_name;
+      } else {
+        const words = incoming.display_name.toLowerCase().split(/\s+/).map(w => w.replace(/[^a-z'\-]/g, '')).filter(w => w.length >= 3);
+        const exNameLow = String(existing.display_name || '').toLowerCase();
+        if (words.length && !words.some(w => corpusLow.includes(w) || exNameLow.includes(w))) {
+          delete incoming.display_name;
+        }
       }
     }
   }

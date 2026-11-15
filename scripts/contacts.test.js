@@ -288,4 +288,13 @@ const keptStreet = mergeDossierFields(
 );
 assert.strictEqual(keptStreet.address, '6 Sample Drive Waurn Ponds');
 
+// Reject self names and bare "Geelong"
+assert.strictEqual(extractSuburb('Licensed electrician in Geelong'), null);
+assert.strictEqual(extractSuburb('Work in East Geelong next week'), 'East Geelong');
+const noSelf = parseDossierResponse(`
+NAME :: Jesse
+SCOPE :: Order confirmation
+`, { person_key: 'email:orders@example.com' }, 'Hi Jesse, your order shipped');
+assert.strictEqual(noSelf.display_name, null);
+
 console.log('tier1 & gating: all assertions passed');

@@ -3101,7 +3101,7 @@ async function refreshDossiers({ maxContacts = 8 } = {}) {
              string_agg(k.sig, '|' ORDER BY k.sig) AS cur_sig
         FROM (
           SELECT person_key, last_seen_at AS latest,
-                 'i:' || item_id || ':' || extract(epoch from last_seen_at)::bigint || ':' || coalesce(status, '') AS sig
+                 'i:' || item_id || ':' || coalesce(status, '') || ':' || coalesce(when_text, '') || ':' || md5(coalesce(snippet, '') || '|' || coalesce(address, '')) AS sig
             FROM item_archive
           UNION ALL
           SELECT person_key, seen_at AS latest,
@@ -3110,8 +3110,9 @@ async function refreshDossiers({ maxContacts = 8 } = {}) {
         ) k
         LEFT JOIN person_dossiers pd ON pd.person_key = k.person_key
        WHERE k.person_key <> 'unknown'
+         AND k.person_key !~ '^email:(no-?reply|auto-confirm|shipment-tracking|return@|members@|store\\+|suno@|newsletter|marketing|info@|support@)'
        GROUP BY k.person_key, pd.source_hash
-       ORDER BY MAX(k.latest) DESC
+       ORDER BY CASE WHEN k.person_key LIKE 'phone:%' THEN 0 WHEN k.person_key LIKE 'name:%' THEN 1 ELSE 2 END, MAX(k.latest) DESC
        LIMIT 60
     `),
     fetchEvents().catch(() => []),
@@ -3188,7 +3189,7 @@ Merge what is ALREADY KNOWN with the archived items, messages, calendar bookings
 
 ${dBlock ? `EXISTING DOSSIER:\n${dBlock}\n\n` : ''}${calText ? `CALENDAR BOOKINGS:\n${calText}\n\n` : ''}${commText ? `OPEN COMMITMENTS:\n${commText}\n\n` : ''}${signalsText ? `DETECTED SIGNALS:\n${signalsText}\n\n` : ''}${itemsText ? `ARCHIVED ITEMS / JOBS:\n${itemsText}\n\n` : ''}${msgsText ? `ARCHIVED MESSAGES:\n${msgsText}\n\n` : ''}Respond with ONLY these lines:
 EVIDENCE :: short verbatim quote from the messages/items/bookings above supporting your extraction
-NAME :: client/person name (NONE if only a bare phone number)
+NAME :: client/person name (never Jesse or Switch Craft; NONE if only a bare phone number)
 ADDRESS :: street address or suburb (NONE if unknown)
 SCOPE :: concise summary of the electrical work or topic
 QUOTE :: quoted/discussed price or estimate verbatim
