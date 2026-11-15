@@ -84,36 +84,20 @@ function Row({ t, showTag, onOpen, register, lit, dimmed, onHover }) {
   );
 }
 
-function Pane({ title, accent, items, filters, filter, setFilter, showTag, onOpen,
+function Pane({ title, accent, items, showTag, onOpen,
                 empty, paneRef, scrollRef, onScroll, register, hover, onHover }) {
   return (
     <section ref={paneRef} style={{
       border: `1px solid ${C.border}`, borderRadius: C.radius, background: C.surface,
       display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden',
     }}>
-      <header style={{ padding: `${SP[3]}px ${SP[3]}px ${SP[2]}px`, borderBottom: `1px solid ${C.border}`,
-                       display: 'flex', flexDirection: 'column', gap: SP[2] }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: SP[2] }}>
-          <span style={{ width: 8, height: 8, borderRadius: 2, background: accent, flex: 'none' }} />
-          <h2 style={{ margin: 0, fontFamily: FONT.sans, fontSize: FS.head, fontWeight: 600,
-                       color: accent, textTransform: 'none', letterSpacing: 0 }}>{title}</h2>
-          <span style={{ flex: 1 }} />
-          <span style={{ fontFamily: FONT.mono, fontSize: FS.label, color: C.text3 }}>{items.length}</span>
-        </div>
-        {filters.length > 1 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: SP[1] }}>
-            {filters.map(f => (
-              <button key={f} type="button" onClick={() => setFilter(f)} style={{
-                appearance: 'none', cursor: 'pointer', fontFamily: FONT.mono, fontSize: FS.label,
-                letterSpacing: '.06em', textTransform: 'lowercase', borderRadius: 4,
-                padding: '4px 7px', minHeight: 28,
-                border: `1px solid ${filter === f ? accent : C.border}`,
-                background: filter === f ? C.amberDim : 'transparent',
-                color: filter === f ? accent : C.text3,
-              }}>{f}</button>
-            ))}
-          </div>
-        )}
+      <header style={{ padding: `${SP[3]}px`, borderBottom: `1px solid ${C.border}`,
+                       display: 'flex', alignItems: 'center', gap: SP[2] }}>
+        <span style={{ width: 8, height: 8, borderRadius: 2, background: accent, flex: 'none' }} />
+        <h2 style={{ margin: 0, fontFamily: FONT.sans, fontSize: FS.head, fontWeight: 600,
+                     color: accent, textTransform: 'none', letterSpacing: 0 }}>{title}</h2>
+        <span style={{ flex: 1 }} />
+        <span style={{ fontFamily: FONT.mono, fontSize: FS.label, color: C.text3 }}>{items.length}</span>
       </header>
 
       <div ref={scrollRef} onScroll={onScroll}
@@ -171,8 +155,6 @@ export default function TriPane({ categories = [], actions = [], scannedAt,
   // feed back into a wall of text.
   const [openId, setOpenId] = useState(null);
   const [scope, setScope] = useState('all');
-  const [workFilter, setWorkFilter] = useState('all');
-  const [lifeFilter, setLifeFilter] = useState('all');
   const [pane, setPane] = useState('feed'); // phone only
   const [hover, setHover] = useState(null);
   const [wires, setWires] = useState([]);
@@ -189,9 +171,6 @@ export default function TriPane({ categories = [], actions = [], scannedAt,
 
   const work = inScope.filter(t => t.bucket === 'work');
   const life = inScope.filter(t => t.bucket !== 'work');
-
-  const catsOf = rows => ['all', ...[...new Set(rows.map(t => t.category))].filter(Boolean)];
-  const byFilter = (rows, f) => (f === 'all' ? rows : rows.filter(t => t.category === f));
 
   // The middle is ranked, not grouped: overdue first, then oldest-waiting.
   const feed = useMemo(() => [...inScope].sort((a, b) =>
@@ -292,7 +271,7 @@ export default function TriPane({ categories = [], actions = [], scannedAt,
     frame.current = requestAnimationFrame(measure);
   }, [measure]);
 
-  useLayoutEffect(() => { remeasure(); }, [remeasure, feed, work.length, life.length, workFilter, lifeFilter, scope, pane, openId]);
+  useLayoutEffect(() => { remeasure(); }, [remeasure, feed, work.length, life.length, scope, pane, openId]);
 
   useEffect(() => {
     const ro = new ResizeObserver(remeasure);
@@ -303,8 +282,7 @@ export default function TriPane({ categories = [], actions = [], scannedAt,
   }, [remeasure]);
 
   const panes = {
-    work: <Pane title="switch" accent={C.amber} items={byFilter(work, workFilter)}
-                filters={catsOf(work)} filter={workFilter} setFilter={setWorkFilter}
+    work: <Pane title="switch" accent={C.amber} items={work}
                 onOpen={open} empty="work is clear"
                 paneRef={el => { paneEl.current.work = el; }}
                 scrollRef={el => { scrollEl.current.work = el; }}
@@ -349,8 +327,7 @@ export default function TriPane({ categories = [], actions = [], scannedAt,
         </div>
       </section>
     ),
-    life: <Pane title="vita" accent={LIFE} items={byFilter(life, lifeFilter)}
-                filters={catsOf(life)} filter={lifeFilter} setFilter={setLifeFilter}
+    life: <Pane title="vita" accent={LIFE} items={life}
                 onOpen={open} empty="nothing personal waiting"
                 paneRef={el => { paneEl.current.life = el; }}
                 scrollRef={el => { scrollEl.current.life = el; }}
