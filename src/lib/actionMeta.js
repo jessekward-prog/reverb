@@ -30,6 +30,41 @@ export function calendarDayUrl(when) {
   return `https://calendar.google.com/calendar/u/0/r/day/${Number(y)}/${Number(m)}/${Number(d)}`;
 }
 
+/** Build local Melbourne API timestamps and Google eventedit URL bounds for a booking. */
+export function bookingWindow({ date, time, durationMins = 60 }) {
+  const pad = n => String(n).padStart(2, '0');
+  const [y, mo, d] = String(date).split('-').map(Number);
+  const tStr = String(time || '').trim();
+  if (tStr && /^\d{1,2}:\d{2}$/.test(tStr)) {
+    const [hh, mm] = tStr.split(':').map(Number);
+    const startMs = Date.UTC(y, mo - 1, d, hh, mm, 0);
+    const endMs = startMs + (Number(durationMins) || 60) * 60000;
+    const fmtApi = ms => {
+      const t = new Date(ms);
+      return `${t.getUTCFullYear()}-${pad(t.getUTCMonth() + 1)}-${pad(t.getUTCDate())}T${pad(t.getUTCHours())}:${pad(t.getUTCMinutes())}:00`;
+    };
+    const fmtUrl = ms => {
+      const t = new Date(ms);
+      return `${t.getUTCFullYear()}${pad(t.getUTCMonth() + 1)}${pad(t.getUTCDate())}T${pad(t.getUTCHours())}${pad(t.getUTCMinutes())}00`;
+    };
+    return { allDay: false, start: fmtApi(startMs), end: fmtApi(endMs), urlDates: `${fmtUrl(startMs)}/${fmtUrl(endMs)}` };
+  }
+  const dayApi = `${y}-${pad(mo)}-${pad(d)}`;
+  const dayUrl = `${y}${pad(mo)}${pad(d)}`;
+  return { allDay: true, start: dayApi, end: dayApi, urlDates: `${dayUrl}/${dayUrl}` };
+}
+
+/** Build a fallback Google Calendar /r/eventedit URL, targeting src calendar when known. */
+export function calendarDraftUrl({ title, date, time, durationMins = 60, place, details, src }) {
+  const win = bookingWindow({ date, time, durationMins });
+  return 'https://calendar.google.com/calendar/u/0/r/eventedit'
+    + `?text=${encodeURIComponent(title)}`
+    + `&dates=${win.urlDates}`
+    + (place ? `&location=${encodeURIComponent(place)}` : '')
+    + (details ? `&details=${encodeURIComponent(details)}` : '')
+    + (src ? `&src=${encodeURIComponent(src)}` : '');
+}
+
 export function pickJobPhone(t) {
   if (looksLikePhone(t?.phone)) return t.phone;
   if (looksLikePhone(t?.from)) return t.from;

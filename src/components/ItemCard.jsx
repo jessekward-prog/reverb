@@ -273,12 +273,14 @@ export default function ItemCard({
                             WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{body}</div>
             )}
 
-        {cal && cal !== 'adding' && cal !== 'done' && (
+        {cal && cal !== 'adding' && cal !== 'done' && cal !== 'saved' && (
           <div style={{ fontSize: FS.meta, color: '#e07070', textTransform: 'none' }}>⚠ {cal}</div>
         )}
-        {cal === 'done' && (
+        {(cal === 'done' || cal === 'saved') && (
           <div style={{ fontSize: FS.meta, color: SHELF.accent, textTransform: 'none' }}>
-            ✓ opened in calendar — hit save there
+            {cal === 'saved'
+              ? `✓ saved to ${t.bucket === 'life' ? 'calendar' : 'Work calendar (Mango)'}`
+              : '✓ pre-filled link ready — hit save in calendar'}
           </div>
         )}
       </div>

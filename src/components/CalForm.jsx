@@ -105,7 +105,7 @@ export default function CalForm({ seed, why, busy, error, onCancel, onSubmit }) 
             textTransform: 'uppercase', borderRadius: 6, padding: '9px 16px', minHeight: 44,
             border: `1px solid ${ready ? C.amber : C.border}`, fontWeight: 700,
             background: ready ? C.amber : 'transparent', color: ready ? '#140d02' : C.text3,
-          }}>{busy ? 'opening…' : 'put it in the calendar →'}</motion.button>
+          }}>{busy ? 'saving…' : 'put it in the calendar →'}</motion.button>
       </div>
     </div>
   );

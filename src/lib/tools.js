@@ -626,7 +626,7 @@ export const ADD_TO_CALENDAR_TOOL = {
   type: 'function',
   function: {
     name: 'add_to_calendar',
-    description: "Put an appointment or job in the user's Google Calendar. Use it whenever they say to book, schedule, diarise or add something - including work agreed on a phone call, where there is no message to read. It opens the event pre-filled in their calendar for them to save; it does not write silently. Resolve relative days (\"Thursday\", \"tomorrow\") to a real date yourself before calling. ALWAYS ask the user two things first and put their answers in durationMins and parts: how long the job will take, and whether it needs any parts. Never guess either one - a wrong duration double-books his day and a missed part wastes the trip.",
+    description: "Save an appointment or job directly to the user's Google Calendar via LIFE_CMD. Work bookings go onto the Mango-coloured 'Work' calendar by default; pass bucket:'life' for personal events. Resolve relative days (\"Thursday\", \"tomorrow\") to a real YYYY-MM-DD date yourself before calling. ALWAYS ask the user two things first and put their answers in durationMins and parts: how long the job will take, and whether it needs any parts. Never guess either one - a wrong duration double-books his day and a missed part wastes the trip.",
     parameters: {
       type: 'object',
       properties: {
@@ -637,6 +637,7 @@ export const ADD_TO_CALENDAR_TOOL = {
         parts:        { type: 'string', description: 'What has to be picked up or ordered for the job, as the USER stated it, or the word "none" if they said it needs nothing. Ask them; this is never inferred.' },
         location:     { type: 'string', description: 'Address, if there is one. A known client\'s address is filled in automatically.' },
         contact:      { type: 'string', description: "Who it is with, if anyone - a name or number. Used to look up their address." },
+        bucket:       { type: 'string', enum: ['work', 'life'], description: "Defaults to 'work' (Mango 'Work' calendar). Set to 'life' for personal bookings." },
       },
       required: ['title', 'date', 'durationMins', 'parts'],
     },

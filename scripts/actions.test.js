@@ -7,6 +7,8 @@ import {
   telHref,
   jobUrl,
   calendarDayUrl,
+  bookingWindow,
+  calendarDraftUrl,
   pickJobPhone,
   enrichReplyOwed,
 } from '../src/lib/actionMeta.js';
@@ -99,5 +101,35 @@ assert.strictEqual(metaOwed.cta, 'open meta inbox');
 assert.strictEqual(metaOwed.browserSource, 'meta');
 assert.ok(metaOwed.book);
 assert.ok(metaOwed.chat);
+
+// Calendar booking window + draft URL helpers
+const timedWin = bookingWindow({ date: '2026-11-20', time: '09:00', durationMins: 120 });
+assert.deepStrictEqual(timedWin, {
+  allDay: false,
+  start: '2026-11-20T09:00:00',
+  end: '2026-11-20T11:00:00',
+  urlDates: '20261120T090000/20261120T110000',
+});
+const lateWin = bookingWindow({ date: '2026-11-30', time: '22:30', durationMins: 180 });
+assert.strictEqual(lateWin.start, '2026-11-30T22:30:00');
+assert.strictEqual(lateWin.end, '2026-12-01T01:30:00');
+const allDayWin = bookingWindow({ date: '2026-11-20', time: '' });
+assert.deepStrictEqual(allDayWin, {
+  allDay: true,
+  start: '2026-11-20',
+  end: '2026-11-20',
+  urlDates: '20261120/20261120',
+});
+const draftUrl = calendarDraftUrl({
+  title: 'Replace 2 lights [parts]',
+  date: '2026-11-20',
+  time: '09:00',
+  durationMins: 120,
+  place: '9 Pinecrest Drive Highton',
+  details: 'No parts needed.',
+  src: 'work123@group.calendar.google.com',
+});
+assert.ok(draftUrl.includes('dates=20261120T090000/20261120T110000'));
+assert.ok(draftUrl.includes('src=work123%40group.calendar.google.com'));
 
 console.log('actions metadata checks: ok');

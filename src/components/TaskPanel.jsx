@@ -102,24 +102,22 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
       .catch(() => { setCal(null); seedForm('could not read the thread'); });
   }
 
-  // The tab is opened here, inside the press, or the browser blocks it as a
-  // popup - the fetch comes back too late to count as a user gesture. It is
-  // a real tab rather than the bridge's shared calendar tab, which the message
-  // scrapers keep pulling back to the front mid-booking.
+  // Saves directly through LIFE_CMD to the Mango 'Work' calendar (or personal
+  // primary calendar for life items), falling back to a draft link if needed.
   function submitCal(f) {
     if (!f?.date) return;
-    setBusy('calling'); setCal('adding');
-    const tab = window.open('', '_blank');
+    setBusy('calling'); setCal('adding'); setCalUrl(null);
     fetch('/api/item/tocal', { method: 'POST', headers: jsonHead,
-      body: JSON.stringify({ from: t.from, text: t.text, ...f,
+      body: JSON.stringify({ from: t.from, text: t.text, isWork: t.bucket !== 'life', ...f,
                              parts: f.needsParts ? f.parts : '' }) })
       .then(r => r.json())
       .then(d => {
-        if (d.error || !d.url) { try { tab?.close(); } catch {} setCal(d.error || 'no event came back'); return; }
-        setCal('done'); setCalForm(null);
-        if (tab) { tab.location.href = d.url; setCalUrl(null); } else setCalUrl(d.url);
+        if (d.error || (!d.saved && !d.url)) { setCal(d.error || 'could not save to calendar'); return; }
+        setCal(d.saved ? 'saved' : 'done');
+        setCalForm(null);
+        setCalUrl(d.url || null);
       })
-      .catch(() => { try { tab?.close(); } catch {} setCal('could not reach calendar'); })
+      .catch(() => setCal('could not reach calendar'))
       .finally(() => setBusy(null));
   }
 
@@ -191,7 +189,7 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
       {calForm && (
         <CalForm seed={calForm.seed} why={calForm.why}
                  busy={busy === 'calling'}
-                 error={typeof cal === 'string' && cal !== 'adding' && cal !== 'done' ? cal : null}
+                 error={typeof cal === 'string' && cal !== 'adding' && cal !== 'done' && cal !== 'saved' ? cal : null}
                  onCancel={() => { setCalForm(null); setCal(null); }}
                  onSubmit={submitCal} />
       )}
@@ -200,7 +198,7 @@ export default function TaskPanel({ t, auth, onClose, onDone, onOpenBrowser, onO
         <div style={{ padding: `${SP[2]}px ${SP[3]}px`, fontFamily: FONT.sans, fontSize: FS.meta,
                       textTransform: 'none' }}>
           <a href={calUrl} target="_blank" rel="noreferrer" style={{ color: C.amber }}>
-            open the pre-filled event in your calendar →
+            {cal === 'saved' ? 'open in Google Calendar →' : 'open the pre-filled event in your calendar →'}
           </a>
         </div>
       )}

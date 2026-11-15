@@ -127,25 +127,44 @@ export default function ActionBand({ actions = [], auth, onCleared, onOpenBrowse
   // parts. It opens the same form the cards use instead, so how long it takes
   // and what has to be brought are answered before the event exists.
   //
-  // The tab has to be opened here, inside the press, or the browser blocks it
-  // as a popup - the fetch that fills it in comes back too late to count as a
-  // user gesture. It starts blank and gets the url a moment later.
+  // Saves directly through LIFE_CMD to the Mango 'Work' calendar so duration
+  // and parts stay attached without an extra popup, falling back to a link if needed.
   function book(a, f) {
     setBusy(a.id); setErr(null);
-    const tab = window.open('', '_blank');
     fetch('/api/item/tocal', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders(auth?.token) },
-      body: JSON.stringify({ from: a.book.from, text: a.title, ...f,
-                             parts: f.needsParts ? f.parts : '' }),
+      body: JSON.stringify({
+        actionId: a.id,
+        from: a.book.from,
+        text: a.title,
+        isWork: true,
+        ...f,
+        parts: f.needsParts ? f.parts : '',
+      }),
     })
       .then(r => r.json())
       .then(d => {
-        if (d.error || !d.url) { try { tab?.close(); } catch {} setErr(d.error || 'no event came back'); return; }
+        if (d.error || (!d.saved && !d.url)) { setErr(d.error || 'could not save to calendar'); return; }
         setBooking(null);
-        if (tab) tab.location.href = d.url; else setLink({ id: a.id, url: d.url });
+        if (d.saved && a.kind === 'book') {
+          setCleared(c => [...c, a.id]);
+          setNote({
+            text: `✓ saved “${a.title}” to ${d.calendar || 'Work'} calendar${d.color === 'mango' ? ' (Mango)' : ''}`,
+            url: d.url,
+          });
+          onCleared?.(a);
+          return;
+        }
+        setLink({
+          id: a.id,
+          url: d.url,
+          saved: !!d.saved,
+          calendar: d.calendar || 'Work',
+          color: d.color || null,
+        });
       })
-      .catch(() => { try { tab?.close(); } catch {} setErr('could not reach the calendar'); })
+      .catch(() => setErr('could not reach the calendar'))
       .finally(() => setBusy(null));
   }
 
@@ -169,7 +188,15 @@ export default function ActionBand({ actions = [], auth, onCleared, onOpenBrowse
 
       {note && (
         <div style={{ fontFamily: FONT.sans, fontSize: FS.meta, color: C.text2,
-                      textTransform: 'none', letterSpacing: 'normal' }}>{note}</div>
+                      textTransform: 'none', letterSpacing: 'normal',
+                      display: 'flex', flexWrap: 'wrap', gap: SP[2], alignItems: 'center' }}>
+          <span>{typeof note === 'string' ? note : note.text}</span>
+          {typeof note === 'object' && note.url && (
+            <a href={note.url} target="_blank" rel="noreferrer" style={{ color: C.amber }}>
+              open in calendar →
+            </a>
+          )}
+        </div>
       )}
 
       {undo && (
@@ -360,11 +387,19 @@ export default function ActionBand({ actions = [], auth, onCleared, onOpenBrowse
             )}
 
             {link?.id === a.id && (
-              <a href={link.url} target="_blank" rel="noreferrer"
-                 style={{ fontFamily: FONT.sans, fontSize: FS.meta, color: C.amber,
-                          textTransform: 'none' }}>
-                open the pre-filled event in your calendar →
-              </a>
+              <div style={{ fontFamily: FONT.sans, fontSize: FS.meta, textTransform: 'none',
+                            display: 'flex', flexWrap: 'wrap', gap: SP[2], alignItems: 'center' }}>
+                {link.saved && (
+                  <span style={{ color: C.amber }}>
+                    ✓ saved to {link.calendar || 'Work'} calendar{link.color === 'mango' ? ' (Mango)' : ''}
+                  </span>
+                )}
+                {link.url && (
+                  <a href={link.url} target="_blank" rel="noreferrer" style={{ color: C.amber }}>
+                    {link.saved ? 'open in calendar →' : 'open the pre-filled event in your calendar →'}
+                  </a>
+                )}
+              </div>
             )}
 
             {/* Secondary action bar: direct follow-ups (reply/book/call/open/chat) + handled. */}

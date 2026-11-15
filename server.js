@@ -16,7 +16,7 @@ import {
 import { parseExtraction, reconcileStatus, projectCommitments, ymd, msgLine, resolveWhen } from './src/lib/commitments.js';
 import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules,
          extractAddress, phoneLast9, hasUnrepliedCall } from './src/lib/contacts.js';
-import { enrichReplyOwed, jobUrl, looksLikePhone } from './src/lib/actionMeta.js';
+import { enrichReplyOwed, jobUrl, looksLikePhone, bookingWindow, calendarDraftUrl } from './src/lib/actionMeta.js';
 
 const { Pool } = pg;
 
@@ -440,7 +440,8 @@ async function calendarForChat(args = {}) {
   const parts = /^(none|no|nothing|n\/a)$/i.test(raw) ? '' : raw;
   const base = String(args.title || 'Job').slice(0, 150);
   const title = parts ? `${base} [parts]` : base;
-  const url = calendarDraftUrl({
+  const isWork = args.bucket !== 'life' && args.work !== false;
+  const booking = await createCalendarBooking({
     title,
     date: args.date,
     time: /^\d{1,2}:\d{2}$/.test(String(args.time || '')) ? args.time : '',
@@ -451,9 +452,14 @@ async function calendarForChat(args = {}) {
       `Allowed ${Number(args.durationMins)} minutes.`,
       `Added from Vita Switch chat${known?.display_name ? ` — ${known.display_name}` : ''}.`,
     ].join('\n'),
+    isWork,
   });
   const when = `${args.date}${args.time ? ` at ${args.time}` : ' (all day)'}`;
-  return `A pre-filled event for ${when} is ready, but it is NOT saved. Give the user this link exactly as it is, on its own line, and tell them to open it and press save in the calendar: ${url}`;
+  if (booking.saved) {
+    const colorNote = booking.colorId === '6' ? ' (Mango)' : '';
+    return `Saved to your ${booking.calendar}${colorNote} calendar for ${when}: ${booking.url}`;
+  }
+  return `A pre-filled event for ${when} is ready, but it is NOT saved. Give the user this link exactly as it is, on its own line, and tell them to open it and press save in the calendar: ${booking.url}`;
 }
 
 async function todoForChat({ bucket = 'all' } = {}) {
@@ -1742,31 +1748,78 @@ Write ONLY the message body, 1-3 sentences. No greeting line if the thread is al
   }
 }
 
-// Build the pre-filled Google Calendar edit URL. It used to also drive the
-// bridge's calendar tab, but that tab is shared with the message scrapers, so
-// the live view flickered between calendar and messages and the event could
-// not be saved. The url goes back to whoever asked and is opened in a tab of
-// its own - on a phone that hands off to the Calendar app.
-function calendarDraftUrl({ title, date, time, durationMins, place, details }) {
-  const pad = n => String(n).padStart(2, '0');
-  const [y, mo, d] = String(date).split('-').map(Number);
-  let start, end;
-  if (time && /^\d{1,2}:\d{2}$/.test(time)) {
-    const [hh, mm] = time.split(':').map(Number);
-    const st = new Date(y, mo - 1, d, hh, mm);
-    const en = new Date(st.getTime() + (durationMins || 60) * 60000);
-    const fmt = t => `${t.getFullYear()}${pad(t.getMonth() + 1)}${pad(t.getDate())}T${pad(t.getHours())}${pad(t.getMinutes())}00`;
-    start = fmt(st); end = fmt(en);
-  } else {
-    const day = `${y}${pad(mo)}${pad(d)}`;   // all-day
-    start = day; end = day;
+// Cache the dedicated Work calendar ID in memory so fallback draft links can
+// target `&src=` too without paying an extra lookup on every booking.
+let cachedWorkCalendarId = null;
+
+async function getWorkCalendarId() {
+  if (cachedWorkCalendarId) return cachedWorkCalendarId;
+  if (!process.env.LIFECMD_BASE_URL || !process.env.LIFECMD_SERVICE_TOKEN) return null;
+  try {
+    const r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/google/work-calendar`, {
+      headers: { 'x-service-token': process.env.LIFECMD_SERVICE_TOKEN },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!r.ok) return null;
+    const d = await r.json().catch(() => null);
+    if (d?.calendarId) cachedWorkCalendarId = d.calendarId;
+  } catch {}
+  return cachedWorkCalendarId;
+}
+
+// Save bookings directly into Google Calendar via LIFE_CMD so work jobs land on
+// the Mango-coloured 'Work' sub-calendar (URL eventedit links ignore colours);
+// falls back to a pre-filled eventedit URL if LIFE_CMD cannot be reached.
+async function createCalendarBooking({ title, date, time, durationMins = 60, place, details, isWork = true }) {
+  const win = bookingWindow({ date, time, durationMins });
+  const fallbackUrl = async () => calendarDraftUrl({
+    title, date, time, durationMins, place, details,
+    src: isWork ? (cachedWorkCalendarId || await getWorkCalendarId()) : null,
+  });
+
+  if (process.env.LIFECMD_BASE_URL && process.env.LIFECMD_SERVICE_TOKEN) {
+    try {
+      const r = await fetch(`${process.env.LIFECMD_BASE_URL}/api/google/create-event/main`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-service-token': process.env.LIFECMD_SERVICE_TOKEN,
+        },
+        body: JSON.stringify({
+          title,
+          start: win.start,
+          end: win.end,
+          allDay: win.allDay,
+          location: place || undefined,
+          description: details || undefined,
+          calendar: isWork ? 'work' : 'primary',
+        }),
+        signal: AbortSignal.timeout(10000),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok && d.success && d.event) {
+        if (isWork && d.calendarId) cachedWorkCalendarId = d.calendarId;
+        return {
+          saved: true,
+          url: d.event.htmlLink || await fallbackUrl(),
+          event: d.event,
+          calendar: d.calendar || (isWork ? 'Work' : 'primary'),
+          calendarId: d.calendarId || null,
+          colorId: d.colorId || (isWork ? '6' : null),
+        };
+      }
+      console.error('tocal LIFE_CMD error:', d.error || r.status);
+    } catch (e) {
+      console.error('tocal LIFE_CMD failed:', e.message);
+    }
   }
-  const url = 'https://calendar.google.com/calendar/u/0/r/eventedit'
-    + `?text=${encodeURIComponent(title)}`
-    + `&dates=${start}/${end}`
-    + (place ? `&location=${encodeURIComponent(place)}` : '')
-    + (details ? `&details=${encodeURIComponent(details)}` : '');
-  return url;
+
+  return {
+    saved: false,
+    url: await fallbackUrl(),
+    calendar: isWork ? 'Work' : 'primary',
+    colorId: isWork ? '6' : null,
+  };
 }
 
 async function handleItemToCal(req, res) {
@@ -1777,13 +1830,14 @@ async function handleItemToCal(req, res) {
   // Manual path: you had the conversation on the phone, so there is nothing to
   // read and nothing to extract. The form sends the event straight through.
   if (body.date) {
-    const known = await lookupContact(from).catch(() => null);
+    const known = from ? await lookupContact(from).catch(() => null) : null;
     const parts = String(body.parts || '').replace(/\s+/g, ' ').trim();
     // Parts go in the title, not only the notes: the month view shows the
     // title and nothing else, and the whole reason for asking is to see on
     // Sunday night what has to be picked up on Monday morning.
-    const base = (body.title || text || `Job for ${known?.display_name || from}`).slice(0, 150);
-    const url = calendarDraftUrl({
+    const base = (body.title || text || `Job for ${known?.display_name || from || 'client'}`).slice(0, 150);
+    const isWork = body.isWork !== false && body.bucket !== 'life';
+    const booking = await createCalendarBooking({
       title: parts ? `${base} [parts]` : base,
       date: body.date,
       time: body.time || '',
@@ -1794,10 +1848,24 @@ async function handleItemToCal(req, res) {
         `Allowed ${Number(body.durationMins) || 60} minutes.`,
         `Added by hand in Vita Switch${from ? ` — ${known?.display_name || from}` : ''}.`,
       ].join('\n'),
+      isWork,
     });
+    if (booking.saved && typeof body.actionId === 'string' && body.actionId.startsWith('book-')) {
+      const cid = Number(body.actionId.slice(5));
+      if (Number.isInteger(cid) && cid > 0) {
+        await pool.query("UPDATE commitments SET status = 'booked' WHERE id = $1 AND status = 'unbooked'", [cid]).catch(() => {});
+      }
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, manual: true, url,
-                             event: { title: body.title || text, date: body.date, time: body.time || '' } }));
+    res.end(JSON.stringify({
+      ok: true,
+      manual: true,
+      saved: booking.saved,
+      url: booking.url,
+      calendar: booking.calendar,
+      color: booking.colorId === '6' ? 'mango' : null,
+      event: { id: booking.event?.id || null, title: body.title || text, date: body.date, time: body.time || '' },
+    }));
     return;
   }
 
@@ -2395,19 +2463,9 @@ async function handleTopic(req, res, slug) {
 // still open with nothing booked next. Amber in this app means "act on this
 // now", so this is the only place it is earned.
 const ONGOING = new Set(['on_my_way', 'in_progress']);
-const stamp = (date, time, addH = 0) => {
-  const [h, m] = (time || '09:00').split(':').map(Number);
-  const d = new Date(`${date}T00:00:00`);
-  d.setHours(h + addH, m || 0, 0, 0);
-  return `${ymd(d).replace(/-/g, '')}T${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}00`;
-};
-const calendarUrl = (title, date, time, details, location) => {
+const calendarUrl = (title, date, time, details, location, src) => {
   if (!date) return null;
-  return 'https://calendar.google.com/calendar/u/0/r/eventedit'
-    + `?text=${encodeURIComponent(title)}`
-    + `&dates=${stamp(date, time)}/${stamp(date, time, 2)}`
-    + (location ? `&location=${encodeURIComponent(location)}` : '')
-    + (details ? `&details=${encodeURIComponent(details)}` : '');
+  return calendarDraftUrl({ title, date, time: time || '09:00', durationMins: 120, place: location, details, src });
 };
 
 // What the work actually is, in the words the job record already holds. A row
@@ -2449,7 +2507,10 @@ async function nextActions() {
 
   // Whether the calendar can be read at all, so the rows below can say "not in
   // the calendar" only when that has actually been checked.
-  const calDark = await calendarUnreadable(await fetchCalendar().catch(() => ({})));
+  const [calDark, workCalId] = await Promise.all([
+    calendarUnreadable(await fetchCalendar().catch(() => ({}))),
+    getWorkCalendarId().catch(() => null),
+  ]);
 
   // Agreed in a message, absent from the calendar.
   try {
@@ -2518,7 +2579,7 @@ async function nextActions() {
         } : null,
         chat: { kind: 'sms', from: r.who, snippet: r.quote || work },
         where: [phone && phone !== who ? phone : null, place].filter(Boolean).join(' · ') || null,
-        href: calendarUrl(`${work} — ${who}`, when || today, r.when_time, r.quote, place),
+        href: calendarUrl(`${work} — ${who}`, when || today, r.when_time, r.quote, place, workCalId),
         cta: when ? 'add to calendar' : 'pick a day in the calendar',
       });
     }
