@@ -50,6 +50,8 @@ function Row({ t, showTag, onOpen, register, lit, dimmed, onHover }) {
   const k = KINDS[t.kind] || KINDS.email;
   const open = daysOpen(t.firstSeenAt);
   const accent = wireColor(t.bucket);
+  const genericTitle = /^(reply to\b|.*tried to call and i can't see a reply)/i.test(String(t.text || ''));
+  const whoLabel = t.displayName && t.displayName !== t.from ? `${t.displayName} · ${t.from}` : t.from;
   return (
     <motion.button
       type="button" onClick={() => onOpen?.(t)} whileTap={{ scale: 0.99 }}
@@ -74,9 +76,17 @@ function Row({ t, showTag, onOpen, register, lit, dimmed, onHover }) {
                        overflow: 'hidden' }}>{t.text}</span>
         {showTag && <Tag bucket={t.bucket} />}
       </div>
+      {genericTitle && t.snippet && (
+        <div style={{
+          paddingLeft: 14, fontFamily: FONT.sans, fontSize: FS.meta, lineHeight: 1.4,
+          color: C.text2, textTransform: 'none',
+          display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+        }}>{t.snippet}</div>
+      )}
       <div style={{ display: 'flex', gap: SP[2], fontFamily: FONT.mono, fontSize: FS.label,
-                    color: C.text3, textTransform: 'none', paddingLeft: 14 }}>
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.from}</span>
+                    color: C.text3, textTransform: 'none', paddingLeft: 14, minWidth: 0 }}>
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flexShrink: 1, minWidth: 0 }}>{whoLabel}</span>
+        {t.address && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: C.text2, flexShrink: 1, minWidth: 0 }}>· {t.address}</span>}
         {t.when && <span style={{ flex: 'none', color: t.overdue ? C.danger : C.text3 }}>· {t.when}</span>}
         {open >= 2 && <span style={{ flex: 'none', color: C.amber }}>· {open}d</span>}
       </div>

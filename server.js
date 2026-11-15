@@ -1240,15 +1240,28 @@ async function buildCategorizedResponse(summary, categories, scannedAt) {
           const href = t.href || (t.kind === 'job' ? jobUrl(process.env.SWITCHCRAFT_BASE_URL, t.jobId) : null);
           const dRow = directory ? lookupDossierInDir(t, directory) : null;
           const dossier = dRow ? toDossierDto(dRow) : (t.dossier || null);
+          const displayName = dRow?.display_name || t.displayName || null;
+          const address = t.address || dRow?.address || null;
+          let text = t.text;
+          if (phoneLast9(t.from) && typeof text === 'string' && text.includes(t.from)) {
+            if (/^reply to\b/i.test(text) || text.startsWith(`${t.from} tried to call`)) {
+              if (displayName && displayName !== t.from) {
+                text = text.replace(t.from, `${displayName} (${t.from})`);
+              } else if (address) {
+                text = `${text} — ${address}`;
+              }
+            }
+          }
           return {
             ...t,
             id,
+            text,
             ...(href ? { href } : {}),
             ...(dRow?.person_key || t.personKey ? { personKey: dRow?.person_key || t.personKey } : {}),
             ...(dossier ? { dossier } : {}),
-            address: t.address || dRow?.address || null,
+            address,
             phone: t.phone || dRow?.phone || null,
-            displayName: dRow?.display_name || t.displayName || null,
+            displayName,
             firstSeenAt: firstSeen.get(id) || scannedAt,
           };
         })
