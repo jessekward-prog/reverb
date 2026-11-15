@@ -15,7 +15,7 @@ import {
 } from './src/lib/tools.js';
 import { parseExtraction, reconcileStatus, projectCommitments, ymd, msgLine, resolveWhen } from './src/lib/commitments.js';
 import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules,
-         extractAddress, phoneLast9, hasUnrepliedCall,
+         extractAddress, extractContactIntro, phoneLast9, hasUnrepliedCall,
          extractQuoteAmount, canonicalPersonKey, cleanDossierValue, mergeDossierFields,
          parseDossierResponse, formatDossierBlock } from './src/lib/contacts.js';
 import { enrichReplyOwed, jobUrl, looksLikePhone, bookingWindow, calendarDraftUrl } from './src/lib/actionMeta.js';
@@ -1533,8 +1533,12 @@ const AUTOMATED_SNIPPET = /\b(verification code|security code|is your\b.{0,20}\b
 // does not resurrect something already dismissed.
 const callFlagTitle = who => `${who} tried to call and I can't see a reply`;
 
-function replyTitle(kind, who, snippet) {
+function replyTitle(kind, who, snippet, intro = null) {
   if (hasUnrepliedCall(snippet)) return callFlagTitle(who);
+  if (intro?.isDetailsDrop) {
+    const label = intro.name || who;
+    return intro.address ? `Follow up with ${label} — ${intro.address}` : `Follow up with ${label}`;
+  }
   if (kind === 'sms' || kind === 'meta') return `Reply to ${who}`;
   const line = String(snippet || '').replace(/\s+/g, ' ').trim();
   return line ? `${who}: ${line.slice(0, 120)}` : `Reply to ${who}`;
@@ -1578,9 +1582,10 @@ async function collectRawItems() {
   const items = [];
   for (const w of waiting.items || []) {
     if (AUTOMATED_SNIPPET.test(w.snippet || '')) continue;
+    const intro = extractContactIntro(w.snippet);
     items.push({ kind: w.kind || 'sms', from: w.identifier, snippet: w.snippet,
-                 text: replyTitle(w.kind || 'sms', w.identifier, w.snippet),
-                 reply: true, hintBucket: null });
+                 text: replyTitle(w.kind || 'sms', w.identifier, w.snippet, intro),
+                 reply: true, hintBucket: intro.isDetailsDrop ? 'work' : null });
   }
   // record what each source said about itself, for the watchdog
   noteHealth('personal email', email.health || 'ok');
@@ -2613,18 +2618,22 @@ async function learnFromJobs(jobs = []) {
   }
 }
 
-// Fallback: someone texting an address is often the only record of it.
+// Fallback: someone texting an address or self-intro is often the only record of it.
 async function learnFromThreads(threads = []) {
   for (const t of threads) {
     const key = phoneLast9(t.name);
     if (!key) continue;
+    let name = null;
+    let address = null;
     for (const m of (t.messages || [])) {
-      const addr = extractAddress(m.text);
-      if (!addr) continue;
-      await rememberContact({ phone: t.name, address: addr, source: 'chat' })
-        .catch(e => console.error('directory: thread —', e.message));
-      break;
+      const intro = extractContactIntro(m.text);
+      if (!address && intro.address) address = intro.address;
+      if (!name && !m.outbound && intro.name) name = intro.name;
+      if (name && address) break;
     }
+    if (!name && !address) continue;
+    await rememberContact({ phone: t.name, name, address, source: address ? 'chat' : null })
+      .catch(e => console.error('directory: thread —', e.message));
   }
 }
 
@@ -2855,18 +2864,36 @@ async function archiveItemsAndThreads(items = [], threads = []) {
     }
     let foundAddr = null;
     let foundQuote = null;
+    let foundIntro = null;
+    let introIdx = -1;
     for (let i = msgs.length - 1; i >= 0; i--) {
-      if (!foundAddr) foundAddr = extractAddress(msgs[i]?.text);
-      if (!foundQuote) foundQuote = extractQuoteAmount(msgs[i]?.text);
-      if (foundAddr && foundQuote) break;
+      const msg = msgs[i];
+      if (!foundAddr) foundAddr = extractAddress(msg?.text);
+      if (!foundQuote) foundQuote = extractQuoteAmount(msg?.text);
+      if (!foundIntro && !msg?.outbound) {
+        const intro = extractContactIntro(msg?.text);
+        if (intro.name || intro.email || intro.isDetailsDrop) {
+          foundIntro = intro;
+          introIdx = i;
+        }
+      }
+      if (foundAddr && foundQuote && foundIntro) break;
     }
+    const existingDossier = directory?.byKey?.get(pKey);
+    const introUnreplied = !!(foundIntro?.isDetailsDrop && introIdx >= 0 && !msgs.slice(introIdx + 1).some(m => m?.outbound));
+    const resolvedAddr = foundAddr || foundIntro?.address || null;
     await upsertPersonDossier(pKey, {
-      display_name: isPhone ? null : th.name,
+      display_name: foundIntro?.name || (isPhone ? null : th.name),
       phone: isPhone ? th.name : null,
+      email: foundIntro?.email || null,
       channels: ['sms'],
-      address: foundAddr,
-      address_source: foundAddr ? 'chat' : null,
+      address: resolvedAddr,
+      address_source: resolvedAddr ? 'chat' : null,
       quote_estimate: foundQuote,
+      ...(introUnreplied && !existingDossier?.current_stage ? {
+        current_stage: 'New client sent contact details',
+        open_next_step: 'Reply or call back to discuss the job and book a time',
+      } : {}),
     }, directory).catch(e => console.error('archive thread dossier:', e.message));
   }
 
@@ -2932,16 +2959,32 @@ async function archiveItemsAndThreads(items = [], threads = []) {
 
     if (t.kind !== 'job') {
       const combined = `${t.subject || ''} ${t.snippet || ''}`;
-      const addr = extractAddress(combined);
+      const intro = extractContactIntro(combined);
+      const addr = intro.address || extractAddress(combined);
       const quote = extractQuoteAmount(combined);
+      const resolvedEmail = email || intro.email || null;
+      const resolvedName = name || intro.name || (!phoneLast9(t.from) && !email ? t.from : null);
+      const existingDossier = directory?.byKey?.get(pKey);
+      if (t.kind === 'sms' && phoneLast9(t.from) && (intro.name || intro.address)) {
+        await rememberContact({
+          phone: t.from,
+          name: intro.name,
+          address: intro.address,
+          source: intro.address ? 'chat' : null,
+        }).catch(() => {});
+      }
       await upsertPersonDossier(pKey, {
-        display_name: name || (!phoneLast9(t.from) && !email ? t.from : null),
+        display_name: resolvedName,
         phone: t.phone || (t.kind === 'sms' && phoneLast9(t.from) ? t.from : null),
-        email,
+        email: resolvedEmail,
         channels: [t.kind],
         address: addr,
         address_source: addr ? 'chat' : null,
         quote_estimate: quote,
+        ...(intro.isDetailsDrop && !existingDossier?.current_stage ? {
+          current_stage: 'New client sent contact details',
+          open_next_step: 'Reply or call back to discuss the job and book a time',
+        } : {}),
       }, directory).catch(e => console.error('archive item dossier:', e.message));
     }
 
@@ -3540,18 +3583,24 @@ async function nextActions() {
       const at = w.occurred_at ? new Date(w.occurred_at).getTime() : 0;
       if (!at) continue;
       const hours = (Date.now() - at) / 3600000;
-      // Same rule the job photos get: past a month this is a conversation that
-      // ended, not a reply he owes, and left in it would sit at the urgency cap
-      // forever pushing out the ones he can still answer.
-      if (hours < FLOOR_H || hours > 30 * 24) continue;
-      const days = Math.floor(hours / 24);
       const asked = String(w.snippet || '').replace(/\s+/g, ' ').trim();
       if (isEnder(asked)) continue;
+      const intro = extractContactIntro(asked);
+      // Same rule the job photos get: past a month this is a conversation that
+      // ended, not a reply he owes, and left in it would sit at the urgency cap
+      // forever pushing out the ones he can still answer. Details drops bypass
+      // the 12h warm-up so new leads surface right away.
+      if ((!intro.isDetailsDrop && hours < FLOOR_H) || hours > 30 * 24) continue;
+      const days = Math.floor(hours / 24);
       const known = await lookupContact(w.identifier || who).catch(() => null);
       const job = jobFor(w.identifier || who);
       const dRow = dossierFor({ kind: w.kind, from: w.identifier || who, name: who });
-      const mergedKnown = dRow ? { ...(known || {}), display_name: known?.display_name || dRow.display_name, address: known?.address || dRow.address } : known;
-      const displayWho = mergedKnown?.display_name || job?.identifier || who;
+      const mergedKnown = {
+        ...(known || {}),
+        display_name: known?.display_name || dRow?.display_name || intro.name || null,
+        address: known?.address || dRow?.address || intro.address || null,
+      };
+      const displayWho = mergedKnown.display_name || job?.identifier || who;
       if (covered.has(displayWho.toLowerCase())) continue;
       const callFlag = hasUnrepliedCall(asked);
       const meta = enrichReplyOwed({
@@ -3563,26 +3612,31 @@ async function nextActions() {
         today,
         known: mergedKnown,
         job,
-        extractedAddress: extractAddress(asked),
+        extractedAddress: intro.address || extractAddress(asked),
       });
       if (meta.book && dRow?.parts_materials && !meta.book.parts) {
         meta.book.parts = cleanDossierValue(dRow.parts_materials) || '';
       }
+      const baseUrgency = (callFlag || intro.isDetailsDrop) ? 6 : 5;
       out.push({
         id: `owed-${w.kind}-${who.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
         kind: 'reply-owed',
-        badge: callFlag ? 'callback · no reply seen' : null,
+        badge: callFlag
+          ? 'callback · no reply seen'
+          : intro.isDetailsDrop
+            ? 'sent their details · follow up'
+            : null,
         fact: `${w.kind}:${at}`,
         dossier: dRow ? toDossierDto(dRow) : null,
         // Below a client at the same age - work leads - but it still climbs,
         // so someone left a week gets to the top on their own.
-        urgency: Math.min(8, (callFlag ? 6 : 5) + Math.floor(days / 2)),
+        urgency: Math.min(8, baseUrgency + Math.floor(days / 2)),
         at,
         ...meta,
         work: asked ? asked.slice(0, 220) : null,
         detail: callFlag
           ? `${days >= 1 ? `${days} day${days === 1 ? '' : 's'} ago` : 'Yesterday'} on ${w.kind}${w.unread ? ', still unread' : ''}. Reverb only sees texts, not phone calls.`
-          : `Sent the last message ${days >= 1 ? `${days} day${days === 1 ? '' : 's'} ago` : 'yesterday'} on ${w.kind}${w.unread ? ', still unread' : ''}. You have not answered.`,
+          : `${days >= 1 ? `Sent the last message ${days} day${days === 1 ? '' : 's'} ago` : hours < 12 ? 'Sent details recently' : 'Sent the last message yesterday'} on ${w.kind}${w.unread ? ', still unread' : ''}. You have not answered.`,
       });
     }
   } catch (e) { console.error('actions: waiting —', e.message); }

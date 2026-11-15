@@ -34,15 +34,39 @@ console.log('contacts.test.js: all assertions passed');
 // ── address extraction ──────────────────────────────────────
 // Feeds the calendar's location field and the saved contact address.
 // Synthetic addresses only: this repo is public.
-import { extractAddress, phoneLast9 } from '../src/lib/contacts.js';
+import { extractAddress, extractContactIntro, phoneLast9 } from '../src/lib/contacts.js';
 
 assert.strictEqual(extractAddress('do the rest of the electrical at 12 Sample Drive next week'), '12 Sample Drive');
 assert.strictEqual(extractAddress('address is 3/27 Example Street, Belmont VIC 3216'), '3/27 Example Street, Belmont VIC 3216');
 assert.strictEqual(extractAddress('meet at 5 Short Rd, Lara'), '5 Short Rd, Lara');
+assert.strictEqual(extractAddress('Hello, previous work at 16 Example Street East Geelong. Small job'), '16 Example Street East Geelong');
+assert.strictEqual(extractAddress("Hi it's \nJane Smith\n6 Example Drive \nWaurn Ponds \n0400111222"), '6 Example Drive Waurn Ponds');
 // A loose pattern would turn any of these into an address.
 assert.strictEqual(extractAddress('that will be 450 dollars all up'), null);
 assert.strictEqual(extractAddress('ill be there at 9am on the 14th'), null);
 assert.strictEqual(extractAddress('call me on 0400 111 222'), null);
+
+assert.deepStrictEqual(
+  extractContactIntro("Hi it's \nJane Smith\n6 Example Drive \nWaurn Ponds \n0400111222\njane.smith@example.com\n👍"),
+  {
+    name: 'Jane Smith',
+    address: '6 Example Drive Waurn Ponds',
+    email: 'jane.smith@example.com',
+    phone: '0400111222',
+    isDetailsDrop: true,
+  }
+);
+assert.deepStrictEqual(
+  extractContactIntro('Hey its Sam Taylor from 14 High Street Belmont'),
+  {
+    name: 'Sam Taylor',
+    address: '14 High Street Belmont',
+    email: null,
+    phone: null,
+    isDetailsDrop: true,
+  }
+);
+assert.strictEqual(extractContactIntro('Yes it is fine thanks').isDetailsDrop, false);
 
 // Matched on the last 9 digits, so any AU formatting resolves to one contact.
 assert.strictEqual(phoneLast9('+61 400 111 222'), phoneLast9('0400 111 222'));

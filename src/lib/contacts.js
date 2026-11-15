@@ -90,20 +90,120 @@ export const phoneLast9 = v => {
 
 // Deliberately tight: a street number, one to four name words, a street type,
 // then optional suburb/state/postcode. A loose pattern turns any number in a
-// sentence into an address.
+// sentence into an address, while stop-words prevent "12 Sample Drive next
+// week" from swallowing "next week" without cutting off "Waurn Ponds" or
+// "East Geelong". State codes require trailing word boundaries so "Waurn" is
+// never truncated to "Wa".
 const STREET = 'st|street|rd|road|ave|avenue|dr|drive|ct|court|cres|crescent|pde|parade|pl|place|way|lane|ln|tce|terrace|blvd|hwy|highway';
-const ADDRESS_RE = new RegExp(
-  `\\b\\d{1,5}[a-z]?(?:\\/\\d{1,5})?\\s+(?:[a-z][a-z'\\-]*\\s+){1,4}(?:${STREET})\\b` +
-  // A suburb only counts after a comma: without that, "12 Sample Drive next
-  // week" swallowed "next week" as the suburb.
-  `(?:,\\s*[a-z][a-z'\\-]*(?:\\s+[a-z][a-z'\\-]*){0,2})?` +
-  `(?:,?\\s+(?:vic|nsw|qld|sa|wa|tas|nt|act))?(?:,?\\s+\\d{4})?`, 'i');
+const CORE_ADDRESS_RE = new RegExp(
+  `\\b\\d{1,5}[a-z]?(?:\\/\\d{1,5})?\\s+(?:[a-z][a-z'\\-]*\\s+){1,4}(?:${STREET})\\b`,
+  'i'
+);
+const SUBURB_STOP = new Set([
+  'next', 'this', 'last', 'on', 'at', 'in', 'for', 'from', 'to', 'by', 'with',
+  'and', 'or', 'but', 'if', 'when', 'while', 'before', 'after', 'around', 'about',
+  'today', 'tonight', 'tomorrow', 'yesterday', 'mon', 'tue', 'wed', 'thu', 'fri',
+  'sat', 'sun', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday',
+  'sunday', 'morning', 'afternoon', 'evening', 'week', 'month', 'year',
+  'please', 'plz', 'pls', 'thanks', 'thank', 'cheers', 'ta', 'is', 'was', 'are',
+  'were', 'has', 'have', 'had', 'can', 'could', 'will', 'would', 'should', 'we',
+  'i', 'you', 'my', 'our', 'the', 'a', 'an', 'it', 'its', 'that', 'there', 'here',
+  'hi', 'hey', 'hello', 'need', 'needs', 'needed', 'looking', 'want', 'wants',
+  'quote', 'job', 'work', 'install', 'replace', 'fix', 'check', 'asap', 'soon',
+  'vic', 'nsw', 'qld', 'sa', 'wa', 'tas', 'nt', 'act',
+]);
 
 export function extractAddress(text) {
-  const m = String(text || '').match(ADDRESS_RE);
+  const src = String(text || '');
+  const m = src.match(CORE_ADDRESS_RE);
   if (!m) return null;
-  const hit = m[0].replace(/\s+/g, ' ').trim().replace(/[.,;]$/, '');
+  const head = m[0].replace(/\s+/g, ' ').trim();
+  let rest = src.slice(m.index + m[0].length);
+  const tailParts = [];
+
+  const commaMatch = rest.match(/^(\s*,\s*[a-z][a-z'\-]*(?:\s+[a-z][a-z'\-]*){0,2})/i);
+  if (commaMatch) {
+    tailParts.push(commaMatch[1]);
+    rest = rest.slice(commaMatch[0].length);
+  } else {
+    const nextChunk = rest.match(/^([ \t]*\r?\n(?![ \t]*\r?\n)|[ \t]+)([^.!?;,\r\n]*)/);
+    if (nextChunk) {
+      const words = [];
+      for (const tok of nextChunk[2].trim().split(/\s+/).filter(Boolean)) {
+        if (words.length >= 2) break;
+        if (!/^[a-z][a-z'\-]*$/i.test(tok)) break;
+        if (SUBURB_STOP.has(tok.toLowerCase())) break;
+        words.push(tok);
+      }
+      if (words.length) {
+        tailParts.push(` ${words.join(' ')}`);
+        const consumedLen = nextChunk[2].indexOf(words[words.length - 1]) + words[words.length - 1].length;
+        rest = rest.slice(nextChunk[1].length + consumedLen);
+      }
+    }
+  }
+
+  const stMatch = rest.match(/^,?\s+\b(vic|nsw|qld|sa|wa|tas|nt|act)\b/i);
+  if (stMatch) {
+    tailParts.push(stMatch[0]);
+    rest = rest.slice(stMatch[0].length);
+  }
+  const pcMatch = rest.match(/^,?\s+\b(\d{4})\b/);
+  if (pcMatch) tailParts.push(pcMatch[0]);
+
+  const hit = (head + tailParts.join('')).replace(/\s+/g, ' ').trim().replace(/[.,;]$/, '');
   return hit.length >= 10 && hit.length <= 120 ? hit : null;
+}
+
+const INTRO_NAME_STOP = new Set([
+  'jesse', 'me', 'you', 'we', 'they', 'he', 'she', 'it', 'i', 'a', 'an', 'the',
+  'this', 'that', 'these', 'those', 'here', 'there', 'just', 'already', 'still',
+  'back', 'again', 'only', 'really', 'very', 'too', 'so', 'not', 'no', 'yes',
+  'yeah', 'yep', 'nope', 'sure', 'sorry', 'thanks', 'thank', 'cheers', 'please',
+  'plz', 'pls', 'ok', 'okay', 'fine', 'good', 'great', 'urgent', 'emergency',
+  'important', 'broken', 'tripping', 'dead', 'leaking', 'sparking', 'buzzing', 'flashing',
+  'from', 'at', 'of', 'in', 'on', 'for', 'to', 'by', 'with', 'and', 'or', 'but',
+  'about', 'regarding', 'home', 'house', 'work', 'working', 'job', 'jobs', 'switch',
+  'craft', 'switchcraft', 'power', 'light', 'lights', 'fan', 'fans', 'quote',
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  'today', 'tomorrow', 'yesterday',
+]);
+const titleCase = s => s.replace(/\b([a-z])/g, (_, c) => c.toUpperCase());
+
+// Parse self-introduction and contact-details SMS messages such as
+// "Hi it's Jane Smith\n6 Example Drive Waurn Ponds\n0400111222\njane@example.com"
+// or "Hey its Sam Taylor from 14 High Street Belmont".
+export function extractContactIntro(text) {
+  const src = String(text || '').replace(/\r/g, '');
+  const address = extractAddress(src);
+  const email = (src.match(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i) || [])[0]?.toLowerCase() || null;
+  const phone = (src.match(/\b(?:04\d{2}[\s-]?\d{3}[\s-]?\d{3}|04\d{8}|\+?61\s?4\d{2}[\s-]?\d{3}[\s-]?\d{3})\b/) || [])[0]?.replace(/\s+/g, '') || null;
+
+  let name = null;
+  const introRe = /(?:^|\b)(?:hi|hey|hello|g'?day|morning|afternoon|evening)?[\s,!.:;-]*(?:it'?s|its|this\s+is|my\s+name\s+is|i'?m|i\s+am)\s+((?!(?:from|at|of|in|on|for|here)\b)[A-Za-z][A-Za-z'\-]+(?:\s+(?!(?:from|at|of|in|on|for|here)\b)[A-Za-z][A-Za-z'\-]+){0,2})(?=\s*(?:$|\n|[,.!?;]|\b(?:from|at|of|in|on|here)\b|\d))/gi;
+  for (const m of src.matchAll(introRe)) {
+    const raw = m[1].trim().replace(/\s+/g, ' ');
+    const words = raw.split(' ');
+    if (words.some(w => INTRO_NAME_STOP.has(w.toLowerCase()))) continue;
+    const hasCaps = words.every(w => /^[A-Z]/.test(w));
+    if (!hasCaps && !address) continue;
+    name = hasCaps ? raw : titleCase(raw);
+    break;
+  }
+  if (!name && address) {
+    const firstLine = src.trim().split('\n')[0]?.trim() || '';
+    const lineMatch = firstLine.match(/^([A-Z][a-z'\-]+\s+[A-Z][a-z'\-]+)$/);
+    if (lineMatch && !lineMatch[1].split(' ').some(w => INTRO_NAME_STOP.has(w.toLowerCase()))) {
+      name = lineMatch[1];
+    }
+  }
+
+  const isDetailsDrop = Boolean(
+    (name && address)
+    || (address && (email || phone))
+    || (name && (email || /\b(?:from|at)\s+\d{1,5}\b/i.test(src)))
+  );
+  return { name, address, email, phone, isDetailsDrop };
 }
 
 const MISSED_CALL_RE = /\b(?:called\.\s*No\s+Voicemail\s+message\s+was\s+left|free\s+call\s+147|missed\s+(?:a\s+)?call)\b/i;
