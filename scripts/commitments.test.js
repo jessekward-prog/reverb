@@ -265,3 +265,124 @@ const t2 = parseExtraction('0400 555 666 :: job :: Thursday :: Thursday would be
 assert.strictEqual(t2[0]?.date, '2026-11-12');
 assert.strictEqual(t2[0]?.time, null);
 console.log('commitments.test.js: time from the thread passed');
+
+// ── unconfirmed offers, asks, rejections and untimed messages must not become commitments ──
+const SUN = new Date(2026, 10, 15, 17, 54);
+// Exact screenshot regression: client asked availability, Jesse offered Friday next week, client has NOT replied.
+const judithOffer = {
+  name: '0403 253 735',
+  messages: [
+    { outbound: true,  at: '2026-11-15T15:37', text: 'New note added by Jesse: Hi Judith, 2 lights replaced with ceiling fans, $300 plus gst' },
+    { outbound: false, at: '2026-11-15T15:40', text: 'Thankyou, what sort of availability do you have?' },
+    { outbound: true,  at: '2026-11-15T15:45', text: "I'm free on Friday next week at 9am if you are around." },
+  ],
+};
+assert.strictEqual(
+  parseExtraction(
+    "0403 253 735 :: 2 lights replaced with ceiling fans :: Friday next week at 9am :: I'm free on Friday next week at 9am if you are around.",
+    [judithOffer],
+    SUN,
+  ).length,
+  0,
+  'one-sided availability offer with no reply must not count as agreed',
+);
+
+// Same offer, followed by a client rejection: still not agreed.
+const judithDeclined = {
+  name: '0403 253 735',
+  messages: [
+    ...judithOffer.messages,
+    { outbound: false, at: '2026-11-15T16:10', text: "Sorry we're away that day, won't work for us." },
+  ],
+};
+assert.strictEqual(
+  parseExtraction(
+    "0403 253 735 :: ceiling fans :: Friday next week at 9am :: I'm free on Friday next week at 9am if you are around.",
+    [judithDeclined],
+    SUN,
+  ).length,
+  0,
+  'declined offer must not count as agreed',
+);
+
+// Same offer once the client actually agrees: NOW it extracts cleanly.
+const judithConfirmed = {
+  name: '0403 253 735',
+  messages: [
+    ...judithOffer.messages,
+    { outbound: false, at: '2026-11-15T16:10', text: 'Yes Friday at 9am works great!' },
+  ],
+};
+const agreedJudith = parseExtraction(
+  "0403 253 735 :: ceiling fans :: Friday next week at 9am :: I'm free on Friday next week at 9am if you are around.",
+  [judithConfirmed],
+  SUN,
+);
+assert.strictEqual(agreedJudith.length, 1);
+assert.strictEqual(agreedJudith[0].date, '2026-11-20');
+assert.strictEqual(agreedJudith[0].time, '09:00');
+
+// Client requests/questions that Jesse has not replied to yet, plus timeless fault reports.
+const unansweredRequests = [
+  {
+    name: 'Patrick Murpheys',
+    messages: [
+      { outbound: false, at: '2026-11-15T10:00', text: 'Hey Jesse, could you please make time Tuesday next week for Murphys. Need that power outlet looked at.' },
+    ],
+  },
+  {
+    name: '0408 463 948',
+    messages: [
+      { outbound: false, at: '2026-11-15T11:00', text: 'Could we make it at 1? There wont be anyone home till then.' },
+    ],
+  },
+  {
+    name: 'ange aspenall',
+    messages: [
+      { outbound: false, at: '2026-11-15T12:00', text: 'power point in the office stopped working' },
+    ],
+  },
+];
+assert.strictEqual(
+  parseExtraction(
+    'Patrick Murpheys :: power outlet :: Tuesday next week :: Hey Jesse, could you please make time Tuesday next week for Murphys. Need that power outlet looked at.',
+    unansweredRequests,
+    SUN,
+  ).length,
+  0,
+);
+assert.strictEqual(
+  parseExtraction(
+    '0408 463 948 :: job :: at 1 :: Could we make it at 1? There wont be anyone home till then.',
+    unansweredRequests,
+    SUN,
+  ).length,
+  0,
+);
+assert.strictEqual(
+  parseExtraction(
+    'ange aspenall :: office power point ::  :: power point in the office stopped working',
+    unansweredRequests,
+    SUN,
+  ).length,
+  0,
+);
+
+// Unconditional Jesse confirmation replying to a client's time proposal DOES count cleanly.
+const clientAskedJesseLockedIn = {
+  name: '0400 777 888',
+  messages: [
+    { outbound: false, at: '2026-11-15T10:00', text: 'Can you come Tuesday next week at 9am for the switchboard?' },
+    { outbound: true,  at: '2026-11-15T10:15', text: 'Yep see you Tuesday next week at 9am.' },
+  ],
+};
+const lockedIn = parseExtraction(
+  '0400 777 888 :: switchboard :: Tuesday next week at 9am :: Yep see you Tuesday next week at 9am.',
+  [clientAskedJesseLockedIn],
+  SUN,
+);
+assert.strictEqual(lockedIn.length, 1);
+assert.strictEqual(lockedIn[0].date, '2026-11-17');
+assert.strictEqual(lockedIn[0].time, '09:00');
+
+console.log('commitments.test.js: agreement/offer boundary checks passed');

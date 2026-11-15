@@ -1888,9 +1888,9 @@ async function handleItemToCal(req, res) {
 
 ${convo}
 
-If a specific job, appointment, or meeting has been AGREED here, extract it as JSON:
+Only if a specific job, appointment, or meeting has actually been AGREED by both sides (not an unanswered availability offer like "I'm free Friday if you are around"), extract it as JSON:
 {"found":true,"title":"short event title","date":"YYYY-MM-DD","time":"HH:MM 24h or empty if none","durationMins":60}
-Resolve relative dates ("Friday", "Tuesday next week", "tomorrow") against today. If NOTHING concrete was agreed, respond {"found":false}. Respond with ONLY the JSON.`;
+Resolve relative dates ("Friday", "Tuesday next week", "tomorrow") against today. If NOTHING concrete was agreed yet, respond {"found":false}. Respond with ONLY the JSON.`;
     const ev = parseJsonFence(await askModel(prompt, 400), { found: false });
     if (!ev || !ev.found || !ev.date) {
       res.writeHead(200); res.end(JSON.stringify({ error: 'no concrete time was agreed in this conversation' })); return;
@@ -1937,16 +1937,16 @@ function commitmentPrompt(threads, today, weekday) {
 
   return `Today is ${weekday} ${today}. Below are recent text conversations. "me" is Jesse, an electrician; "them" is the customer.
 
-Find every point where WORK or an APPOINTMENT was actually agreed, requested or scheduled. Output ONE LINE per commitment, exactly four fields separated by " :: ", and nothing else:
+Find ONLY appointments or work where BOTH sides have actually AGREED on a day/time or confirmed a booking. Do NOT include one-sided availability offers with no confirmation yet (e.g. "I'm free on Friday if you are around", "Does Tuesday work?", "How about Thursday?"), unanswered requests ("What sort of availability do you have?", "Could you please make time Tuesday?"), or fault reports without an agreed time. If the client hasn't agreed yet, leave it out. Output ONE LINE per confirmed agreement, exactly four fields separated by " :: ", and nothing else:
 
 WHO :: WHAT :: WHEN :: QUOTE
 
 WHO   - the conversation heading, copied exactly as it appears after the dash
 WHAT  - the work itself, a few words (e.g. "ceiling fan installation")
-WHEN  - the timing words COPIED VERBATIM from the thread ("Thursday", "tomorrow", "next week", "9am"). Leave empty if no timing was stated.
-QUOTE - the one message line where the work was agreed or asked for, COPIED VERBATIM
+WHEN  - the agreed timing words COPIED VERBATIM from the thread ("Thursday", "tomorrow", "next week", "9am"). Do not output lines with no timing words.
+QUOTE - the one message line confirming or settling the booking, COPIED VERBATIM
 
-Copy WHEN and QUOTE exactly as they appear, without the [date] in front of each line - anything you reword or invent is discarded. Do not work out dates yourself. If a job was later called off, rescheduled or already done in the thread, leave out the old arrangement and give only the latest one. Ignore chit-chat, thanks, deliveries and parcel notices. If you are unsure something is work, leave it out. No numbering, no headings, no commentary.
+Copy WHEN and QUOTE exactly as they appear, without the [date] in front of each line - anything you reword or invent is discarded. Do not work out dates yourself. If a job was later called off, rescheduled or already done in the thread, leave out the old arrangement and give only the latest one. Ignore chit-chat, thanks, deliveries, parcel notices, and unconfirmed proposals. If you are unsure both sides agreed, leave it out. No numbering, no headings, no commentary.
 
 CONVERSATIONS:
 ${convos}`;
@@ -2005,7 +2005,7 @@ async function refreshCommitments() {
       WHERE status <> 'superseded' AND NOT (source_thread = ANY($1))`, [names]);
   for (const r of aged) {
     const day = r.when_date ? ymd(r.when_date) : r.when_text ? resolveWhen(r.when_text, r.first_seen_at).date : null;
-    if (day && day < today) supersede.push(r.id);
+    if ((!r.when_date && !r.when_text) || (day && day < today)) supersede.push(r.id);
   }
   if (supersede.length) {
     await pool.query(`UPDATE commitments SET status='superseded', last_seen_at=NOW() WHERE id = ANY($1)`, [supersede]);

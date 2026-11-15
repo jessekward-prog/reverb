@@ -83,7 +83,7 @@ export const UNBOOKED_JOBS_TOOL = {
   type: 'function',
   function: {
     name: 'get_unbooked_jobs',
-    description: "Reads recent text conversations in full (both sides) and pairs them with the calendar, to spot work agreed in a message but never booked - including jobs the user CONFIRMED themselves (where the user sent the last message). Use for \"are there any jobs I haven't put in my calendar\", \"what have I agreed to that isn't booked\", \"did I miss scheduling anything\", \"what did I book in for Thursday but forgot to add to my calendar\", \"what work did I agree to this week\".",
+    description: "Reads recent text conversations in full (both sides) and pairs them with the calendar, to spot work both sides agreed on in a message but never booked - including jobs the user CONFIRMED themselves (where the user confirmed what the client proposed; never include one-sided offers where the user only offered availability and got no reply). Use for \"are there any jobs I haven't put in my calendar\", \"what have I agreed to that isn't booked\", \"did I miss scheduling anything\", \"what did I book in for Thursday but forgot to add to my calendar\", \"what work did I agree to this week\".",
     parameters: {
       type: 'object',
       properties: {
@@ -423,7 +423,7 @@ export async function getUnbookedJobs({ days_back = 14 } = {}) {
 
   const now = new Date();
   const today = `${now.toLocaleDateString('en-AU', { weekday: 'long' })} ${ymd(now)}`;
-  const text = `Today is ${today}. Below are recent text conversations in full (me = the user, them = the other person, each line prefixed with the day it was sent), then the calendar from ${from} to ${to}. Find where work or an appointment was actually agreed or requested - a day or time settled on ("Thursday works", "see you at lunch"), a job someone asked for - and say which have NO matching calendar entry. Resolve relative days ("Thursday", "tomorrow") against the day that message was SENT, not today, and skip anything whose day has already passed. Quote the message verbatim and name who it is with. Ignore chit-chat, thanks and anything already on the calendar. If you are not sure a message is a job, leave it out.
+  const text = `Today is ${today}. Below are recent text conversations in full (me = the user, them = the other person, each line prefixed with the day it was sent), then the calendar from ${from} to ${to}. Find ONLY where work or an appointment was mutually AGREED by both sides - a day or time both people settled on ("Thursday works", "see you at lunch"), NOT one-sided availability offers ("I'm free Friday if you're around") or unanswered requests ("what sort of availability do you have?", "could you come Tuesday?") - and say which agreed jobs have NO matching calendar entry. Resolve relative days ("Thursday", "tomorrow") against the day that message was SENT, not today, and skip anything whose day has already passed. Quote the message verbatim and name who it is with. Ignore chit-chat, thanks and anything already on the calendar. If you are not sure both sides agreed on a job, leave it out.
 
 CONVERSATIONS (oldest line first within each):
 ${msgBlock}

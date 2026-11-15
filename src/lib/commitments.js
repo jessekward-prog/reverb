@@ -222,6 +222,28 @@ export function msgLine(m) {
   return `${stamp}${m.outbound ? 'me' : 'them'}: ${String(m.text || '').replace(/\s+/g, ' ').slice(0, 200)}`;
 }
 
+// One-sided offers or unanswered asks that are NOT yet an agreement when the
+// other party hasn't replied afterwards.
+const TENTATIVE_OFFER = /\?|\b(?:i'?m|i am|we'?re|we are)?\s*(?:free|available)\b|\bif\s+(?:you|that|it)\b|\blet me know\b|\bdoes\s+.+\s*(?:work|suit)\b|\b(?:can|could|shall|would)\s+(?:we|i|you)\b|\b(?:how|what)\s+about\b|\bshould be good\b|\bmaybe\b|\bif you(?:'re| are)? around\b/i;
+const INBOUND_ASK = /\?|\b(?:could|can|would)\s+you\b|\bwhat\s+(?:sort of\s+)?availability\b|\bare\s+you\s+(?:free|available)\b/i;
+const DECLINED_AFTER = /\b(?:can'?t do|cannot do|won'?t work|doesn'?t work|doesn'?t suit|no good|not around|i'?m away|out of town|never ?mind|call off|cancelled)\b/i;
+
+function isAgreedInThread(messages = [], mi) {
+  if (mi < 0) return false;
+  const m = messages[mi];
+  const earlier = messages.slice(0, mi);
+  const later = messages.slice(mi + 1);
+  if (m.outbound) {
+    const replies = later.filter(r => !r.outbound);
+    if (replies.length) return !replies.every(r => DECLINED_AFTER.test(norm(r.text)));
+    if (TENTATIVE_OFFER.test(String(m.text || ''))) return false;
+    return earlier.some(r => !r.outbound);
+  }
+  const myReplies = later.filter(r => r.outbound);
+  if (!myReplies.length && INBOUND_ASK.test(String(m.text || ''))) return false;
+  return true;
+}
+
 // Parse the model's line output. Line-based, not JSON, because gemma is
 // unreliable at strict JSON (see Agentic-LM-Pipeline-Pattern).
 //   WHO :: WHAT :: WHEN :: QUOTE
@@ -266,7 +288,13 @@ export function parseExtraction(raw, threads, ref = new Date()) {
 
     // Weekdays resolve from when the quoted message was SENT, not from now.
     const q = norm(quote);
-    const sent = atDate((thread.messages || []).find(m => norm(m.text).includes(q))?.at) || ref;
+    const msgs = thread.messages || [];
+    let mi = -1;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (norm(msgs[i].text).includes(q)) { mi = i; break; }
+    }
+    if (!isAgreedInThread(msgs, mi)) continue;
+    const sent = atDate(msgs[mi]?.at) || ref;
 
     // 3. the timing: whichever remaining field actually reads as one, else
     //    the quote itself ("Let's do Thursday this week! ... 9am").
@@ -278,11 +306,14 @@ export function parseExtraction(raw, threads, ref = new Date()) {
         whenText = f === quote ? '' : f; when = r; break;
       }
     }
+    // Fault descriptions with no date or timing window at all do not belong in
+    // the calendar commitments ledger; unanswered texts stay in reply-owed.
+    if (!when.date && !['vague', 'ambiguous', 'day-of-month conflict'].includes(when.reason)) continue;
     // "Yep Wednesday is good" agrees to a time said in another message
     // ("Wednesday... Maybe 9am"). Take the latest time the thread pins to
     // that same day, the quote first.
     if (when.date && !when.time) {
-      const said = [{ text: quote, at: null }, ...(thread.messages || []).slice().reverse()];
+      const said = [{ text: quote, at: null }, ...msgs.slice().reverse()];
       for (const m of said) {
         const r = resolveWhen(m.text, atDate(m.at) || sent, { strict: true });
         if (r.time && (r.date === when.date || (m.at === null && !r.date))) { when.time = r.time; break; }
