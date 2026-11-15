@@ -16,6 +16,7 @@ import {
 import { parseExtraction, reconcileStatus, projectCommitments, ymd, msgLine, resolveWhen } from './src/lib/commitments.js';
 import { normalizeIdentifier, upsertContact, deriveTier, signalContact, hasMoneyFlag, matchRules,
          extractAddress, phoneLast9, hasUnrepliedCall } from './src/lib/contacts.js';
+import { enrichReplyOwed, jobUrl, looksLikePhone } from './src/lib/actionMeta.js';
 
 const { Pool } = pg;
 
@@ -1067,7 +1068,8 @@ async function buildCategorizedResponse(summary, categories, scannedAt) {
       items: c.items
         .map(t => {
           const id = workItemId(t);
-          return { ...t, id, firstSeenAt: firstSeen.get(id) || scannedAt };
+          const href = t.href || (t.kind === 'job' ? jobUrl(process.env.SWITCHCRAFT_BASE_URL, t.jobId) : null);
+          return { ...t, id, ...(href ? { href } : {}), firstSeenAt: firstSeen.get(id) || scannedAt };
         })
         .filter(t => !doneSet.has(t.id)),
     }))
@@ -1403,6 +1405,7 @@ async function collectRawItems() {
     const title = (todo.length ? todo.join(' · ') : desc) || 'job with no description';
     items.push({ kind: 'job', from: j.identifier, snippet: desc, when: j.when,
                  status: j.status, overdue: j.overdue, jobId: j.id,
+                 href: jobUrl(process.env.SWITCHCRAFT_BASE_URL, j.id),
                  address: j.address, phone: j.phone, business: j.business,
                  preferredDays: j.preferredDays, timeline: j.timeline,
                  tasks: j.tasks, noteCount: j.noteCount, photoCount: j.photoCount,
@@ -2113,21 +2116,30 @@ async function handleTextSend(req, res) {
   // Preferred path: type it into the logged-in Messages session through the
   // bridge. It needs no webhook, and the message lands in the real thread so
   // the conversation stays in one place.
-  try {
-    const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/send`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
-      body: JSON.stringify({ channel, contact: who || number, text, send: true }),
-      signal: AbortSignal.timeout(120000),
-    });
-    const d = await r.json();
-    if (d.sent) {
-      console.log(`sent via ${channel} to ${d.thread}`);
-      res.writeHead(200); res.end(JSON.stringify({ ok: true, via: channel, thread: d.thread })); return;
+  const norm = s => String(s || '').replace(/\s+/g, '').toLowerCase();
+  const candidates = [];
+  for (const c of [who, number]) {
+    if (c && !candidates.some(x => norm(x) === norm(c))) candidates.push(c);
+  }
+  for (const contact of candidates) {
+    try {
+      const r = await fetch(`${process.env.BRIDGE_BASE_URL}/api/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Service-Token': process.env.BRIDGE_SERVICE_TOKEN },
+        body: JSON.stringify({ channel, contact, text, send: true }),
+        signal: AbortSignal.timeout(120000),
+      });
+      const d = await r.json();
+      if (d.sent) {
+        console.log(`sent via ${channel} to ${d.thread}`);
+        res.writeHead(200); res.end(JSON.stringify({ ok: true, via: channel, thread: d.thread })); return;
+      }
+      console.error(`${channel} send did not go through:`, d.error || JSON.stringify(d));
+      if (r.status !== 404) break;
+    } catch (e) {
+      console.error(`${channel} send failed:`, e.message);
+      break;
     }
-    console.error(`${channel} send did not go through:`, d.error || JSON.stringify(d));
-  } catch (e) {
-    console.error(`${channel} send failed:`, e.message);
   }
 
   // Fallback: the MacroDroid webhook switch-craft uses. Needs a real number.
@@ -2499,6 +2511,12 @@ async function nextActions() {
           date: when || today, time: r.when_time || '09:00',
           location: place || '', kind: 'sms', from: r.who,
         },
+        phone: phone || null,
+        reply: (phone || r.who) ? {
+          channel: 'sms', to: phone || r.who, name: who, kind: 'sms',
+          text: work, snippet: r.quote || work,
+        } : null,
+        chat: { kind: 'sms', from: r.who, snippet: r.quote || work },
         where: [phone && phone !== who ? phone : null, place].filter(Boolean).join(' · ') || null,
         href: calendarUrl(`${work} — ${who}`, when || today, r.when_time, r.quote, place),
         cta: when ? 'add to calendar' : 'pick a day in the calendar',
@@ -2516,6 +2534,25 @@ async function nextActions() {
     address: j.address || null,
     via: null,
   });
+  const jobExtras = (j, snippet, allowBook = true) => {
+    const text = jobWork(j) || j.jobType || j.identifier;
+    return {
+      phone: j.phone || null,
+      reply: looksLikePhone(j.phone) ? {
+        channel: 'sms', to: j.phone, name: j.identifier, kind: 'job',
+        text, snippet: snippet || text,
+      } : null,
+      ...(allowBook ? {
+        book: {
+          title: `${text} — ${j.identifier}`.slice(0, 180),
+          date: j.scheduledDate || today,
+          time: j.scheduledTime || '09:00',
+          location: j.address || '', kind: 'job', from: j.identifier,
+        },
+      } : {}),
+      chat: { kind: 'job', from: j.identifier, snippet: snippet || text },
+    };
+  };
   for (const j of jobs) {
     const href = `${process.env.SWITCHCRAFT_BASE_URL}/admin/jobs/${j.id}`;
 
@@ -2553,6 +2590,7 @@ async function nextActions() {
           replied ? 'You have not answered since.' : 'You have never answered on this job.',
         ].join(' '),
         quote: said ? said.slice(0, 180) : null,
+        ...jobExtras(j, said || jobWork(j)),
         href, cta: 'answer them on the job',
       });
     }
@@ -2570,6 +2608,7 @@ async function nextActions() {
           person: person(j),
           work: jobWork(j),
           detail: `Asked for an estimate ${days} day${days === 1 ? '' : 's'} ago and nothing has gone out. It stays here until the job is marked quoted.`,
+          ...jobExtras(j, jobWork(j)),
           href, cta: 'send the estimate',
         });
       }
@@ -2588,6 +2627,7 @@ async function nextActions() {
         title: `Invoice ${j.identifier}`,
         detail: `${j.when}. If it is finished, invoice it — if it is not, mark it ongoing.`,
         work: jobWork(j), where: jobWhere(j),
+        ...jobExtras(j, jobWork(j) || j.when),
         href, cta: 'open the job',
       });
     } else if (ongoing && (past || !j.scheduledDate)) {
@@ -2606,6 +2646,7 @@ async function nextActions() {
           date: today, time: j.scheduledTime || '09:00',
           location: j.address || '', kind: 'job', from: j.identifier,
         },
+        ...jobExtras(j, jobWork(j) || j.when, false),
         href, cta: 'open the job',
       });
     }
@@ -2646,7 +2687,22 @@ async function nextActions() {
       const days = Math.floor(hours / 24);
       const asked = String(w.snippet || '').replace(/\s+/g, ' ').trim();
       if (isEnder(asked)) continue;
+      const known = await lookupContact(w.identifier || who).catch(() => null);
+      const job = jobFor(w.identifier || who);
+      const displayWho = known?.display_name || job?.identifier || who;
+      if (covered.has(displayWho.toLowerCase())) continue;
       const callFlag = hasUnrepliedCall(asked);
+      const meta = enrichReplyOwed({
+        w,
+        who,
+        displayWho,
+        title: callFlag ? callFlagTitle(displayWho) : displayWho,
+        asked,
+        today,
+        known,
+        job,
+        extractedAddress: extractAddress(asked),
+      });
       out.push({
         id: `owed-${w.kind}-${who.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
         kind: 'reply-owed',
@@ -2656,13 +2712,11 @@ async function nextActions() {
         // so someone left a week gets to the top on their own.
         urgency: Math.min(8, (callFlag ? 6 : 5) + Math.floor(days / 2)),
         at,
-        title: callFlag ? callFlagTitle(who) : who,
-        person: { name: who, phone: null, address: null, via: null },
+        ...meta,
         work: asked ? asked.slice(0, 220) : null,
         detail: callFlag
           ? `${days >= 1 ? `${days} day${days === 1 ? '' : 's'} ago` : 'Yesterday'} on ${w.kind}${w.unread ? ', still unread' : ''}. Reverb only sees texts, not phone calls.`
           : `Sent the last message ${days >= 1 ? `${days} day${days === 1 ? '' : 's'} ago` : 'yesterday'} on ${w.kind}${w.unread ? ', still unread' : ''}. You have not answered.`,
-        cta: null,
       });
     }
   } catch (e) { console.error('actions: waiting —', e.message); }
@@ -2675,7 +2729,8 @@ async function nextActions() {
       id: `source-${source}`, kind: 'source-down', urgency: 9,
       title: `Reverb cannot read ${source}`,
       detail: `${h.state}. Until that is fixed this list is incomplete — open the browser tab and sign in again.`,
-      cta: null,
+      browserSource: source,
+      cta: 'open browser tab',
     });
   }
 

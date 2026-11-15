@@ -2,7 +2,9 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion';
 import { authHeaders } from '../api.js';
 import { C, FS, FONT, SP, EASE_OUT } from '../lib/design.js';
+import { telHref } from '../lib/actionMeta.js';
 import CalForm from './CalForm.jsx';
+import ReplyBox from './ReplyBox.jsx';
 
 // The pressure band. Amber in this app means "act on this now" — it is not
 // decoration, and this is the only surface that earns it.
@@ -18,18 +20,49 @@ const LABEL = {
   'waiting-on-you':'they are waiting on you',
   'quote-owed':    'estimate never sent',
   'reply-owed':    'they are waiting on a reply',
+  'source-down':   'source disconnected',
 };
 
-export default function ActionBand({ actions = [], auth, onCleared }) {
+const primaryKindFor = a => {
+  if (a.kind === 'source-down') return 'browser';
+  if ((a.kind === 'book' || a.kind === 'next-visit') && a.book) return 'book';
+  if (a.kind === 'reply-owed' && a.reply) return 'reply';
+  if (a.href && a.cta) return 'href';
+  if (a.browserSource && a.cta) return 'browser';
+  if (a.reply) return 'reply';
+  if (a.book) return 'book';
+  return null;
+};
+
+const primaryBtnStyle = {
+  alignSelf: 'flex-start', marginTop: SP[1], appearance: 'none', cursor: 'pointer',
+  fontFamily: FONT.mono, fontSize: FS.ui, letterSpacing: '.04em',
+  color: C.bg, background: C.amber, fontWeight: 700, border: 'none',
+  padding: `${SP[2]}px ${SP[3]}px`, borderRadius: 6, minHeight: 40,
+  textDecoration: 'none', display: 'inline-flex', alignItems: 'center',
+  transition: `transform 160ms ${EASE_OUT}`,
+};
+
+const secondaryActionStyle = {
+  appearance: 'none', cursor: 'pointer', background: 'none',
+  border: `1px solid ${C.border}`, borderRadius: 6,
+  padding: '6px 10px', minHeight: 36,
+  fontFamily: FONT.mono, fontSize: FS.label, letterSpacing: '.06em',
+  textTransform: 'uppercase', color: C.text2,
+  textDecoration: 'none', display: 'inline-flex', alignItems: 'center',
+};
+
+export default function ActionBand({ actions = [], auth, onCleared, onOpenBrowser, onOpenChat }) {
   const reduce = useReducedMotion();
-  const [booking, setBooking] = useState(null);   // the action id being booked
-  const [busy, setBusy]       = useState(null);
-  const [err, setErr]         = useState(null);
-  const [link, setLink]       = useState(null);   // {id, url} when the tab refused it
-  const [cleared, setCleared] = useState([]);     // ids clearing, so they animate out
-  const [undo, setUndo]       = useState(null);   // the last row cleared by hand
-  const [checking, setCheck]  = useState(false);
-  const [note, setNote]       = useState(null);
+  const [booking, setBooking]   = useState(null);   // the action id being booked
+  const [replying, setReplying] = useState(null);   // the action id being replied to
+  const [busy, setBusy]         = useState(null);
+  const [err, setErr]           = useState(null);
+  const [link, setLink]         = useState(null);   // {id, url} when the tab refused it
+  const [cleared, setCleared]   = useState([]);     // ids clearing, so they animate out
+  const [undo, setUndo]         = useState(null);   // the last row cleared by hand
+  const [checking, setCheck]    = useState(false);
+  const [note, setNote]         = useState(null);
   // The refresh hands back the re-derived band, so it updates in place rather
   // than reloading the whole report and flashing a spinner over everything.
   const [live, setLive]       = useState(null);
@@ -152,7 +185,23 @@ export default function ActionBand({ actions = [], auth, onCleared }) {
       )}
 
       <AnimatePresence initial={false}>
-        {rows.map((a, i) => (
+        {rows.map((a, i) => {
+          const primary = primaryKindFor(a);
+          const phone = a.phone || a.person?.phone || null;
+          const tel = telHref(phone);
+          const openReply = () => {
+            setBooking(null);
+            setErr(null);
+            setReplying(cur => (cur === a.id ? null : a.id));
+          };
+          const openBook = () => {
+            setReplying(null);
+            setBooking(a.id);
+            setErr(null);
+            setLink(null);
+          };
+
+          return (
           <motion.div
             key={a.id}
             initial={reduce ? { opacity: 0 } : { opacity: 0, transform: 'translateY(6px)' }}
@@ -183,14 +232,24 @@ export default function ActionBand({ actions = [], auth, onCleared }) {
             {a.person && (a.person.phone || a.person.address || a.person.via) && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 2, marginTop: 1 }}>
                 {a.person.phone && (
-                  <div style={{ fontFamily: FONT.mono, fontSize: FS.ui, color: C.amber,
-                                textTransform: 'none', letterSpacing: '.02em' }}>
-                    {a.person.phone}
-                  </div>
+                  telHref(a.person.phone)
+                    ? <a href={telHref(a.person.phone)}
+                         style={{ fontFamily: FONT.mono, fontSize: FS.ui, color: C.amber,
+                                  textTransform: 'none', letterSpacing: '.02em', textDecoration: 'none' }}>
+                        {a.person.phone}
+                      </a>
+                    : <div style={{ fontFamily: FONT.mono, fontSize: FS.ui, color: C.amber,
+                                    textTransform: 'none', letterSpacing: '.02em' }}>
+                        {a.person.phone}
+                      </div>
                 )}
                 {a.person.address && (
-                  <div style={{ fontFamily: FONT.sans, fontSize: FS.meta, color: C.text2,
-                                textTransform: 'none', letterSpacing: 'normal' }}>{a.person.address}</div>
+                  <a href={`https://maps.google.com/?q=${encodeURIComponent(a.person.address)}`}
+                     target="_blank" rel="noopener noreferrer"
+                     style={{ fontFamily: FONT.sans, fontSize: FS.meta, color: C.text2,
+                              textTransform: 'none', letterSpacing: 'normal', textDecoration: 'underline' }}>
+                    {a.person.address}
+                  </a>
                 )}
                 {a.person.via && (
                   <div style={{ fontFamily: FONT.sans, fontSize: FS.meta, color: C.text3,
@@ -244,26 +303,51 @@ export default function ActionBand({ actions = [], auth, onCleared }) {
               </div>
             )}
 
-            {/* Every row can be cleared, next to whatever it suggests doing. */}
-            {a.kind !== 'source-down' && booking !== a.id && (
-              <button type="button" onClick={() => clear(a)}
-                style={{
-                  alignSelf: 'flex-start', marginTop: SP[1], appearance: 'none',
-                  cursor: 'pointer', background: 'none', border: 'none', padding: `${SP[1]}px 0`,
-                  fontFamily: FONT.mono, fontSize: FS.meta, letterSpacing: '.06em',
-                  textTransform: 'uppercase', color: C.text3, minHeight: 32,
-                }}>✓ handled — i did this myself</button>
+            {/* Primary CTA: every band row offers one concrete action up front. */}
+            {booking !== a.id && replying !== a.id && primary === 'browser' && (
+              <motion.button type="button" whileTap={{ scale: .98 }}
+                onClick={() => onOpenBrowser?.()}
+                style={primaryBtnStyle}>
+                {a.cta || 'open browser tab'} →
+              </motion.button>
             )}
 
-            {a.book && booking !== a.id && (
+            {booking !== a.id && replying !== a.id && primary === 'reply' && a.reply && (
               <motion.button type="button" whileTap={{ scale: .98 }}
-                onClick={() => { setBooking(a.id); setErr(null); setLink(null); }}
-                style={{
-                  alignSelf: 'flex-start', marginTop: SP[1], appearance: 'none', cursor: 'pointer',
-                  fontFamily: FONT.mono, fontSize: FS.ui, letterSpacing: '.04em',
-                  color: C.bg, background: C.amber, fontWeight: 700, border: 'none',
-                  padding: `${SP[2]}px ${SP[3]}px`, borderRadius: 6, minHeight: 40,
-                }}>{a.kind === 'book' ? (a.cta || 'add to calendar') : 'book a day for it'} →</motion.button>
+                onClick={openReply}
+                style={primaryBtnStyle}>
+                ✍ {a.cta || `reply on ${a.reply.channel}`} →
+              </motion.button>
+            )}
+
+            {booking !== a.id && replying !== a.id && primary === 'book' && a.book && (
+              <motion.button type="button" whileTap={{ scale: .98 }}
+                onClick={openBook}
+                style={primaryBtnStyle}>
+                {a.kind === 'book' ? (a.cta || 'add to calendar') : 'book a day for it'} →
+              </motion.button>
+            )}
+
+            {booking !== a.id && replying !== a.id && primary === 'href' && a.href && (
+              <a href={a.href} target="_blank" rel="noopener noreferrer" style={primaryBtnStyle}>
+                {a.cta} →
+              </a>
+            )}
+
+            {a.reply && replying === a.id && (
+              <div style={{ marginTop: SP[2] }}>
+                <ReplyBox
+                  channel={a.reply.channel}
+                  to={a.reply.to}
+                  name={a.reply.name}
+                  kind={a.reply.kind}
+                  text={a.reply.text}
+                  snippet={a.reply.snippet}
+                  auth={auth}
+                  onCancel={() => setReplying(null)}
+                  onSent={() => { setReplying(null); clear(a); }}
+                />
+              </div>
             )}
 
             {a.book && booking === a.id && (
@@ -283,21 +367,54 @@ export default function ActionBand({ actions = [], auth, onCleared }) {
               </a>
             )}
 
-            {a.href && a.cta && a.kind !== 'book' && (
-              <a href={a.href} target="_blank" rel="noopener noreferrer"
-                 style={{
-                   alignSelf: 'flex-start', marginTop: SP[1], textDecoration: 'none',
-                   fontFamily: FONT.mono, fontSize: FS.ui, letterSpacing: '.04em',
-                   color: C.bg, background: C.amber, fontWeight: 700,
-                   padding: `${SP[2]}px ${SP[3]}px`, borderRadius: 6, minHeight: 40,
-                   display: 'inline-flex', alignItems: 'center',
-                   transition: `transform 160ms ${EASE_OUT}`,
-                 }}>
-                {a.cta} →
-              </a>
+            {/* Secondary action bar: direct follow-ups (reply/book/call/open/chat) + handled. */}
+            {booking !== a.id && replying !== a.id && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center',
+                            gap: SP[2], marginTop: SP[1] }}>
+                {a.reply && primary !== 'reply' && (
+                  <button type="button" onClick={openReply} style={secondaryActionStyle}>
+                    ✍ reply on {a.reply.channel}
+                  </button>
+                )}
+                {a.book && primary !== 'book' && (
+                  <button type="button" onClick={openBook} style={secondaryActionStyle}>
+                    📅 book a day
+                  </button>
+                )}
+                {a.href && primary !== 'href' && (
+                  <a href={a.href} target="_blank" rel="noopener noreferrer" style={secondaryActionStyle}>
+                    {a.cta || 'open the job'} ↗
+                  </a>
+                )}
+                {tel && (
+                  <a href={tel} style={secondaryActionStyle}>
+                    📞 call
+                  </a>
+                )}
+                {onOpenBrowser && a.browserSource && primary !== 'browser' && (
+                  <button type="button" onClick={() => onOpenBrowser()} style={secondaryActionStyle}>
+                    🌐 browser
+                  </button>
+                )}
+                {onOpenChat && a.chat && (
+                  <button type="button" onClick={() => onOpenChat(a.chat)} style={secondaryActionStyle}>
+                    💬 ask in chat
+                  </button>
+                )}
+                {a.kind !== 'source-down' && (
+                  <button type="button" onClick={() => clear(a)}
+                    style={{
+                      appearance: 'none', cursor: 'pointer', background: 'none', border: 'none',
+                      padding: `${SP[1]}px 2px`, minHeight: 36,
+                      fontFamily: FONT.mono, fontSize: FS.meta, letterSpacing: '.06em',
+                      textTransform: 'uppercase', color: C.text3,
+                    }}>✓ handled — i did this myself</button>
+                )}
+              </div>
             )}
           </motion.div>
-        ))}
+          );
+        })}
       </AnimatePresence>
     </div>
   );

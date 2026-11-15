@@ -287,15 +287,26 @@ export default function ItemCard({
         <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '4px 16px',
                       padding: `${SP[2]}px ${SP[4]}px`,
                       borderTop: `1px solid ${SHELF.border}`, background: SHELF.surface2 }}>
-          {actions.map(a => (
-            <button key={a.label} type="button" onClick={a.onPress} style={{
+          {actions.map(a => {
+            const actionStyle = {
               appearance: 'none', border: 0, margin: 0, padding: '4px 0', background: 'none',
               fontFamily: 'inherit', fontSize: FS.meta, letterSpacing: '.04em',
               textTransform: 'none', cursor: 'pointer', minHeight: 36, whiteSpace: 'nowrap',
               color: a.strong ? SHELF.accent : SHELF.text2,
               fontWeight: a.strong ? 700 : 400,
-            }}>{a.label}</button>
-          ))}
+              textDecoration: 'none', display: 'inline-flex', alignItems: 'center',
+            };
+            if (a.href) {
+              const external = /^https?:\/\//i.test(a.href);
+              return (
+                <a key={a.label} href={a.href}
+                   target={external ? '_blank' : undefined}
+                   rel={external ? 'noopener noreferrer' : undefined}
+                   style={actionStyle}>{a.label}</a>
+              );
+            }
+            return <button key={a.label} type="button" onClick={a.onPress} style={actionStyle}>{a.label}</button>;
+          })}
         </div>
       )}
     </div>

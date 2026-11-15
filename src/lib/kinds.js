@@ -11,6 +11,7 @@ export const KINDS = {
   whatsapp:  { label: 'whatsapp',   tint: '#7fbf8f' },
   messenger: { label: 'messenger',  tint: '#8f9fc4' },
   instagram: { label: 'instagram',  tint: '#c48fb0' },
+  meta:      { label: 'meta',       tint: '#8f9fc4' },
   job:       { label: 'job',        tint: '#c4a35f' },
 };
 
