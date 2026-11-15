@@ -458,7 +458,8 @@ const DOSSIER_TEXT_FIELDS = [
   'summary_notes',
 ];
 
-const SELF_NAME_RE = /^(?:jesse(?:\s+k?ward)?|switch\s*craft(?:\s+electrics)?|me|you)$/i;
+const SELF_NAME_RE = /^(?:jesse(?:\s*k?ward(?:\s+test)?)?|switch\s*craft(?:\s+electrics)?|me|you)$/i;
+const GENERIC_JOB_STAGE_RE = /^(?:pending|accepted|quoted|open|active|in[\s_-]*progress|new)$/i;
 const cleanPersonName = val => {
   const s = cleanDossierValue(val);
   return s && !SELF_NAME_RE.test(s) ? s : null;
@@ -509,13 +510,18 @@ export function mergeDossierFields(existing = {}, incoming = {}) {
     email: cleanDossierValue(incoming.email) || cleanDossierValue(existing.email) || null,
     address,
     address_source,
-    business: cleanDossierValue(incoming.business) || cleanDossierValue(existing.business) || null,
+    business: cleanPersonName(incoming.business) || cleanPersonName(existing.business) || null,
     channels,
     job_ids,
   };
 
   for (const field of DOSSIER_TEXT_FIELDS) {
     merged[field] = cleanDossierValue(incoming[field]) || cleanDossierValue(existing[field]) || null;
+  }
+  const exStage = cleanDossierValue(existing.current_stage);
+  const inStage = cleanDossierValue(incoming.current_stage);
+  if (exStage && inStage && GENERIC_JOB_STAGE_RE.test(inStage) && !GENERIC_JOB_STAGE_RE.test(exStage)) {
+    merged.current_stage = exStage;
   }
   return merged;
 }

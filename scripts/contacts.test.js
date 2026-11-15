@@ -297,4 +297,20 @@ SCOPE :: Order confirmation
 `, { person_key: 'email:orders@example.com' }, 'Hi Jesse, your order shipped');
 assert.strictEqual(noSelf.display_name, null);
 
+// Specific stages aren't overwritten by generic Switch Craft statuses; self-names stripped from business too
+assert.strictEqual(
+  mergeDossierFields({ person_key: 'phone:400111222', current_stage: 'Booked (2026-11-20)' }, { current_stage: 'pending' }).current_stage,
+  'Booked (2026-11-20)'
+);
+assert.strictEqual(
+  mergeDossierFields({ person_key: 'phone:400111222', current_stage: 'Booked (2026-11-20)' }, { current_stage: 'completed' }).current_stage,
+  'completed'
+);
+const cleanTestRow = mergeDossierFields(
+  { person_key: 'phone:400111222' },
+  { display_name: 'Jessekward', business: 'jesse' }
+);
+assert.strictEqual(cleanTestRow.display_name, null);
+assert.strictEqual(cleanTestRow.business, null);
+
 console.log('tier1 & gating: all assertions passed');
